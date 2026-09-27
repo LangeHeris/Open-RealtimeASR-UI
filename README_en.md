@@ -34,6 +34,8 @@ Its core design is **no engine lock-in, dictation behavior is yours to define**:
 
 > Headphones are recommended to keep speaker echo from interfering with recognition. For the complete guide see the [User Manual](docs/User_Doc_en.md).
 
+ ![ori](docs/ori.gif)
+
 ## Quick Start
 
 ### Requirements
