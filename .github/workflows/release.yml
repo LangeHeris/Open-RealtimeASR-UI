@@ -43,6 +43,11 @@ jobs:
     name: GitHub Release (onedir zip)
     needs: version-check
     runs-on: windows-latest
+    # secrets 不能直接写进 step 的 if（GitHub 会把整个 workflow 判为无效文件，
+    # 报 "Unrecognized named-value: 'secrets'"，且**每次 push 都失败一次**，
+    # 连 tag 都推不出去）。job 级 env 是允许读 secrets 的，先中转成开关再用。
+    env:
+      SIGNPATH_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -75,17 +80,17 @@ jobs:
       # 校验和 → Release——签的是 bundle 内的 exe/dll，发的是 zip，顺序反了
       # 会把未签名的包发出去。SignPath 侧的 Artifact Configuration 按
       # <zip-file> 根配 ORI.exe 与 _internal\**\*.dll（配置存在 SignPath 项目里）。
-      # 仓库没配 SignPath secrets/vars 时（fork/PR）两个 step 由 if: 跳过，
+      # 仓库没配 SignPath secrets/vars 时（fork/PR）两个 step 由 env 开关跳过，
       # 不阻塞构建，照发未签名包。
       - name: Upload unsigned bundle for signing
         id: upload-unsigned-artifact
-        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        if: env.SIGNPATH_ENABLED == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ori-unsigned-bundle
           path: dist/ORI
       - name: Sign bundle with SignPath
-        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        if: env.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
