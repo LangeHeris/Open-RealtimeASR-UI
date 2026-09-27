@@ -1,0 +1,121 @@
+# Tag 触发的 GitHub 渠道发布：版本校验 + onedir zip 资产 + Release 正文。
+#
+# 版本号只有一个来源 asr_voice/version.py，本流水线的第一件事就是校 tag 与它一致；
+# 完整人工流程见内部维护的 RELEASING 发布手册（不随公开仓分发）。
+#
+# 发行渠道**不在本流水线内**：发行渠道的打包与上传资产（发行包/构建模板与
+# 上传脚本、便携运行时构建脚本、发行包组装与模型下载脚本）属 渠道独占内容，
+# 不随公开仓分发，故 渠道侧的构建与上传一律在本地按内部 RELEASING 手册手动执行
+# （发行渠道的后续更新无需审核，本地跑通常也更快）。
+# 这条边界由 tests/test_release_workflow.py 静态守卫，别把 渠道 job 加回来。
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# action-gh-release 需要写权限。新仓库默认给 GITHUB_TOKEN 的 contents 是只读的，
+# 不显式声明会以 403 结束——构建全绿、只有建 Release 那一步失败，错误信息不直观。
+permissions:
+  contents: write
+
+jobs:
+  version-check:
+    name: Version check (tag == asr_voice/version.py)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # 本 job 刻意不装依赖：check_version / changelog_top 只 import
+      # asr_voice.version（其 __init__ 很轻，不需要 PySide6），几秒内就该有结论，
+      # 不必为一次纯文本校验付 PySide6 的安装时间。
+      - name: Verify tag matches code version
+        run: python scripts/check_version.py ${{ github.ref_name }}
+      # check_version 只比 tag 与代码版本，从不看 changelog——「忘了写 CHANGELOG 段」
+      # 于是能一路过 CI，直到发布说明空掉才被发现。这条把顶部段也串进校验。
+      - name: Verify CHANGELOG top section matches version
+        run: python scripts/changelog_top.py --check
+
+  github-release:
+    name: GitHub Release (onedir zip)
+    needs: version-check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build deps
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Generate version resource
+        run: python scripts/gen_version_info.py
+      - name: Build onedir bundle
+        run: python -m PyInstaller --noconfirm openrealtimeasr-ui.spec
+        env:
+          ORI_BUILD_MODE: full
+          # onefile 的 %TEMP% 解包被杀软启发式整机拦截（2026-09-26 实测：
+          # bootloader 报 Could not create temporary directory）；onedir 不解包、
+          # 启发式面更小、启动更快。产物 dist\ORI\（ORI.exe + _internal\）。
+          ORI_PACKAGE: onedir
+      # 像素主题是 商店版独占（spec §3.2）。GitHub 版在三处物理排除它：spec 的
+      # datas/hiddenimports/excludes、FusionPixel 字体、以及这一步。dist/ORI/themes 只是
+      # 本地「外部主题包投放位」，两个包已经随 onedir 打进 _internal/themes，故不上传。
+      - name: Deploy theme packs (pixel excluded)
+        run: python scripts/copy_github_themes.py dist/ORI/themes
+      # Release 正文只取 CHANGELOG 顶部那一段，不是整个文件（历史版本不该跟着走）。
+      - name: Extract release notes
+        run: python scripts/changelog_top.py --out dist/RELEASE_NOTES.md
+      # 签名走 SignPath（开源代码签名，已取代废弃的 Azure Trusted Signing）。
+      # SignPath 的可信构建校验要求被签对象先以 workflow artifact 形式存在
+      # （origin 元数据由 GitHub 提供、构建脚本伪造不了），故先上传 dist\ORI
+      # 整个 bundle，提交签名请求后把签好的产物写回 dist\ORI，再走 zip →
+      # 校验和 → Release——签的是 bundle 内的 exe/dll，发的是 zip，顺序反了
+      # 会把未签名的包发出去。SignPath 侧的 Artifact Configuration 按
+      # <zip-file> 根配 ORI.exe 与 _internal\**\*.dll（配置存在 SignPath 项目里）。
+      # 仓库没配 SignPath secrets/vars 时（fork/PR）两个 step 由 if: 跳过，
+      # 不阻塞构建，照发未签名包。
+      - name: Upload unsigned bundle for signing
+        id: upload-unsigned-artifact
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ori-unsigned-bundle
+          path: dist/ORI
+      - name: Sign bundle with SignPath
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORG_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/ORI
+      # onedir 产物是目录（ORI.exe + _internal\），Release 资产须单文件故 zip：
+      # Compress-Archive 用 \* 把目录内容打在 zip 根，解压后 ORI.exe 直接在顶层，
+      # 与 README「解压后双击即用」口径一致。
+      - name: Package onedir bundle as zip
+        run: Compress-Archive -Path dist\ORI\* -DestinationPath "dist\ORI-${{ github.ref_name }}-win64.zip"
+      # 未签名产物是杀软启发式误报的高发组合：SHA256SUMS 是用户核对「下载产物
+      # 未被篡改」的唯一手段（核对方法见 README「下载途径」），必须随每个 Release
+      # 发布。行尾用 LF——CRLF 会让 GNU sha256sum -c 报「improperly formatted」。
+      - name: Generate SHA256 checksums
+        run: |
+          $lines = Get-FileHash "dist/ORI-${{ github.ref_name }}-win64.zip", THIRD_PARTY_NOTICES.md -Algorithm SHA256 |
+            ForEach-Object { '{0}  {1}' -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) }
+          [IO.File]::WriteAllText("$PWD/dist/SHA256SUMS.txt", ($lines -join "`n") + "`n")
+          Get-Content dist/SHA256SUMS.txt
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ORI-${{ github.ref_name }}-win64.zip
+            THIRD_PARTY_NOTICES.md
+            dist/SHA256SUMS.txt
+          body_path: dist/RELEASE_NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

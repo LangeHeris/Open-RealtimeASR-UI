@@ -1,0 +1,79 @@
+# 项目元数据与依赖声明（I11）。
+#
+# 定位说明：
+# - 本项目是"从源码/打包 exe 运行"的桌面应用，不是要发布到 PyPI 的库；
+#   本文件的作用是把依赖收敛到带版本上限的单一声明处（requirements.txt
+#   保留为 pip install -r 的使用入口，两者版本区间必须保持一致），
+#   并为将来的工具链配置（mypy/ruff/pytest）提供统一挂载点
+# - 版本上限依据：当前开发环境实测通过的组合（见各条注释），
+#   上限取下一个主版本，防止大版本升级静默破坏兼容性
+#
+# 运行入口不变：python run.py（源码）/ build.bat（打包）
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openrealtimeasr-ui"
+# 与 asr_voice/version.py 一致（单一来源是 version.py；改动时同步改本行并重新
+# 生成 version_info.txt：python tools/gen_version_info.py，否则 tests/test_version.py 转红）
+version = "0.1.0"
+description = "ORI (Open-RealtimeASR-UI)：Windows 实时语音输入工具，五大云端/本地 ASR 引擎 + LLM 文本修正 + 悬浮条 UI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Open-RealtimeASR-UI contributors" }]
+keywords = ["asr", "speech-to-text", "voice-input", "pyside6", "windows"]
+
+dependencies = [
+    # 实测通过：PySide6 6.11.1
+    "PySide6>=6.6.0,<7",
+    # 实测通过：sounddevice 0.5.5
+    "sounddevice>=0.4.6,<1",
+    # 实测通过：numpy 2.4.4（2.x API；1.24 为旧环境保底下限）
+    "numpy>=1.24.0,<3",
+    # 实测通过：keyboard 0.13.5
+    "keyboard>=0.13.5,<1",
+    # 实测通过：pyperclip 1.11.0
+    "pyperclip>=1.8.2,<2",
+    # 实测通过：websockets 17.0.1（实时引擎直连 WebSocket 协议）
+    "websockets>=12.0,<18",
+    # 实测通过：PyYAML 6.0.3（行级配置更新 + 回读校验均依赖）
+    "PyYAML>=6.0,<7",
+    # 暂停播放/全局静音：Windows 媒体会话（SMTC）与逐应用音量（WASAPI）控制
+    # 实测通过：winrt 2.3.0（3.x 投影缺少 request 静态工厂，必须锁 2.3.x）
+    "winrt-runtime~=2.3.0",
+    "winrt-Windows.Foundation~=2.3.0",
+    "winrt-Windows.Foundation.Collections~=2.3.0",
+    "winrt-Windows.Media.Control~=2.3.0",
+    # 实测通过：pycaw 20251023（日历版本，上限取下一个年度版本）
+    "pycaw>=20240210,<20260000",
+]
+
+[project.optional-dependencies]
+# FunASR 本地引擎（engine: funasr 时才需要；CPU 最小安装）
+funasr = [
+    # 实测通过：funasr 1.4.2 / torch 2.12.1 / torchaudio 2.11.0 / modelscope 1.39.1
+    "funasr>=1.0.0,<2",
+    "torch>=2.0.0,<3",
+    "torchaudio>=2.0.0,<3",
+    "modelscope>=1.9.0,<2",
+]
+
+[tool.setuptools]
+# 显式列出包，避免 setuptools 自动发现把 tests/ 等误当包；
+# 本项目不以 pip install . 为分发方式，此列表仅为元数据完整性
+packages = [
+    "asr_voice",
+    "asr_voice.asr",
+    "asr_voice.audio",
+    "asr_voice.config",
+    "asr_voice.core",
+    "asr_voice.hotkey",
+    "asr_voice.input",
+    "asr_voice.postprocess",
+    "asr_voice.ui",
+    # 主题特性子包（celtic/cyberpunk），显式列出防止 wheel 构建时静默漏包（I05）
+    "asr_voice.ui.theme_features",
+]
