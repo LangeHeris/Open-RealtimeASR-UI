@@ -160,3 +160,17 @@ docs/               # documentation
 - Cloud recognition engines: recorded audio and recognition results are sent to the cloud provider you configured (Alibaba Cloud / Tencent Cloud / iFLYTEK / Volcengine); please review each provider's privacy policy yourself
 
 - Local FunASR engine: audio and recognition stay entirely on your machine; nothing is uploaded
+
+## Code signing policy
+
+Windows builds published on GitHub Releases are code signed using a free certificate from the open-source community:
+
+> Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
+
+Signing roles (a solo project — all three roles are the same person):
+
+- Authors / Reviewers / Approvers: [@LangeHeris](https://github.com/LangeHeris)
+
+Privacy policy: [docs/PRIVACY_POLICY.md](docs/PRIVACY_POLICY.md)
+
+> Note: until the SignPath review completes, releases remain **unsigned** (verify them against the bundled `SHA256SUMS.txt`, see [Downloads](#downloads)).

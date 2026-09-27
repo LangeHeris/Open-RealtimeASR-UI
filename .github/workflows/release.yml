@@ -79,7 +79,10 @@ jobs:
       # 整个 bundle，提交签名请求后把签好的产物写回 dist\ORI，再走 zip →
       # 校验和 → Release——签的是 bundle 内的 exe/dll，发的是 zip，顺序反了
       # 会把未签名的包发出去。SignPath 侧的 Artifact Configuration 按
-      # <zip-file> 根配 ORI.exe 与 _internal\**\*.dll（配置存在 SignPath 项目里）。
+      # <zip-file> 根**只配 ORI.exe**（配置存在 SignPath 项目里）：
+      # `_internal\` 下的 dll 全部是 PySide6/Qt/运行时的上游第三方二进制，
+      # SignPath 条款允许随包分发，但**禁止**用项目证书签它们——只签自己
+      # 构建的二进制。
       # 仓库没配 SignPath secrets/vars 时（fork/PR）两个 step 由 env 开关跳过，
       # 不阻塞构建，照发未签名包。
       - name: Upload unsigned bundle for signing
