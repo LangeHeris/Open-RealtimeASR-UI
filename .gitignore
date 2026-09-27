@@ -1,0 +1,136 @@
+# 本地配置（含密钥，请勿提交）
+config/config.yaml
+config/config.yaml.bak
+config/*.bak
+dist_new/config.yaml
+dist_new/logs/
+
+# 本机自定义 Python 路径（start.bat 用，开源仓库不带）
+python.local.bat
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+build_new/
+dist/
+dist_new/
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 日志
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 环境变量
+.env
+.env.local
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 工具内部目录
+.workbuddy/
+.trae/
+
+# 用户字体目录（运行时用户选择字体后复制进来，非源码资产，避免字体再分发）
+fonts/
+
+# 设置对话框截图与调试产物
+tests/_shots*/
+tests/_*.png
+tests/diag_theme_shots/
+
+# 崩溃转储（WER/minidump，调试后无价值）
+/dumps/
+*.dmp
+
+# pytest 缓存根目录（内部只有 CACHEDIR.TAG/README/命中记录）
+.pytest_cache/
+
+# IDE / AI 助手缓存目录
+.qoder/
+
+# 发行渠道打包与上传（凭据与构建产物不入库；应用编号构建时生成）
+# 注：发行渠道目录整棵树（含 launcher 的 build/ 与 dist/）已由文件末尾的
+#     「渠道独占资产」段整体排除，这里不再单列。
+steam_build/
+steamcmd/
+steam_appid.txt
+models/
+# 便携运行时安装包（渠道构建产出 env/ 用，25MB）。锚定到 tools/ 是因为别的
+# 仓库子目录里不该有同名文件；不忽略的话它一直是未跟踪状态，迟早被某次
+# `git add .` 带进公开仓。缺失时可用环境变量 PYTHON_INSTALLER 指向别处的副本。
+/tools/python-3.11.9-amd64.exe
+
+# 临时调试文件 / 单测临时目录（tests/_harness.ScratchDir 建 .tmp-testrun）
+.tmp_*/
+.tmp_*.py
+.tmp-*/
+
+# 运行时临时目录（会话修复/设置备份等）
+.dsh_tmp/
+
+# 开源推送口径（2026-09-25）：tests/ 与 tools/ 整体不入公开仓；商店筹备文档
+# 与过程文档同样私有。CI/本地构建刚需的 4 个脚本已移居 scripts/（公开）。
+# 注意：下方「渠道独占资产」哨兵段是 tests/test_public_repo_boundary.py 的
+# 真相源，本段条目**不得**写进哨兵段（改哨兵必须同步测试副本）。
+/tests/
+/tools/
+/docs/steam-store-copy.md
+/docs/steam-store-system-requirements.md
+/RELEASING.md
+/docs/superpowers/
+/.superpowers/
+/AGENTS.md
+# 项目官网/落地页（独立资产，不入本仓）
+/website/
+
+# ==== 渠道独占资产（公开仓不含）BEGIN ====
+# 发行渠道的打包/上传资产与像素主题源码：本机保留（本地渠道构建、发行包组装
+# 与相关打包测试照常可用），但不入公开仓——开源版必须能在**没有它们的干净克隆**里
+# 构建、发版、跑单测。
+#
+# 本段必须留在文件**最后**：上面的 `tests/**` 段用 `!tests/test_*.py` 反向放行，
+# 而 git 的排除规则是「后写的赢」，放在前面会被那些否定规则重新放行。
+#
+# 边界由 tests/test_public_repo_boundary.py 守卫：它把本段解析出来当清单，与
+# release.yml 实际引用的路径、以及 asr_voice 包的 import 交叉比对——往这里加条目
+# 时那条测试会立刻提醒你补上对应断言。
+#
+# 注意 asr_voice/steam_integration.py **不在**本清单内：它是运行期硬依赖
+# （core/app.py 与 main.py 顶层 import），公开仓必须保留；它在缺少
+# steam_appid.txt 时整条链路降级为 no-op，不需要额外的开关。
+/steam/
+/build_steam.bat
+/requirements.steam.cpu.txt
+/requirements.steam.cuda.txt
+/tools/assemble_depot.py
+/tools/gen_vdf.py
+/tools/download_models.py
+/tests/test_launcher.py
+/tests/test_assemble_depot.py
+/tests/test_gen_vdf.py
+/asr_voice/ui/theme_features/pixel.py
+/themes/像素/
+/docs/steam-launch-ops-checklist.md
+/docs/superpowers/plans/2026-09-20-steam-launch-code.md
+/docs/superpowers/plans/2026-09-20-steam-launch-packaging.md
+/docs/superpowers/specs/2026-08-26-steam-launch-design.md
+# ==== /渠道独占资产（公开仓不含）END ====

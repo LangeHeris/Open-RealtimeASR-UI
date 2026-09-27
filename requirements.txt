@@ -1,0 +1,36 @@
+PySide6>=6.6.0,<7
+sounddevice>=0.4.6,<1
+numpy>=1.24.0,<3
+keyboard>=0.13.5,<1
+pyperclip>=1.8.2,<2
+websockets>=12.0,<18
+PyYAML>=6.0,<7
+# 暂停播放/全局静音：Windows 媒体会话（SMTC）与逐应用音量（WASAPI）控制
+# pywinrt 锁定 2.3.0：3.x 投影缺少 request 静态工厂，无法获取会话管理器
+winrt-runtime~=2.3.0
+winrt-Windows.Foundation~=2.3.0
+winrt-Windows.Foundation.Collections~=2.3.0
+winrt-Windows.Media.Control~=2.3.0
+# pycaw 为日历版本（YYYYMMDD），上限取下一个年度版本
+pycaw>=20240210,<20260000
+# 实时语音识别通过 websockets 直接实现 WebSocket 协议，无需 tencentcloud-sdk-python
+# 如需使用一句话识别（SentenceRecognition）API，取消下面注释：
+# tencentcloud-sdk-python>=3.0.1100
+
+# ===== 可选：FunASR 本地引擎 =====
+# 仅当 config.yaml 中 engine: funasr 时需要安装。
+# 首次加载模型 3-8s（CPU）/ 1-3s（GPU），程序启动时后台预热，不影响 UI 响应。
+#
+# 安装方式（CPU）：
+#   pip install funasr torch torchaudio
+#
+# 安装方式（GPU，CUDA 11.8 示例）：
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+#   pip install funasr
+#
+# 模型在首次使用时自动从 ModelScope 下载到 ~/.cache/modelscope/。
+# 如需离线使用，请提前下载 paraformer-zh-streaming 模型并放置到该目录。
+# funasr>=1.0.0,<2
+# torch>=2.0.0,<3
+# torchaudio>=2.0.0,<3
+# modelscope>=1.9.0,<2

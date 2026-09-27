@@ -1,0 +1,9 @@
+# 凯尔特风格主题包（DLC 主题包：精简构建不投放本目录）
+# 素材 assets/knot_*.png：白底黑线，运行期按主题色重着色
+name: 凯尔特风格
+key: celtic
+feature: celtic
+knot_icon: true
+bg: "#000000"
+text: "#ffffff"
+accent: "#ffffff"

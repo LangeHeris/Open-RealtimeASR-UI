@@ -1,0 +1,321 @@
+# config/config.example.yaml - 配置模板
+# 复制此文件为 config.yaml 并填入你的真实密钥（密钥字段已留空）
+
+# 顶层 engine：选择当前使用的识别引擎（也可通过悬浮条右键菜单切换）
+# 可选: "aliyun" 阿里云百炼（默认，Qwen Audio 大模型）| "volcengine" 火山引擎豆包流式
+#      | "tencent" 腾讯云 | "xfyun" 讯飞 | "funasr" 本地离线（需另装 funasr+torch）
+engine: "aliyun"
+
+# 腾讯云 ASR 配置
+tencent:
+  # 从 https://console.cloud.tencent.com/cam/capi 获取
+  secret_id: ""
+  secret_key: ""
+  # 从 https://console.cloud.tencent.com/asr 获取 AppID
+  app_id: ""
+
+  # 实时识别引擎类型，可选：
+  #   Hy-ASR-3.0-preview Hy-ASR 3.0（大模型·中英+方言，默认）
+  #   16k_zh_en         中英大模型 1.0（中英混合识别）
+  #   16k_zh            通用中文
+  #   16k_zh_dialect    多方言（23 种）
+  engine_model_type: "Hy-ASR-3.0-preview"
+
+  # 标点过滤：0 不过滤 | 1 过滤句末标点 | 2 过滤所有标点
+  filter_punc: 1
+  # 数字转换：0 输出中文数字 | 1 智能转换为阿拉伯数字
+  convert_num_mode: 1
+  # 过滤脏词：0 不过滤 | 1 过滤 | 2 替换为 *
+  filter_dirty: 0
+  # 过滤语气词：0 不过滤 | 1 部分过滤 | 2 严格过滤全部语气词
+  filter_modal: 2
+  # 热词 ID（可选，需先在控制台创建热词表）
+  hotword_id: ""
+  # 自学习模型 ID（可选）
+  customization_id: ""
+
+# 阿里云百炼 ASR 配置（实时语音识别）
+# 使用方法：把顶层 engine 改为 "aliyun"（或右键菜单切换识别引擎）
+aliyun:
+  # 百炼 API Key，从 https://bailian.console.aliyun.com 获取（sk- 开头）
+  api_key: ""
+
+  # 实时识别模型（仅流式输出）：
+  #   paraformer-realtime-v2                中文（含方言）+多语种（默认）
+  #   qwen-audio-3.0-asr-flash-streaming    Qwen Audio 大模型，识别更准（大模型版）
+  model: "paraformer-realtime-v2"
+
+  # 过滤语气词（啊、嗯等口癖）
+  disfluency_removal: true
+  # 断句静音阈值（毫秒，200~6000）：说话停顿多久算一句结束
+  max_sentence_silence: 800
+  # 热词列表 ID（可选，百炼控制台创建）
+  vocabulary_id: ""
+  # 语种提示（可选），如 "zh" / "zh,en"；留空自动检测
+  language_hints: ""
+
+# 讯飞实时转写配置
+xfyun:
+  # 大模型版（rtasr_llm）密钥：console.xfyun.cn/services/new_rta
+  # 开通"实时语音转写大模型"后领取（AppID / APIKey / APISecret）
+  app_id: ""
+  api_key: ""
+  api_secret: ""
+  # 标准版（rtasr）密钥：console.xfyun.cn/services/rtasr
+  # 开通"实时语音转写"（标准版）后领取，与大模型版互不通用
+  std_app_id: ""
+  std_api_key: ""
+  # 接口版本：llm=大模型版（默认）| std=标准版（标准版更稳定）
+  edition: "llm"
+  # 大模型版语种：autodialect=中英+202方言 | autominor=37语种（需工单开通）
+  lang: "autodialect"
+  # 标准版语种：cn=中文/中英混合 | en=英文
+  std_lang: "cn"
+  # ---- 标准版专用参数（大模型版不支持，不发送）----
+  # 垂直领域：court / edu / finance / medical / tech；留空通用
+  pd: ""
+  # 过滤结果中的标点（punc=0）
+  std_punc: true
+  # ---- 语气词过滤（客户端丢弃 wp=s 顺滑语气词），两版各自独立 ----
+  filter_modal: true        # 大模型版
+  std_filter_modal: true    # 标准版
+
+# 火山引擎豆包流式 ASR 配置（默认引擎）
+volcengine:
+  # 火山引擎语音控制台 console.volcengine.com/speech 开通"豆包流式语音识别"
+  # 鉴权两种方式（新版与旧版密钥分开设置，按需填写其中一套）：
+  #   新版单密钥：填 api_key（控制台"API Key 管理"生成的 API Key）
+  #   旧版双密钥：填 app_id + access_token（应用详情页的 App ID + Access Token）
+  api_key: ""        # 新版 API Key（X-Api-Key）；旧版用户留空
+  access_token: ""   # 旧版 Access Token（X-Api-Access-Key）；新版用户留空
+  app_id: ""         # 旧版鉴权的 App ID（X-Api-App-Key）；新版用户留空
+  # 计费方式（duration=按时长 | concurrent=按并发）：豆包 1.0 与 2.0 各自独立，
+  # 须分别与控制台购买的资源包一致；右键菜单切换版本时会自动套用对应版本的计费方式
+  bigasr_billing: "duration"    # 豆包1.0 的计费方式
+  seedasr_billing: "duration"   # 豆包2.0 的计费方式
+  # resource_id 由程序自动合成（volc.{当前版本}.sauc.{该版本计费}），一般无需手工修改
+  resource_id: "volc.seedasr.sauc.duration"
+  enable_ddc: true          # 语义顺滑（去语气词/重复词）
+  enable_nonstream: true    # 二遍识别：静音约800ms出更准的 final
+
+# 本地 FunASR 引擎配置（完全离线，无需密钥）
+funasr:
+  model: "paraformer-zh-streaming"   # 流式模型，支持逐字同步上屏
+  device: "cuda"                     # "auto" | "cuda" | "cpu"（有 GPU 用 cuda 更快）
+  # 识别窗口预设：逐字上屏的节奏与延迟（改动后自动重新预热）
+  #   "默认"   600ms 窗，识别稳（推荐）
+  #   "低延迟" 480ms 窗，出字更快，抗噪略弱
+  #   "高准确" 720ms 窗，上下文更多，出字更慢
+  chunk_preset: "默认"
+  hotword: ""                        # 热词，空格分隔
+  preheat: true                      # 启动时后台预热模型（false=首次录音才加载）
+  local_dir: ""                      # 本地模型目录（用户自行下载权重后填写绝对路径；非空时优先本地加载，不联网下载）
+  # 以下两项为配置文件级高级项（不进设置界面，为商用内置分发预留）：
+  model_hub: "ms"                    # 模型下载渠道：ms=ModelScope | hf=HuggingFace（仅自动下载时生效）
+  model_revision: ""                 # 锁定模型版本（如 hf 渠道的 apache-2.0-20260804 不可变 tag）；留空用最新
+
+# 音频采集配置
+audio:
+  sample_rate: 16000        # 采样率，各引擎通用要求 16kHz
+  channels: 1               # 单声道
+  block_size: 1600          # 每块样本数，1600 = 100ms @ 16kHz
+  dtype: "int16"            # 采样位深
+  warmup_capture: false     # 麦克风常驻预热：热键按下立即有音频，防吞首字（任务栏麦克风图标会常亮）
+  input_device: ""          # 麦克风设备名（sounddevice 按子串匹配）；空=系统默认输入设备
+
+# VAD 语音活动检测配置
+vad:
+  energy_threshold: 500     # 能量阈值，低于此值视为静音（按麦克风灵敏度调）
+  silence_duration_ms: 600  # 连续静音超过此时长判定一句话结束
+  min_speech_ms: 300        # 短于此值的语音片段丢弃（避免噪声误触发）
+  pre_speech_buffer_ms: 200 # 语音开始前预保留的缓冲，避免吃字
+
+# 全局热键配置
+hotkey:
+  toggle: "ctrl+g"          # 开始/停止录音（避免 win+h 的管理员权限要求）
+  dialog: "ctrl+shift+h"    # 进入/退出语音对话（留空=不注册，功能隐藏）
+  # 其他可选: "win+h", "ctrl+alt+v", "alt+`" 等
+  # 注意避免与系统/其他软件热键冲突
+
+# 浮动 UI 配置
+ui:
+  bar_width: 326
+  bar_height: 78   # 默认尺寸跟随当前窗口大小；极简主题为正方形，不走此默认
+  follow_cursor: false      # 是否跟随光标位置显示
+  default_x: -1            # 首次运行默认位置（-1=主屏正中心；设 0+ 用固定坐标）
+  default_y: -1
+  auto_hide_seconds: 0      # 空闲多久自动隐藏到托盘（0=不自动隐藏）
+
+  # 主题预设（重启生效）
+  # 内置: "light" / "dark" / "minimal"（默认）；扩展主题见 themes/ 主题包（如 cyberpunk、celtic）
+  theme_name: "minimal"
+  # 界面语言：""=首次运行按系统语言自动检测；"zh"|"en" 手动固定（无热切换，重启生效）
+  language: ""
+  bg_color: "#1c1c20"       # 与 theme_name 配套的底色
+  text_color: "#eeeeee"
+  accent_color: "#5696e8"
+
+  # 悬浮条不透明度（0=主题默认浅色82%/深色92%；1~100=百分比，100=完全不透明）
+  bar_opacity: 0
+
+  # 永远置顶（false=允许其他窗口遮挡悬浮条）
+  always_on_top: true
+
+  # 录音中按删除键（Backspace/Delete）打断录音
+  interrupt_on_delete: true
+  # 鼠标左键点击悬浮条任意位置时打断当前录音
+  interrupt_on_click: false
+
+  # 永久为管理员启动：每次启动自动弹出 UAC 请求提权（拒绝则以普通权限继续）
+  # 目标游戏以管理员运行时，本程序也需管理员运行才能注入文字（UIPI 权限隔离）
+  always_admin: false
+
+  # 识别引擎在右键菜单中的分组顺序（逗号分隔的 provider 键）
+  # 可在 设置 → 常规 → "识别引擎排序" 用上下按钮调整
+  engine_order: "aliyun,volcengine,xfyun,tencent,funasr"
+
+  # 设置界面主题内部键（minimal_dark / fluent_light；显示名随界面语言）
+  settings_style: "minimal_dark"
+
+  # 字体：用户配置优先，都未配置用内置默认（优先级从高到低）
+  # 1) font_file：.ttf / .otf 文件路径（相对路径基于程序目录，如 "fonts/xxx.ttf"）
+  #    例: "C:\\Fonts\\MyFont.otf"
+  # 2) font_family：系统已装字体的 family 名（仅 Windows 常用中文）
+  #    例: "Microsoft YaHei UI" / "PingFang SC" / "SimHei"
+  # 3) 都不填：内置默认字体（fonts/AlibabaPuHuiTi-3-65-Medium.ttf 普惠体
+  #    Medium）；文件缺失（如构建未投放 fonts/）退回 Qt 默认字体
+  # 运行时也可通过悬浮条右键 → "选择字体文件" 即时切换，
+  # "恢复默认字体" 即清空 font_file 回到上述内置默认
+  font_file: ""
+  font_family: ""
+  font_size_bar: 13         # 悬浮条主文字 / 错误提示
+  font_size_app: 9          # 应用默认（影响右键菜单等）
+
+# 文本注入配置
+injection:
+  method: "simulate_keys"   # simulate_keys（逐字直发，兼容禁止粘贴的程序，默认） | clipboard_paste（快）
+  paste_delay_ms: 50        # 写入剪贴板后等待多久再模拟粘贴
+  keep_clipboard: false     # 保留剪贴：识别结果留在剪贴板（占用剪贴板，会覆盖图片/文件；Ctrl+V 可随时重复粘贴）
+  game_mode: false          # 游戏模式：强制剪贴板粘贴注入（不降级逐字、粘贴后不恢复剪贴板）；用于逐字输入无效的游戏等自绘输入框
+  replace_intermediate: true# 实时识别时是否边说边替换中间结果
+
+# AI 文本修正（可选）：识别结果先注入原文，后台调 LLM 修正后替换
+# OpenAI 兼容协议：OpenAI / DeepSeek / Moonshot / 智谱 / 通义 / 本地 Ollama / vLLM
+llm:
+  enable: false             # 开关（默认关，opt-in）
+  base_url: "https://api.deepseek.com/v1"  # DeepSeek 默认；OpenAI: https://api.openai.com/v1 | Ollama: http://localhost:11434/v1
+  api_key: ""               # Bearer 认证密钥（本地 Ollama 可填任意值）
+  model: "deepseek-flash"  # DeepSeek Flash（便宜快，支持关闭思考）
+  timeout_ms: 3000          # 超时直接用原文，不阻塞
+  prompt: ""                # 修正 prompt：留空按界面语言用内置模板（zh/en）；自定义时必须含 {text} 占位符
+  disable_thinking: true    # 关闭思考：请求附加禁用思考参数（DeepSeek V4/智谱/Qwen3/OpenAI o 系支持；旧版 R1 不支持需换模型）
+  batch_sentences: 3        # 累积几句修正一次：1=每句即时修正；2+ 攒够 N 句一次修正（省 API 调用）
+  batch_idle_ms: 1000       # 累积模式下距上句静音超过此时长（毫秒）也触发修正
+  history_context: false    # 附带历史上下文：修正时把最近 15 条历史记录一并发给 AI 作语境参考（仅参考不修正；增大 token 消耗）
+
+# 语音命令模式
+commands:
+  enable: false              # 总开关（默认关，按需开启）；false=触发词当普通文本上屏
+  prefix: "听我说"          # 触发词：录音中句首命中进入命令态（该句不上屏）；单独说进入待命态等下一句
+  hotkey: "ctrl+shift+g"     # 命令待命热键：按下立即开始录音并进入待命态（下一句直接当命令，免说触发词）；留空=不启用
+  ai_prefix: "帮我"          # AI 命令前缀：「听我说 帮我润色」对选中文本做 AI 变换（需配置 llm.api_key）
+  ai_thinking: true          # 「帮我」AI 命令思考模式（默认开，慢但更准；与 AI 修正的 disable_thinking 独立）
+  ai_prompt_template: "用户选中了一段文本，并对它下了一条语音指令。按指令处理选中的文本，直接输出处理结果，不要输出任何解释、开场白或引号。\n\n选中的文本：\n{selection}\n\n语音指令：{command}"  # 「帮我」AI 提示词模板：留空=内置默认透传模板；自定义时用 {selection}/{command} 两个占位符
+  phrases_enable: false      # 自定义短语（需先开 enable）：「触发词 + 短语名」插入预设文本；词表存 ~/.asr_voice/phrases.json（设置界面编辑）
+  standby_seconds: 8         # 待命态超时秒数：单独说触发词后等待命令的时间
+
+# 录音配置
+recording:
+  mode: "realtime"          # realtime 实时流式（逐字同步）| sentence 一句话识别（说完再出）
+  auto_stop_seconds: 10     # 无语音超过此时长自动停止录音，0=不自动停止
+  max_session_seconds: 60   # 单次录音硬超时秒数：超过强制停止（兜底防底噪贴阈值停不下来），0=不限时
+  live_intermediate: true   # 逐字同步：中间(未断句)结果实时写入输入框，新增字增量追加、ASR 回头修正才退格重打（微软/讯飞行为）；false=仅断句才上屏。逻辑锁：llm.enable=true、injection.method=clipboard_paste、语音命令或游戏模式启用时强制视为关闭（对应锁解除后自动恢复）
+  pause_background_audio: false   # 暂停播放：录音时真暂停后台媒体（浏览器/播放器等），停止后自动恢复；右键菜单「程序行为」可切换（默认关，opt-in）
+  mute_background_audio: false    # 全局静音：录音时静音全部后台声音（含游戏），停止后自动恢复；可单独使用，也可与暂停播放叠加
+  mute_only_game_mode: false      # 仅游戏模式下静音：开启后全局静音只在游戏模式也开着时执行（避免日常录音误静音音乐/视频）
+
+# 实时语音对话（豆包端到端 S2S 大模型）：按热键或右键菜单进入，
+# 可随时插话打断 AI（barge-in），说"退出/再见"或再按热键结束
+dialog:
+  # 总开关：关闭后右键菜单「语音对话」、对话热键与悬浮条对话入口全部隐藏，
+  # 设置页「语音对话」保留可随时重开；改动立即生效（菜单每次右键重建、
+  # 热键随配置热加载重注册），无需重启
+  enable: false
+  # 服务提供商：doubao=豆包 S2S（默认，向后兼容）| aliyun=阿里云百炼 Qwen-Audio Realtime
+  #             | hermes=自建 Hermes Agent（见下方 hermes 子节）
+  # 切换后设置页「语音模式」下方字段组随之显隐；三家共用 enable/output_device/half_duplex/auto_reconnect
+  provider: "doubao"
+  # 密钥（三留空=自动回退复用 volcengine 节的密钥，已填火山的可开箱即用）：
+  #   新版单密钥：填 api_key（控制台"API Key 管理"生成）
+  #   旧版双密钥：填 app_id + access_token（与识别共用的火山应用即可）
+  api_key: ""
+  app_id: ""
+  access_token: ""
+
+  # 模型与人设（bot_name/system_role/speaking_style 仅 O 版本生效）
+  model: "1.2.1.1"           # 1.2.1.1=O2.0 通用对话 | 2.2.0.0=SC2.0 角色扮演
+  bot_name: "小爱"            # AI 自称的名字（≤20 字符）
+  system_role: ""            # 角色描述，如"你是一位温柔的天气助手，回答简洁"
+  speaking_style: ""         # 语气偏好，如"轻松幽默，多用短句"
+  character_manifest: ""     # SC2.0 角色扮演的人设描述（与上面三个互斥，仅 SC 版本生效）
+
+  # 音色与播报
+  speaker: "zh_female_vv_jupiter_bigtts"  # 发音人；SC2.0 克隆音色（saturn_/S_ 开头）可直接填名称
+  speech_rate: 0             # 语速 [-50,100]，仅 2.0 版本生效
+  loudness_rate: 0           # 音量 [-50,100]，仅 2.0 版本生效
+  output_device: ""          # AI 语音播放设备名（子串匹配）；空=系统默认输出
+
+  # 收音与判停
+  end_smooth_window_ms: 800  # 判停窗口 [500,50000]：静音多久算一句话说完；越小越跟手，太短易把停顿误判成说完
+  half_duplex: false         # 半双工：AI 播报时暂停收音（外放防自我打断；戴耳机保持关闭）
+
+  # 会话行为
+  enable_user_query_exit: true   # 说"退出/再见"自动结束对话
+  keep_context: true             # 下次进入对话续接最近 20 轮上下文
+  auto_reconnect: true           # 服务出错/长空闲自动重建会话（每轮最多 1 次）
+  strict_audit: true             # 服务端安全审核等级（文档默认 true）
+
+  # ---- 阿里云 Qwen-Audio Realtime 专属（provider: aliyun 时生效）----
+  # api_key 留空自动回退复用上面 aliyun 节的百炼 Key（已填的可开箱即用）
+  qwen:
+    region: "legacy"          # legacy=旧域名公共端点（免 WorkspaceId）| beijing | singapore（新域名，需 workspace_id）
+    workspace_id: ""          # 新域名（beijing/singapore）必填；legacy 留空
+    api_key: ""               # 留空自动复用 aliyun.api_key
+    model: "qwen-audio-3.0-realtime-plus"   # plus（更强）| flash（更快）；联网搜索仅此两模型生效
+    voice: "longanqian"       # longanqian/longanlingxin/longanlingxi/longanxiaoxin/longanlufeng
+    instructions: ""          # 系统指令（人设/风格，对应豆包 system_role）
+    turn_detection: "server_vad"   # server_vad（可调阈值/静音）| smart_turn（模型自动判停）
+    vad_threshold: 0.5        # [-1.0,1.0]，仅 server_vad；越大越不易触发
+    silence_duration_ms: 800  # [200,6000]，仅 server_vad；静音多久算说完
+    enable_speech_emotion: true   # 识别用户语音情绪并影响回复
+    max_history_turns: 20     # [1,50]，单会话内历史轮数（Qwen 无跨连接续接，重连即新会话）
+    enable_search: false      # 联网搜索，仅 plus/flash 生效
+
+  # ---- Hermes Agent 专属（provider: hermes 时生效）----
+  # 用户自建的 hermes-agent API server（OpenAI 兼容 HTTP）：只提供文本、不提供
+  # 音频，断句与识别都由本端补齐，故配合下方的「对话专属识别」使用
+  hermes:
+    base_url: ""              # 如 http://192.168.0.242:8642（不含 /v1；误填 /v1 会自动剥掉）
+    api_key: ""               # 即服务器 ~/.hermes/.env 的 API_SERVER_KEY（留空=保存时不覆盖已填密钥）
+    model: "hermes-agent"     # Hermes 侧的模型标识，通常保持默认
+    session_title: "ORI 语音对话"   # 每轮进入对话在服务端建的会话标题（仅便于在 Hermes 侧辨认）
+    system_hint: "以下是用户的语音识别结果，可能有同音错别字或缺少标点，请结合上下文理解后再回答。"
+    connect_timeout_ms: 5000  # 健康检查与建会话的超时 [毫秒]
+    turn_timeout_ms: 60000    # 单轮回答上限 [毫秒]；Hermes 可能调用工具，实测纯文本轮也要 5.5~7.9 秒
+
+  # ---- 对话专属识别（新增）----
+  # 留空 = 跟随顶部 engine，行为与升级前完全一致；显式填写才覆盖。
+  # 用于「听写用中文引擎 + 对话用中英混说引擎」而不互相牺牲（见设计文档 §八）
+  asr:
+    engine: ""                # 留空 = 跟随顶部 engine；可选 tencent / aliyun
+    model: ""                 # 留空 = 该引擎默认档；腾讯可填 16k_zh_en_2.0 / 16k_multi_lang
+    lang: ""                  # 语种；阿里云可填 zh,en
+    hotword: ""               # 热词；腾讯填热词表 ID，阿里云填百炼控制台的热词表 ID
+
+# 日志配置
+logging:
+  level: "INFO"             # DEBUG | INFO | WARNING | ERROR
+  file: "logs/asr_voice.log"
+  max_size_mb: 5            # 仅作兼容保留，实际按天滚动（见 retention_days）
+  backup_count: 3           # 仅作兼容保留
+  retention_days: 30        # 保留天数：启动时删除超过该天数的旧日志；设置界面可改
