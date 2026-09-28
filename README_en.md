@@ -32,7 +32,7 @@
 
 Its core design is **no engine lock-in, dictation behavior is yours to define**: four high-accuracy real-time streaming cloud recognition engines, plus the offline local FunASR engine (Paraformer-zh-streaming) — switch them and the text injection method freely from the right-click menu. Around the dictation pipeline it offers AI features, voice commands and AI real-time voice conversation, each toggleable on demand.
 
-> Headphones are recommended to keep speaker echo from interfering with recognition. For the complete guide see the [User Manual](docs/User_Doc_en.md).
+> Headphones are recommended to keep speaker echo from interfering with recognition. For the complete guide see the [User Manual](docs/User_Doc_en.md) — demo video: [Bilibili](https://www.bilibili.com/video/BV1yAaV68Evr)
 
  ![ori](docs/ori.gif)
 
@@ -162,17 +162,3 @@ docs/               # documentation
 - Cloud recognition engines: recorded audio and recognition results are sent to the cloud provider you configured (Alibaba Cloud / Tencent Cloud / iFLYTEK / Volcengine); please review each provider's privacy policy yourself
 
 - Local FunASR engine: audio and recognition stay entirely on your machine; nothing is uploaded
-
-## Code signing policy
-
-Windows builds published on GitHub Releases are code signed using a free certificate from the open-source community:
-
-> Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
-
-Signing roles (a solo project — all three roles are the same person):
-
-- Authors / Reviewers / Approvers: [@LangeHeris](https://github.com/LangeHeris)
-
-Privacy policy: [docs/PRIVACY_POLICY.md](docs/PRIVACY_POLICY.md)
-
-> Note: until the SignPath review completes, releases remain **unsigned** (verify them against the bundled `SHA256SUMS.txt`, see [Downloads](#downloads)).
