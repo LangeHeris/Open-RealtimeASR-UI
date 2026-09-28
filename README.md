@@ -32,7 +32,7 @@
 
 它的核心设计是**不锁定引擎、自定义听写行为**：云端四家高精度实时流式识别引擎，外加离线本地引擎 FunASR（Paraformer-zh-streaming），右键菜单里自由切换文本注入方式，听写链路上的 AI 功能、语音命令与 AI 实时语音对话，每项都能按需开关。
 
-> 建议在耳机环境下使用，以免扬声器回声干扰识别。完整操作说明见 [用户说明书](docs/User_Doc_zh.md)。
+> 建议在耳机环境下使用，以免扬声器回声干扰识别。完整操作说明见 [用户说明书](docs/User_Doc_zh.md) 演示视频见 [Bilibili](https://www.bilibili.com/video/BV1yAaV68Evr)
 
  ![ori](docs/ori.gif)
 
@@ -191,18 +191,3 @@ docs/               # 文档
 
 - 商店版与本地自行构建的打包版内置[阿里巴巴普惠体 3.0](https://www.iconfont.cn/fonts/detail?cnid=adI1E7HF7yme)（55 Regular / 65 Medium / 85 Bold 三个字重）作为默认界面字体；GitHub Release 的 CI 产物**不内置字体**（`fonts/` 目录不入仓），界面自动回退系统字体。该字体由阿里巴巴集团发布并保留版权，面向全社会**永久免费商用**（个人与企业均可，无需署名）；本项目仅原样内置分发官方字体文件，未做修改、转换或再分发授权。授权要点与官方声明链接见 [THIRD\_PARTY\_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-## Code signing policy
-
-GitHub Releases 的 Windows 构建由 SignPath 开源社区提供的免费代码签名服务签署：
-
-> Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)
-
-签名角色（个人项目，三种角色为同一人）：
-
-- Authors / Reviewers / Approvers：[@LangeHeris](https://github.com/LangeHeris)
-
-隐私政策：[docs/PRIVACY_POLICY.md](docs/PRIVACY_POLICY.md)
-
-> 注：SignPath 审核通过前，Release 暂为**未签名**包（可用 `SHA256SUMS.txt` 核对哈希，方法见[下载途径](#下载途径)）。
-
-  
