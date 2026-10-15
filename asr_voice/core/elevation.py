@@ -1,30 +1,12 @@
 r"""管理员提权与「永久为管理员启动」。
 
-右键菜单「程序提权」（即时一次性提权）与 ui.always_admin（永久为
-管理员启动）共用这里的实现。
+右键菜单「程序提权」（一次性 UAC）与 ui.always_admin（永久管理员启动）共用此处。
+永久启动用登录计划任务（schtasks /RL HIGHEST）：Windows 不允许普通进程静默提权、
+runas 每次必弹 UAC，而登录计划任务由系统提权拉起、普通权限也能 /Run 触发，均不弹
+UAC；提权实例启动时对账自愈（开关开着缺任务则补建，关着有残留则清理）。
+「程序提权」走 ShellExecuteW runas + `--replace` 单实例接管，每次弹 UAC 属预期。
 
-「永久为管理员启动」为什么用计划任务：Windows 不允许普通进程静默
-获得管理员权限，runas 提权每次必弹 UAC；而"以最高权限运行"的登录
-计划任务（schtasks /RL HIGHEST）由系统在登录时提权拉起，普通权限
-进程也能用 schtasks /Run 触发——两条路径都不弹 UAC。因此：
-
-- 首次开启：UAC 确认一次后，由提权实例创建计划任务（登录触发 +
-  手动触发共用；命令与开机自启同款 --hidden 静默启动）
-- 之后开机：计划任务直接以管理员拉起，不弹 UAC；手动双击等普通
-  启动检测到开关开启时触发计划任务（无 UAC）后自身退出
-- 关闭开关：删除计划任务（普通权限删失败时弹一次 UAC 提权删）
-- 提权实例启动时自动对账自愈：开关开着但任务缺失则补建，开关关着
-  但任务残留则清理
-
-「程序提权」（右键菜单）：ShellExecuteW runas 拉起提权实例携带
---replace（单实例接管协议，见 app._acquire_single_instance），
-每次弹一次 UAC，属预期行为。
-
-游戏模式开启后的提权询问（should_prompt_elevation）：游戏常以管理员运行，
-普通权限的合成输入会被 UIPI 静默丢弃，故开启游戏模式时主动问一次
-（仅未提权时，每次都问），确认则走上述「程序提权」同一条路径。与注入
-时的事后提示（app._on_inject_requested 里的权限差检测）互补：那里只告知
-需提权、不给操作入口。
+游戏模式开启后的提权询问：游戏常以管理员运行，普通权限的合成输入被 UIPI 静默丢弃，开启时问一次。
 """
 from __future__ import annotations
 
@@ -58,14 +40,8 @@ def is_elevated() -> bool:
 def should_prompt_elevation(enabled: bool, elevated: bool | None = None) -> bool:
     """开启游戏模式后是否该询问「是否以管理员身份重启」。
 
-    三个条件同时成立才问：
-    - `enabled`：关闭游戏模式不需提权，问了是干扰；
-    - Windows：其余平台没有 UAC 提权路径（`relaunch_elevated` 恒返回 False）；
-    - 当前未提权：已是管理员时提问没有意义（`_on_elevate` 只会回一句提示）。
-
-    `elevated` 可注入（None = 实时查 `is_elevated()`），便于离线单测。
-    与注入时的事后提示（app._on_inject_requested 里的 UIPI 权限差检测）互补：
-    这里是事前主动询问且带一键操作入口，那里是注入真失败后的证据提示。
+    三者同时成立才问：`enabled`（关闭不需提权）、Windows（否则无 UAC 路径）、
+    当前未提权（已是管理员时提问无意义）。`elevated` 可注入便于单测。
     """
     if not enabled or sys.platform != "win32":
         return False
@@ -83,7 +59,7 @@ def _quoted_args() -> str:
 
 
 def _launch_target() -> tuple[str, str]:
-    """提权重启目标 (exe, 参数)：打包版=exe 本身；商店版=launcher.exe；源码版=pythonw + run.py。"""
+    """提权重启目标 (exe, 参数)：打包版=exe 本身；发行构建=launcher.exe；源码构建=pythonw + run.py。"""
     params = _quoted_args()
     if getattr(sys, "frozen", False):
         return sys.executable, params
@@ -125,7 +101,7 @@ def relaunch_elevated() -> tuple[bool, str]:
         if ret > 32:
             return True, "提权实例已启动"
         if ret == 5:
-            # ERROR_ACCESS_DENIED：用户在 UAC 确认框里点了「否」。与其它失败分开，
+            # ERROR_ACCESS_DENIED：用户在 UAC 确认框里点了「否」。与其它失败分开
             # 调用方据此回滚「永久为管理员启动」开关（拒绝 ≠ 已启用，见
             # settings_dialog 的 admin 行）
             return False, "用户取消了 UAC 确认"
@@ -283,11 +259,9 @@ def delete_admin_task() -> tuple[bool, str]:
 
 
 def relaunch_if_configured(cfg) -> bool:
-    """「永久为管理员启动」启动期判定（main 启动早期调用）。
-    返回 True 表示调用方应立即退出当前实例。
+    """「永久为管理员启动」启动期判定（main 启动早期调用）；返回 True 表示调用方应立即退出当前实例。
 
-    提权实例顺带对账自愈：开关开着但任务缺失则补建（首次开启后的
-    落地动作）、开关关着但任务残留则清理（关闭时删除失败的兜底）。
+    提权实例顺带对账自愈：开关开着但任务缺失则补建，开关关着但任务残留则清理。
     """
     import logging
 
@@ -329,7 +303,7 @@ def relaunch_if_configured(cfg) -> bool:
             log.info("永久管理员启动：提权实例已在运行，本进程退出")
             return True
         log.warning("计划任务触发失败，回退 UAC 提权")
-    # 任务不存在（首次开启 / 被删 / 被禁用）：UAC 拉起提权实例，
+    # 任务不存在（首次开启 / 被删 / 被禁用）：UAC 拉起提权实例
     # 由它在 relaunch_if_configured 的提权分支补建任务
     ok, msg = relaunch_elevated()
     if ok:

@@ -15,9 +15,11 @@ import logging
 import sys
 
 from .config.loader import describe_config, get_config_unchecked, is_configured
+from .core import hard_exit
 from .logging_setup import _is_frozen, setup_logging
 from .msgbox import show_error
 from .steam_integration import is_steam_build
+from .steam_integration import external_services_allowed as _external_services_allowed
 
 # 退出码（见上方 docstring）
 EXIT_OK = 0
@@ -26,19 +28,19 @@ EXIT_CONFIG = 3
 EXIT_DEPENDENCY = 4
 EXIT_RUNTIME = 5
 
-# 发行层默认引擎：商店版内置离线引擎（funasr）开箱即用，GitHub 版不干预
+# 发行层默认引擎：发行构建内置离线引擎（funasr）开箱即用，源码构建不干预
 STEAM_DEFAULT_ENGINE = "funasr"
 
 
 def _default_engine() -> str | None:
-    """发行层默认引擎：商店版 funasr（内置离线引擎开箱即用），GitHub 版 None。"""
+    """发行层默认引擎：发行构建 funasr（内置离线引擎开箱即用），源码构建 None。"""
     return STEAM_DEFAULT_ENGINE if is_steam_build() else None
 
 
 def check_microphone() -> bool:
-    """商店版启动检测默认输入设备；缺失弹明确提示并返回 False。
+    """发行构建启动检测默认输入设备；缺失弹明确提示并返回 False。
 
-    只在 商店版调用：开源版用户多半自己知道有没有麦克风，且很多人用
+    只在发行构建调用：源码构建用户多半自己知道有没有麦克风，且很多人用
     虚拟设备/远程桌面，探测失败却强退会很烦人。
     """
     try:
@@ -47,12 +49,10 @@ def check_microphone() -> bool:
         sd.query_devices(kind="input")
         return True
     except Exception as exc:
-        # ImportError（缺 sounddevice / PortAudio DLL）与「真的没设备」对用户的
-        # 处置一样（都录不了），所以仍弹同一句；但前者是打包事故而不是用户
-        # 环境问题，日志里留 traceback 便于事后区分。
-        # 注意：main() 里的 logger 是 setup_logging 之后才建的局部变量，
-        # 本函数可能在它之前被调，故这里自己取同名 logger。
-        # 日志串不 i18n：全项目日志都是中文，A10 只验收界面文案。
+        # ImportError（缺 sounddevice / PortAudio DLL）与「真的没设备」都录不了，
+        # 故弹同一句；但前者是打包事故，日志留 traceback 便于事后区分。
+        # 本函数可能在 setup_logging 之前被调，故自取同名 logger。
+        # 日志不 i18n（全项目日志都是中文，只验收界面文案）。
         logging.getLogger("asr_voice").error(
             "麦克风检测失败：%s", exc, exc_info=True)  # noqa: i18n
         from .i18n import t
@@ -62,16 +62,10 @@ def check_microphone() -> bool:
 
 
 def _maybe_restore_cloud_config(target, explicit_config: str = "") -> None:
-    """新机首启：把**本次刚生成的**默认配置换成 云上那份（脱敏）。
-
-    `target` 直接取 `ensure_default_config()` 的返回值——它非 None 就说明
-    config.yaml 是这一次刚创建出来的，本地本来没有任何用户配置。这样
-    「绝不覆盖用户已有配置」是结构性保证，不必再判断文件新旧；也顺带
-    复用了它那套目录选择逻辑（打包版 exe 同目录 / 不可写时退到用户主目录），
-    不用在这里抄一遍。
-
-    传了 `--config` 就跳过：那是显式指定的文件，不该被云存档悄悄覆盖。
-    任何失败都只记日志——恢复不了最坏就是走全新配置，绝不能拦启动。
+    """新机首启：把本次刚生成的默认配置换成云上那份（target 非 None = 本次刚创建）。
+    绝不覆盖已有配置；云上有 config.full.yaml 即按它恢复（含密钥），否则退回脱敏版，
+    密钥能否进本地取决于云上文件而非开关。传 --config 跳过；失败只记日志不拦启动，
+    日志只记文件名与是否含密钥、不打印任何取值。
     """
     if target is None or explicit_config or not is_steam_build():
         return
@@ -82,7 +76,9 @@ def _maybe_restore_cloud_config(target, explicit_config: str = "") -> None:
     try:
         from pathlib import Path
 
-        from .steam_integration import get_integration, merge_cloud_config
+        from .steam_integration import (
+            CLOUD_CONFIG_NAME, CLOUD_FULL_CONFIG_NAME, get_integration,
+            merge_cloud_config)
 
         integ = get_integration()
         if not integ.init():
@@ -91,27 +87,48 @@ def _maybe_restore_cloud_config(target, explicit_config: str = "") -> None:
         from .config.loader import _atomic_write
 
         target = Path(target)
-        raw = integ.cloud_read("config.steamcloud.yaml")
+        raw = integ.cloud_read(CLOUD_FULL_CONFIG_NAME)
+        allow_secrets = bool(raw)
+        source = CLOUD_FULL_CONFIG_NAME if allow_secrets else CLOUD_CONFIG_NAME
+        if not raw:
+            raw = integ.cloud_read(CLOUD_CONFIG_NAME)
         if not raw:
             return
         import yaml
 
         cloud = yaml.safe_load(raw.decode("utf-8")) or {}
-        # local 传空字典：本地文件都还不存在，全靠云补；密钥不会跟着进来
-        # （merge_cloud_config 的规则 1）。
-        merged = merge_cloud_config({}, cloud)
+        # local 传空字典：本地文件都还不存在，全靠云补。
+        # allow_secrets 只在「云上确实有含密钥那份」时为 True——
+        # 那份是用户自己开同步时写上去的。
+        merged = merge_cloud_config({}, cloud, allow_secrets=allow_secrets)
         target.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(target, yaml.safe_dump(
             merged, allow_unicode=True, sort_keys=False))
-        log.info("已从 Steam 云恢复配置：%s", target)
+        log.info("已从 Steam 云恢复配置：%s（来源 %s，含密钥 %s）",
+                 target, source, "是" if allow_secrets else "否")
     except Exception:
         log.warning("云存档恢复失败，改用全新配置", exc_info=True)
 
 
 def main() -> int:
+    """进程入口：跑完 `_main()` 后**强制结束进程**（正常返回时走不到 `return`）。
+    `sys.exit()` 走 `ExitProcess`，其 DLL detach 需 loader lock，任一线程卡在原生库即退不掉；
+    故接住退出码后直接 `TerminateProcess`，所有早退路径都收敛到这一个出口（详见 `core/hard_exit.py`）。
+    """
+    try:
+        rc = _main()
+    except SystemExit as exc:
+        # argparse --help / --version 走的是这条路。它的异常一样会落回
+        # ExitProcess，一样可能挂在 DLL detach 上，所以也要接住后硬退。
+        rc = exc.code if isinstance(exc.code, int) else EXIT_OK
+    hard_exit.finish_and_terminate(rc)
+    return rc               # pragma: no cover - Windows 上 terminate 不返回
+
+
+def _main() -> int:
     # 界面语言尽早定，且在拿到配置后再校正一次：
-    # argparse 的 description/help、配置加载失败时的报错框都构建于 config 之前，
-    # 若等到那时才定语言，它们会永久停在默认 zh（A6 把它们换成 t() 之后尤其致命）。
+    # argparse 的 description/help、配置加载失败时的报错框都构建于 config 之前
+    # 若等到那时才定语言，它们会永久停在默认 zh（把它们换成 t() 之后尤其致命）。
     from .i18n import apply_configured_language as _apply_ui_language, t
 
     _apply_ui_language("")
@@ -127,7 +144,7 @@ def main() -> int:
     except Exception:
         pass
 
-    # 静默启动标志：开机自启命令携带 --hidden（仅托盘常驻，悬浮条不弹，
+    # 静默启动标志：开机自启命令携带 --hidden（仅托盘常驻，悬浮条不弹
     # 热键按下时悬浮条自然呼出）；手动启动不带参数，悬浮条正常显示。
     # 打包版不跑 argparse，直接查 argv（exe 可正常接收命令行参数）
     start_hidden = "--hidden" in sys.argv[1:]
@@ -157,7 +174,7 @@ def main() -> int:
     try:
         from .config.loader import ensure_default_config
         created = ensure_default_config(default_engine=_default_engine())
-        # 商店版新机首启：本次刚生成默认配置时，若云上有存档就换成云上那份
+        # 发行构建新机首启：本次刚生成默认配置时，若云上有存档就换成云上那份
         # （created 为 None = 本地本来就有配置，此时一行都不动）
         _maybe_restore_cloud_config(created, config_arg)
 
@@ -170,25 +187,36 @@ def main() -> int:
 
     setup_logging(cfg)
     logger = logging.getLogger("asr_voice")
+    # 引擎校正：外部服务不可用时不许配置里留云端引擎（详见函数 docstring）。
+    # 必须排在 is_configured() 判断之前——那条日志要反映校正后的真实状态
+    # 而且不校正的话紧接着的 start_session 会弹"请填写密钥"死路提示。
+    # 外部服务可用时这里是 no-op，已就绪的配置不受影响。
+    from .config.loader import enforce_offline_engine
+    enforce_offline_engine(cfg, path=config_arg)
     if is_configured(cfg):
         logger.info("配置就绪：%s", describe_config(cfg))
     elif getattr(cfg, "engine", "") == "funasr":
-        logger.warning(
-            "本地引擎依赖（funasr）不可用：打包版不含本地引擎依赖"
-            "（funasr + torch 体积过大），请改用云端引擎或以源码方式运行"
-        )
+        if _external_services_allowed():
+            logger.warning(
+                "本地引擎依赖（funasr）不可用：打包版不含本地引擎依赖"
+                "（funasr + torch 体积过大），请改用云端引擎或以源码方式运行"
+            )
+        else:
+            # 发行构建本机就带离线引擎，到这一步说明模型或依赖没就绪；
+            # 不能像源码构建那样建议「改用云端引擎」——这边没有云端引擎入口。
+            logger.warning(
+                "内置离线引擎未就绪：请检查安装目录是否完整（验证游戏文件完整性），"
+                "或查看日志了解详情"
+            )
     else:
         logger.warning(
             "当前引擎（%s）密钥未配置，程序将启动但无法录音，请右键悬浮条 -> 设置填写密钥",
             getattr(cfg, "engine", "?"),
         )
 
-    # 麦克风缺失：**只警示，不拦启动**。
-    # 早先按任务书写成 return EXIT_RUNTIME，但远程桌面、虚拟声卡、驱动瞬时
-    # 不可用都会让探测失败——那些场景下 商店版会彻底打不开，且平台可能
-    # 把非 0 退出码当崩溃上报。改成与上面「密钥未配置」一致的处理：说清楚，
-    # 但让程序起来（用户能进设置、插上麦后直接用）。
-    # 放在提权重启之前——缺麦克风时拉起管理员进程毫无意义。
+    # 麦克风缺失：只警示，不拦启动——远程桌面/虚拟声卡/驱动瞬时不可用都会探测失败，
+    # 强退会让发行构建打不开，且非 0 退出码可能被平台当崩溃上报（与「密钥未配置」同理）。
+    # 放在提权重启之前：缺麦克风时拉起管理员进程毫无意义。
     if is_steam_build() and not check_microphone():
         logger.warning("未检测到麦克风，程序仍将启动，但录音不可用")
 

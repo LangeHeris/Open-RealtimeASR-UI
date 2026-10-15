@@ -21,11 +21,9 @@ import yaml
 
 from .defaults import DEFAULTS
 
-# 进程内写锁：update_config_field 是"读-改-写"操作，设置页多个后台写
-# 线程（引擎排序/显隐开关等）并发时窗口重叠会产生撕裂文件（曾出现行尾
-# 残留"alse"导致 YAML 解析失败、热加载报错），必须串行化。
-# 跨进程安全由 _atomic_write 保证（临时文件 + os.replace，读方永远
-# 看不到中间态）；锁只负责进程内线程串行。
+# 进程内写锁：update_config_field 是"读-改-写"操作，设置页多个后台写线程并发
+# 会撕裂文件，必须串行化。跨进程安全由 _atomic_write 保证（临时文件 + os.replace，
+# 读方见不到中间态）；本锁只负责进程内线程串行。
 _CONFIG_WRITE_LOCK = threading.Lock()
 
 
@@ -101,7 +99,7 @@ def find_config_path() -> Path | None:
         candidates.append(exe_dir / "config.yaml")
         candidates.append(exe_dir / "config" / "config.yaml")
     else:
-        # 源码模式：项目根。开机自启等场景工作目录是 system32，
+        # 源码模式：项目根。开机自启等场景工作目录是 system32
         # 相对路径候选全部落空，必须锚定源码位置
         src_root = Path(__file__).resolve().parent.parent.parent
         candidates.append(src_root / "config" / "config.yaml")
@@ -131,16 +129,8 @@ def _default_config_template() -> Path | None:
 def ensure_default_config(default_engine: str | None = None) -> Path | None:
     """首次运行自动生成 config.yaml（基于 config.example.yaml 模板）。
 
-    没有配置文件时 update_config_field 会静默失败（设置界面填的密钥
-    不持久化），必须在启动早期保证文件存在：
-    - 打包版：生成到 exe 同目录；目录不可写（如 Program Files）时
-      退到 ~/.asr_voice/config.yaml
-    - 源码版：生成到仓库 config/config.yaml（已被 .gitignore 排除）
-
-    default_engine 非空时，生成文件里的 engine 行改写为发行默认引擎
-    （商店版 funasr，内置离线引擎开箱即用）。
-
-    已有配置文件时为 no-op。返回生成路径，无法生成返回 None。
+    没有配置文件时 update_config_field 会静默失败（密钥不持久化），必须启动早期保证存在，
+    目录不可写时退到 ~/.asr_voice/config.yaml。default_engine 非空则改写 engine 行。
     """
     import logging
 
@@ -155,9 +145,9 @@ def ensure_default_config(default_engine: str | None = None) -> Path | None:
     logger = logging.getLogger(__name__)
     if default_engine:
         # 模板固定 engine: "aliyun"；发行默认引擎改写首行 engine。
-        # 用 subn 取替换计数：0 说明模板形状与预期不符（BOM/缩进/键名不同），
+        # 用 subn 取替换计数：0 说明模板形状与预期不符（BOM/缩进/键名不同）
         # 改写会静默落空——写盘后 _load_user_data 会把 aliyun 读成用户显式
-        # 选择，读时默认也一并失效，商店版会静默跑错引擎，故必须兜底。
+        # 选择，读时默认也一并失效，发行构建会静默跑错引擎，故必须兜底。
         content, n = re.subn(r'^engine:.*$', f'engine: {default_engine}', content,
                              count=1, flags=re.MULTILINE)
         if n == 0:
@@ -247,10 +237,8 @@ def _load_user_data(path: str | Path | None = None) -> dict:
 def _range_error(val: Any, cast, lo: float, hi: float, label: str) -> str | None:
     """校验数值范围（豆包 / Qwen 的 dialog 数值字段共用）。
 
-    config.yaml 经 _coerce_types 只归一化「能安全转换」的字符串，垃圾值
-    （如 speech_rate: "abc"）会原样保留；本函数契约是「返回错误文案而非
-    抛异常」——validate_config 承诺返回错误列表，绝不能因用户手改错类型
-    崩在启动路径上。非法类型/溢出 → 非法数值；超范围 → 超出范围；合法 → None。
+    _coerce_types 只归一化能安全转换的字符串，垃圾值会原样保留；契约是「返回错误文案而非
+    抛异常」——validate_config 承诺返回错误列表，不能因用户手改类型崩在启动路径上。
     """
     try:
         num = cast(val)
@@ -406,7 +394,7 @@ def validate_config(cfg: dict) -> list[str]:
     return errors
 
 
-# ui.theme_name 的历史中文显示名 → 内部键（spec A4）。主题键参与持久化、
+# ui.theme_name 的历史中文显示名 → 内部键（spec A4）。主题键参与持久化
 # 将来还要过 i18n，不能存界面语言相关的名字。含两个已下线的品牌旧名
 # （Mabinogi 即今「凯尔特风格」，大小写两种写法都在野外见过）。
 LEGACY_THEME_NAMES = {
@@ -426,12 +414,8 @@ def _migrate_legacy_theme(cfg_ns: SimpleNamespace,
                           config_path: str | Path | None = None) -> None:
     """一次性迁移：旧中文主题名 → 内部键，就地改 namespace 并回写同一份文件。
 
-    只认得出来的旧名才动，认不出来（第三方主题包）原样保留——不替用户做决定。
-    config_path 必须与本次加载的来源一致（`--config` 场景见 update_config_field
-    注释），否则会把迁移结果写进用户没指定的那份配置。
-
-    回写失败不影响本次运行：内存里已是内部键，下次加载还会再迁；因此写盘异常
-    只 warning 一笔（不打扰用户启动），缺少目标文件则 debug（首次运行属正常）。
+    只认得出来的旧名才动，认不出（第三方主题包）原样保留。config_path 必须与本次加载来源
+    一致，否则迁移结果会写进用户没指定的那份配置。回写失败不影响本次运行（下次加载再迁）。
     """
     ui = getattr(cfg_ns, "ui", None)
     if ui is None:
@@ -450,7 +434,7 @@ def _migrate_legacy_theme(cfg_ns: SimpleNamespace,
         logger.warning("主题名迁移回写失败（下次启动再试）", exc_info=True)
 
 
-# ui.settings_style 的历史中文显示名 → 内部键（A6）。
+# ui.settings_style 的历史中文显示名 → 内部键。
 # 与 theme_name 同一种局面：值写进 config、又要承载界面语言，故一并内部键化。
 LEGACY_SETTINGS_STYLE_NAMES = {
     "极简暗色": "minimal_dark",
@@ -497,7 +481,7 @@ def get_config(path: str | Path | None = None,
     """加载并校验配置，返回 SimpleNamespace。配置不合法时抛出 ValueError。
 
     default_engine：用户配置文件显式含 engine 键时忽略；否则合并结果
-    engine = default_engine（发行层默认引擎，商店版传 funasr）。
+    engine = default_engine（发行层默认引擎，发行构建传 funasr）。
     """
     merged = load_config(path)
     data = _load_user_data(path)
@@ -544,7 +528,7 @@ def is_configured(cfg) -> bool:
     return engine_group_configured(cfg, group)
 
 
-# funasr 依赖可用性缓存：find_spec 只查搜索路径不执行包代码，微秒级，
+# funasr 依赖可用性缓存：find_spec 只查搜索路径不执行包代码，微秒级
 # 但没必要每次构建菜单都查
 _FUNASR_CHECK_TTL = 60.0  # 菜单每次构建都调用，短缓存避免次次扫 sys.path
 _funasr_available_cache: bool | None = None
@@ -554,11 +538,8 @@ _funasr_checked_at: float = 0.0
 def funasr_available() -> bool:
     """funasr 依赖是否可导入（打包版/未安装环境为 False）。
 
-    结果缓存 60 秒：右键菜单/引擎菜单每次构建都会经 presets 与
-    engine_group_configured 调到这里，不能次次扫 sys.path；短缓存
-    兼顾“运行中安装 funasr 后能被发现”（永久缓存则永远看不到）。
-    本函数是全项目唯一实现（I09 去重，原 presets._funasr_available
-    与本模块旧版 _funasr_dependency_available 均已收口至此）。
+    结果缓存 60 秒：菜单每次构建都会调到这里，不能次次扫 sys.path；短缓存兼顾
+    "运行中安装 funasr 后能被发现"（永久缓存则永远看不到）。
     """
     global _funasr_available_cache, _funasr_checked_at
     import time
@@ -579,13 +560,8 @@ def funasr_available() -> bool:
 def engine_group_configured(cfg, group: str) -> bool:
     """检查指定引擎组的密钥是否已配置（右键菜单过滤用）。
 
-    - tencent：检查密钥是否已填写真实值
-    - aliyun：检查百炼 API Key 是否已填写真实值
-    - xfyun：标准版检查 std_app_id/std_api_key，大模型版检查三键均为真实值
-    - volcengine：检查新版 API Key（api_key）或旧版双密钥（access_token+app_id）已填
-    - funasr：无需密钥，返回依赖可用性（打包版不含 funasr/torch）。
-      此判断用于录音启动/就绪判定；右键菜单不再据此隐藏 funasr 组，
-      显隐由设置的 engine_show_funasr 开关控制（见 ui/context_menu.py）
+    tencent/aliyun 查单密钥；xfyun 按 edition 查标准版两键或大模型版三键；volcengine 查新版
+    api_key 或旧版 access_token+app_id。funasr 无需密钥，返回依赖可用性（不再据此隐藏菜单项）。
     """
     if isinstance(cfg, dict):
         t = cfg.get("tencent", {})
@@ -652,14 +628,10 @@ def engine_group_configured(cfg, group: str) -> bool:
 
 
 def resolve_dialog_credentials(cfg) -> tuple[str, str, str]:
-    """对话模式密钥：`dialog` 节优先，逐字段留空则回退 `volcengine` 节。
+    """对话模式密钥：`dialog` 节优先，**逐字段**留空则回退 `volcengine` 节。
 
-    用户通常已在「引擎密钥」页填过火山新版 API Key（volcengine.api_key），
-    对话模式复用同一把即可开箱可用，不必填两遍。回退是**逐字段**的：
-    dialog 只填了 api_key 时，app_id / access_token 仍可从 volcengine 节取。
-
-    返回 (api_key, app_id, access_token)，均为 str（yaml 空值 None 归一为 ""）。
-    同时支持 dict（load_config 返回值）与 SimpleNamespace（get_config 返回值）。
+    返回 (api_key, app_id, access_token)，均为 str（yaml 空值 None 归一 ""）；同时支持
+    dict（load_config）与 SimpleNamespace（get_config）两种 cfg。
     """
     def _get(section: str, key: str) -> str:
         if isinstance(cfg, dict):
@@ -684,10 +656,8 @@ _QWEN_WS_HOSTS = {
 def build_qwen_ws_url(region: str, workspace_id: str, model: str) -> str:
     """按 region 路由 Qwen-Audio Realtime 的 WebSocket 端点（纯函数，可单测）。
 
-    legacy（旧域名，忽略 workspace_id）用 dashscope 公共端点；beijing/singapore
-    （新域名，workspace_id 必填）用 {ws}.{host} 独享端点。model 作 ?model= 查询
-    参——query 值做百分号转义（含 & / # / 空格等字符时不破坏 URL 语义）；
-    workspace_id 进 host 段无转义语义，非法字符由建连失败错误提示上报。
+    legacy 用 dashscope 公共端点（忽略 workspace_id）；beijing/singapore 用 {ws}.{host}
+    独享端点（workspace_id 必填）。model 作 query 参需百分号转义，workspace_id 进 host 段不转义。
     """
     region = (region or "legacy").strip().lower()
     model = quote((model or "qwen-audio-3.0-realtime-plus").strip(), safe="")
@@ -766,9 +736,8 @@ def _nested_get(sub, key: str, default=None):
 def resolve_hermes_credentials(cfg) -> tuple[str, str]:
     """Hermes 连接参数 (base_url, api_key)，均为 str（None 归一 ""）。
 
-    base_url 去掉尾斜杠与误填的 "/v1" 后缀：Hermes 官方文档的 curl 示例
-    写的是 "http://host:8642/v1"，用户很可能连后缀一起抄进来，而内部统一
-    按 "<base_url>/v1/..." 拼路径，不剥就会拼出 "/v1/v1/..."。
+    base_url 去掉尾斜杠与误填的 "/v1" 后缀：内部按 "<base_url>/v1/..." 拼路径，
+    不剥会拼出 "/v1/v1/..."。
     """
     sub = _dialog_get(cfg, "hermes")
     base = str(_nested_get(sub, "base_url", "") or "").strip().rstrip("/")
@@ -832,13 +801,8 @@ def dialog_configured(cfg) -> bool:
 def dialog_enabled(cfg) -> bool:
     """语音对话功能总开关（`dialog.enable`）。
 
-    关掉后右键菜单「语音模式」项、对话热键与悬浮条的对话态入口全部下线，
-    仅设置页保留以便重新开启。四处入口共用本判定，不各写一遍。
-
-    **缺失与 None 一律当启用**：升级后的旧配置没有这个键、或 yaml 里写
-    `enable:` 留空解析成 None，都不应该让功能凭空消失（消失比存在更难排查）；
-    只有显式假值（False / 0 / 空串）才算关闭。同时支持 dict（load_config
-    返回值）与 SimpleNamespace（get_config 返回值）。
+    **缺失与 None 一律当启用**（旧配置无此键、yaml 写 `enable:` 留空都算开），只有显式
+    假值（False / 0 / 空串）才算关闭；同时支持 dict（load_config）与 SimpleNamespace。
     """
     if isinstance(cfg, dict):
         sec = cfg.get("dialog") or {}
@@ -859,19 +823,8 @@ _REPLACE_BASE_DELAY = 0.008
 def _replace_with_retry(tmp: Path, path: Path) -> None:
     """os.replace 带退避重试：Windows 上它会被并发读句柄顶掉。
 
-    Windows 的 Python open() 建句柄时不带 FILE_SHARE_DELETE，因此**任何**
-    正在读该文件的句柄都会让 os.replace 以 PermissionError [WinError 5]
-    失败——不只是别的进程，本进程自己的热加载读者也算：
-    设置页逐字段保存 -> 每次写入触发 QFileSystemWatcher -> 应用热加载
-    read_text() -> 恰好撞上下一个字段的 os.replace。压测（并发读 + 200
-    次写）失败率约 24%，表现为设置保存随机报错、界面卡在旧值。
-
-    这类占用都是毫秒级的（热加载只读几 KB、杀软扫完就放），实测第一次
-    退避（8ms）内即可恢复。但重试是在**持有 _CONFIG_WRITE_LOCK 的调用
-    线程**上睡的，而设置页 _save 在主线程逐字段同步调用——若只按次数
-    退避，持续占用时单字段要耗 0.63s，30 个字段就是近 20s 界面冻结。
-    故以总预算为硬上限：瞬时竞争几毫秒就过，真被长期占用则 0.2s 内
-    放弃，由 _write_and_verify 转成"保存失败"而不是卡死界面。
+    Windows 的 open() 不带 FILE_SHARE_DELETE，任何正在读的句柄都会让 os.replace 报
+    PermissionError [WinError 5]；重试睡在持有 _CONFIG_WRITE_LOCK 的调用线程上，故以总预算为硬上限。
     """
     deadline = time.monotonic() + _REPLACE_DEADLINE
     last: Exception | None = None
@@ -891,16 +844,8 @@ def _replace_with_retry(tmp: Path, path: Path) -> None:
 def _atomic_write(path: Path, text: str) -> None:
     """原子写入：先写同目录临时文件，再 os.replace 一步替换。
 
-    直接 write_text 是"truncate → 写入"两步操作，其他进程（如正在
-    运行的主程序的热加载）恰好在该窗口读文件会拿到空/半个文件；
-    若这个读者也是写者（读-改-写），残缺内容会被写回，config.yaml
-    曾因此被整个清空过（密钥全丢，靠 dist 旧副本才找回）。
-    os.replace 在同一卷上是原子操作，读方要么见到旧文件要么见到
-    新文件，永远读不到中间态。覆盖前另存一份 .bak（单份滚动），
-    万一仍出问题可手工恢复。
-
-    失败时清理残留 tmp：留着会让下一次写入复用同一个名字，且用户
-    在目录里看到 config.yaml.tmp 会以为配置坏了。
+    直接 write_text 是"truncate → 写入"两步，读者恰在窗口读会拿到空/半文件、读-改-写者会把
+    残缺写回；os.replace 同卷原子，读方见不到中间态，覆盖前另存 .bak，失败清理残留 tmp。
     """
     try:
         if path.exists() and path.stat().st_size > 0:
@@ -923,20 +868,16 @@ def _write_and_verify(path: Path, original: str, new_content: str,
                       key: str, expected: Any, section: str | None) -> bool:
     """写入新内容并回读校验目标键值确实生效；不符则回滚原文。
 
-    行级正则替换在用户手改过缩进、值含 # 等特殊字符时可能写错位置：
-    写入后用 yaml 重新解析整个文件，确认目标键（含节路径）的当前值
-    与期望一致；不一致或解析失败均视为写入未生效——恢复原文并返回
-    False，避免错误值静默落盘（设置界面表现为保存失败，可重试）。
+    行级正则替换在用户手改过缩进、值含 # 时可能写错位置：写后用 yaml 重新解析，确认目标键
+    当前值与期望一致，不一致或解析失败即恢复原文返回 False，避免错误值静默落盘。
     """
     import logging
 
     log = logging.getLogger(__name__)
 
     # 第一段：写入。失败意味着文件根本没被动过（os.replace 是原子的），
-    # 此时原文件仍是 original，**不需要也不应该回滚**——旧实现在这里
-    # 统一走回滚，而回滚用的是同一条 os.replace，必然以同样的
-    # PermissionError 再次失败并把异常抛给调用方，把一次"保存失败"
-    # 放大成设置页崩溃（热加载竞争下几乎必现）。
+    # 不需要也不应该回滚——回滚走同一条 os.replace，会以同样的错误再失败，
+    # 把一次"保存失败"放大成设置页崩溃。
     try:
         _atomic_write(path, new_content)
     except Exception:
@@ -959,7 +900,7 @@ def _write_and_verify(path: Path, original: str, new_content: str,
     except Exception:
         log.warning("配置写入后回读校验异常，尝试回滚：%s", key, exc_info=True)
 
-    # 回滚也只是尽力：同样可能撞 WinError 5。失败只能记日志，
+    # 回滚也只是尽力：同样可能撞 WinError 5。失败只能记日志
     # 绝不能再抛出——调用方（设置页）要的是"保存失败、可重试"。
     try:
         _atomic_write(path, original)
@@ -974,20 +915,8 @@ def update_config_field(key: str, value: str, section: str | None = None,
                         path: str | Path | None = None) -> bool:
     """更新 config.yaml 中某个字段（行级处理，保留注释和格式）。
 
-    进程内以 _CONFIG_WRITE_LOCK 串行化，防止并发后台写线程撕裂文件；
-    具体实现见 _update_config_field_locked。
-
-    - section=None：顶层字段（只匹配无缩进行）；文件中不存在时追加到末尾
-    - section 给定：限定在该顶层节内；节不存在时追加整个节，
-      节内无此字段时追加到节尾
-    - path：写到哪份文件。省略则写 `find_config_path()`（默认配置）。
-      **调用方若是从某个指定路径读的配置（如 `--config <file>`），必须传同
-      一个 path**——否则会「从 A 读、往 B 写」，B 被凭空追加字段、A 永远不生效。
-    - value_type：str=单引号标量（Windows 路径含反斜杠，双引号会被 YAML 转义破坏）；
-      int=裸数字；bool=裸 true/false。数值/布尔必须写裸标量，
-      否则 yaml 加载后是字符串，消费端算术运算会崩
-    成功返回 True；写入后回读校验不符（正则写入写错位置的兜底防线）
-    会回滚原文并返回 False。
+    进程内以 _CONFIG_WRITE_LOCK 串行化。path 必须与读取来源一致（否则「从 A 读、往 B 写」）；
+    value_type=数值/布尔必须裸标量（str 用单引号，双引号会被 YAML 转义破坏 Windows 路径）。
     """
     with _CONFIG_WRITE_LOCK:
         return _update_config_field_locked(key, value, section, value_type, path)
@@ -1022,7 +951,7 @@ def _update_config_field_locked(key: str, value: str, section: str | None,
             line_value = "'" + str(value).replace("'", "''") + "'"
             expected = str(value)
     elif value_type == "json":
-        # JSON 字符串是合法 YAML 双引号标量：\n 等转义在加载后还原为真实字符，
+        # JSON 字符串是合法 YAML 双引号标量：\n 等转义在加载后还原为真实字符
         # 用于多行文本（如 LLM 自定义 Prompt）——单引号标量会把 \n 当字面量
         import json
         line_value = json.dumps(str(value), ensure_ascii=False)
@@ -1114,12 +1043,8 @@ def _update_nested_field(path: Path, content: str, key: str, line_value: str,
                          expected: Any, parts: list[str]) -> bool:
     """缩进敏感地在嵌套节（如 dialog.qwen）里改/插 key（section 含点号时走此路）。
 
-    parts 是从顶层到目标父节的路径（如 ["dialog","qwen"]）。逐层用缩进定位子节：
-    每层在当前父块 [lo,hi) 内找缩进 > 父缩进的首个裸 `name:` 行（跳过注释/空行），
-    其内容范围为 [该行+1, 下一个缩进 <= 该行的非空行)。定位到最内层节后，在其
-    范围内找直接子键 `key:`（缩进 == 该节首个非注释子键缩进）——命中则整行换值，
-    缺失则插到节内最后一个非空行之后。任一层节缺失则从缺失处按剩余路径整体追加。
-    写后走 _write_and_verify 回读校验（已支持点号 section），不符则回滚。
+    逐层按缩进定位子节，到最内层找直接子键（缩进 == 该节首个非注释子键缩进）：命中整行换值，
+    缺失插到节内最后非空行后；任一层缺失则按剩余路径整体追加。写后回读校验，不符则回滚。
     """
     import re
 
@@ -1255,3 +1180,42 @@ def describe_config(cfg: SimpleNamespace) -> str:
     parts.append(f"hotkey={cfg.hotkey.toggle}")
     parts.append(f"sample_rate={cfg.audio.sample_rate}")
     return ", ".join(parts)
+
+
+def enforce_offline_engine(cfg, path=None) -> bool:
+    """外部服务不可用时，把配置里的云端引擎改回内置离线引擎。
+
+    返回 True = 发生了改写（cfg 已就地修改）。外部服务不可用时云端入口不装配，但 start_session
+    仍会弹「请填写 XX 密钥」指向不存在的页面，故须在进 session 前摆正。不能一律强制 funasr。
+    """
+    if cfg is None:
+        return False
+    # 延迟导入：steam_integration 顶层 import 了本模块用到的 strip_secret_fields
+    # 的来源方，模块级反向 import 会成环
+    from ..steam_integration import external_services_allowed, is_steam_build
+
+    if not is_steam_build() or external_services_allowed():
+        return False
+
+    if isinstance(cfg, dict):
+        engine = str(cfg.get("engine", "") or "").strip()
+    else:
+        engine = str(getattr(cfg, "engine", "") or "").strip()
+    group = engine.split(":", 1)[0] if engine else ""
+    if not group or group == "funasr":
+        return False
+
+    log = logging.getLogger(__name__)
+    try:
+        update_config_field("engine", "funasr", path=path)
+    except Exception:
+        # 安装目录只读等场景：文件改不了也得改内存，否则本次会话仍会
+        # 走向"请填写密钥"那条死路
+        log.warning("引擎校正：写配置失败，仅改内存", exc_info=True)
+    if not isinstance(cfg, dict):
+        try:
+            cfg.engine = "funasr"
+        except Exception:
+            log.debug("引擎校正：内存 cfg 赋值失败", exc_info=True)
+    log.info("外部服务不可用，引擎由 %s 回落为内置离线引擎 funasr", engine)
+    return True

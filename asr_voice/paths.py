@@ -20,9 +20,8 @@ CHANNEL_STATE_DIRNAME = "Open-RealtimeASR-UI"
 def install_dir() -> Path | None:
     r"""渠道版便携布局的安装根（runtime/env 的上一级）；非渠道版返回 None。
 
-    launcher 现在直接跑 runtime\python.exe，其 parents[1] 即安装根；早期把 venv 的
-    Scripts\python.exe 当入口时 parents[2] 才是——按目录标记（含 runtime/ 或 env/
-    的候选）识别，两种布局都覆盖，故不依赖具体入口写法。
+    按目录标记（含 runtime/ 或 env/ 的候选）识别，兼容入口是 runtime\python.exe（parents[1]）
+    或早期 venv 的 Scripts\python.exe（parents[2]）两种布局，不依赖具体入口写法。
     """
     try:
         from .steam_integration import is_steam_build

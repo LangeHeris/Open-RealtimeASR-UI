@@ -15,11 +15,10 @@ from ..paths import state_dir
 
 logger = logging.getLogger(__name__)
 
-# 内置提示词版本（仅一个，随代码发布）。内容为**空串**：llm.prompt 留空正是
+# 内置提示词版本（仅一个，随代码发布）。内容为空串：llm.prompt 留空正是
 # "按界面语言用内置模板"的表达（见 llm_corrector.prompt_for_language）。
-# 这里若不填空而填某语言的模板原文，英文界面用户选中「内置方案」后保存，
-# 会把中文长文写进 llm.prompt —— 界面显示的与实际生效的不一致。
-# 其余版本全部由用户新增，存于状态目录的 prompts.json。
+# 若填某语言模板原文，英文界面用户选中「内置方案」保存会把中文长文写进
+# llm.prompt，界面显示的与实际生效的不一致。
 BUILTIN_PROMPTS: dict[str, str] = {
     "内置方案": "",
 }
@@ -59,12 +58,8 @@ def _write(data: dict[str, str]) -> None:
 
 
 def save_custom(name: str, content: str) -> None:
-    """保存（或覆盖）一个自定义版本。
-
-    允许空内容：新增流程是先建空版本并选中、再让用户在编辑框里慢慢
-    填写——空版本是合法的中间态，强制非空会让"新增一个空版本"
-    这条路径直接失效（save_custom(name, "") 被静默吞掉，下拉里
-    永远看不到新建项）。
+    """保存（或覆盖）一个自定义版本。**允许空内容**：新增流程是先建空版本再填，
+    强制非空会让 save_custom(name, "") 被静默吞掉、下拉里看不到新建项。
     """
     name = name.strip()
     if not name:

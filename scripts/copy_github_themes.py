@@ -1,15 +1,12 @@
-"""GitHub 版主题投放清单：凯尔特风格 + 赛博朋克风（像素主题为 渠道版独占）。
+"""GitHub 版主题投放清单：凯尔特风格 + 赛博朋克风（像素主题为渠道版独占）。
 
-为什么要有这个脚本：主题包目录名是中文，`build.bat` 必须保持纯 ASCII
-（非 ASCII 文本 + chcp 65001 会让 cmd 解析错行），所以涉及 Unicode 目录名的
-投放动作一律交给 Python。
+主题包目录名是中文，`build.bat` 必须保持纯 ASCII（非 ASCII 文本 + chcp 65001
+会让 cmd 解析错行），所以 Unicode 目录名的投放动作交给 Python。
 
-`STEAM_EXCLUSIVE_PACKS` 是「曾经投放过、现在必须清掉」的清单：构建产物目录
-是增量的，上一版打进去的像素主题不会自己消失，必须显式 rmtree，否则
-GitHub 版会带着像素主题的 theme.yaml 发出去。
+`STEAM_EXCLUSIVE_PACKS` 是「已投放过、必须清掉」的清单：构建产物目录是增量的，
+不显式 rmtree，渠道版主题的 theme.yaml 会跟着 GitHub 版发出去。
 
-输出刻意只用 ASCII（`src` 目录名可能含中文）：CI 的 stdout 在 Windows runner
-上是 cp1252，中文 print 会以 UnicodeEncodeError 把脚本自己搞崩。
+输出只用 ASCII：CI 的 stdout 是 cp1252，中文 print 会 UnicodeEncodeError 崩掉脚本。
 """
 
 from __future__ import annotations

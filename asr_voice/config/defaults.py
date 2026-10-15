@@ -1,12 +1,10 @@
 """默认配置。用户配置（config.yaml）会与此合并。"""
 
 DEFAULTS = {
-    "engine": "aliyun",   # "aliyun" 阿里云百炼（默认）
-                            # | "volcengine" 火山引擎豆包流式 | "tencent" 腾讯云实时
-                            # | "xfyun" 讯飞实时转写 | "funasr" 本地 FunASR（需另行安装 funasr+torch）
-                            # 注意别把「模型」与「引擎」记混：默认模型是下方 aliyun.model
-                            # 的通用引擎 paraformer-realtime-v2；大模型版
-                            # qwen-audio-3.0-asr-flash-streaming 要在右键菜单「大模型」档切换，并非默认值。
+    "engine": "aliyun",   # "aliyun" 阿里云百炼（默认）| "volcengine" 火山引擎豆包流式
+                            # | "tencent" 腾讯云实时 | "xfyun" 讯飞实时转写 | "funasr" 本地 FunASR
+                            # 别把「模型」与「引擎」记混：默认模型是 aliyun.model 的
+                            # paraformer-realtime-v2；大模型版要在右键菜单「大模型」档切换。
     "tencent": {
         "secret_id": "",
         "secret_key": "",
@@ -26,7 +24,7 @@ DEFAULTS = {
     },
     "funasr": {
         "model": "paraformer-zh-streaming",  # 流式模型，支持逐字同步上屏
-        # device 默认 auto：有 N 卡走 cuda、否则回落 cpu。旧默认值是写死的 cuda，
+        # device 默认 auto：有 N 卡走 cuda、否则回落 cpu。旧默认值是写死的 cuda
         # 但没有 cuda 的环境里 resolve 逻辑（_resolve_device 遇到非 auto 一律照用）
         # 不会兜底，纯 CPU 机器上直接加载失败——与「CPU / GPU 均可」的口径不符。
         "device": "auto",                    # "auto" | "cuda" | "cpu"
@@ -70,14 +68,14 @@ DEFAULTS = {
     "volcengine": {
         # 火山引擎语音控制台 console.volcengine.com/speech 开通
         # "豆包流式语音识别"，支持两种鉴权（新版与旧版密钥分开设置）：
-        #   新版单密钥：填 api_key（控制台"API Key 管理"生成的 API Key）
-        #   旧版双密钥：填 app_id + access_token（应用详情页的 App ID + Access Token）
+        # 新版单密钥：填 api_key（控制台"API Key 管理"生成的 API Key）
+        # 旧版双密钥：填 app_id + access_token（应用详情页的 App ID + Access Token）
         "api_key": "",       # 新版 API Key（X-Api-Key）
         "access_token": "",  # 旧版 Access Token（X-Api-Access-Key）
         "app_id": "",        # 旧版鉴权的 App ID（X-Api-App-Key）
         "bigasr_billing": "duration",   # 豆包1.0 计费方式：duration=按时长 | concurrent=按并发
         "seedasr_billing": "duration",  # 豆包2.0 计费方式：duration=按时长 | concurrent=按并发
-        # 当前版本生效的完整资源 ID，由程序自动合成：volc.{当前版本}.sauc.{该版本计费}，
+        # 当前版本生效的完整资源 ID，由程序自动合成：volc.{当前版本}.sauc.{该版本计费}
         # 一般无需手工修改（设置界面分别设置两版本的计费方式）
         "resource_id": "volc.seedasr.sauc.duration",
         "enable_ddc": True,        # 语义顺滑（去语气词/重复词）
@@ -108,7 +106,7 @@ DEFAULTS = {
     "ui": {
         "bar_width": 326,
         "bar_height": 78,
-        # 默认尺寸跟随当前窗口大小（除极简主题外：极简为正方形，
+        # 默认尺寸跟随当前窗口大小（除极简主题外：极简为正方形
         # 边长由 floating_bar 的 VOICE_SIDE / VOICE_MIN_SIDE 决定）
         "follow_cursor": False,
         "default_x": -1,   # 首次运行默认位置（-1=主屏正中心；设 0+ 用固定坐标）
@@ -181,7 +179,7 @@ DEFAULTS = {
         "ai_prefix": "帮我",        # AI 命令显式前缀：「触发词 帮我润色」走 LLM 处理选中文本
         "ai_thinking": True,        # 「帮我」AI 命令思考模式（默认开，与 AI 修正的关思考开关独立）
         "ai_prompt_template": "用户选中了一段文本，并对它下了一条语音指令。按指令处理选中的文本，直接输出处理结果，不要输出任何解释、开场白或引号。\n\n选中的文本：\n{selection}\n\n语音指令：{command}",  # 「帮我」AI 提示词模板：空=内置默认透传模板；非空按 {selection}/{command} 占位符替换
-        "phrases_enable": False,    # 自定义短语（需先开语音命令）：触发词+短语名 -> 插入预设文本，
+        "phrases_enable": False,    # 自定义短语（需先开语音命令）：触发词+短语名 -> 插入预设文本
                                     # 词表存状态目录 phrases.json（打包版 exe 同目录，源码版 ~/.asr_voice；设置界面编辑）
         "standby_seconds": 8,        # 待命态超时：单独说触发词后等待下一句命令的秒数
     },
@@ -189,12 +187,9 @@ DEFAULTS = {
         "mode": "realtime",         # "realtime" 实时流式 | "sentence" 一句话识别
         "auto_stop_seconds": 10,    # 无语音超时自动停止，0=不自动停止
         "max_session_seconds": 60,  # 单次录音硬超时（秒），兜底防底噪贴阈值停不下来；0=不限时
-        # 逐字同步：中间(未断句)结果实时写入输入框，新增字符增量追加、
-        # ASR 回头修正才退格重打（微软/讯飞语音输入行为）。
-        # False=仅断句(final)一次性上屏。
-        # 逻辑锁：llm.enable=true（AI 修正关闭后恢复）、
-        # injection.method=clipboard_paste（切回逐字输入后恢复）、
-        # 语音命令或游戏模式启用（对应关闭后恢复）时强制视为关闭
+        # 逐字同步：中间(未断句)结果实时增量写入输入框，ASR 回头修正才退格重打
+        # （微软/讯飞行为）；False=仅断句(final)一次性上屏。llm.enable=true、injection.method=
+        # clipboard_paste、语音命令或游戏模式启用时强制视为关闭（各自关闭后恢复）。
         "live_intermediate": True,
         "pause_background_audio": False,  # 暂停播放：录音时真暂停后台媒体，停止后自动恢复（右键菜单「程序行为」可切换；默认关）
         "mute_background_audio": False,   # 全局静音：录音时静音全部后台声音（含游戏），停止后恢复；可单独使用或与暂停播放叠加
@@ -259,24 +254,23 @@ DEFAULTS = {
         },
         # Hermes Agent（provider=hermes 时生效）：用户自建的 hermes-agent
         # API server（OpenAI 兼容 HTTP）。它只提供文本，不提供任何音频
-        # （capabilities 实测 audio_api=false / realtime_voice=false），
+        # （capabilities audio_api=false / realtime_voice=false）
         # 所以断句与识别都必须由本端补齐。
         "hermes": {
-            "base_url": "",                  # 如 http://192.168.0.242:8642（不含 /v1）
+            "base_url": "",                  # 如 http://192.168.1.10:8642（不含 /v1）
             "api_key": "",                   # 即服务器 ~/.hermes/.env 的 API_SERVER_KEY
             "model": "hermes-agent",
             "session_title": "ORI 语音对话",
             # 识别错误有三个独立来源（引擎档位/口音/语言能力），后两者换引擎
             # 也解决不了。声明输入来源让 LLM 自己容错，比单开一层「AI 修正」
-            # 省一次往返（实测单轮已 5.5~7.9 秒，再加一次不可接受）。
+            # 省一次往返（单轮已 5.5~7.9 秒，再加一次不可接受）。
             "system_hint": "以下是用户的语音识别结果，可能有同音错别字或缺少标点，"
                            "请结合上下文理解后再回答。",
             "connect_timeout_ms": 5000,
             "turn_timeout_ms": 60000,        # agent 可能跑工具，给足上限
         },
-        # 对话专属 ASR。两个字段全留空 = 跟随顶层 engine，行为与现在完全一致
-        # （升级不改变既有体验）；显式填写才覆盖 —— 用于「听写用中文引擎 +
-        # 对话用中英混说引擎」而不互相牺牲。见 spec §八。
+        # 对话专属 ASR。留空 = 跟随顶层 engine（行为与既有版本一致）；显式填写才
+        # 覆盖——用于「听写用中文引擎 + 对话用中英混说引擎」而不互相牺牲。
         "asr": {
             "engine": "",                    # 留空 = 跟随 cfg.engine
             "model": "",                     # 留空 = 该引擎的默认档

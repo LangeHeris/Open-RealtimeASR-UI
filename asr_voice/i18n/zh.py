@@ -1,14 +1,10 @@
 """简体中文词条（源表）。
 
-zh 值是 t() 取不到时的兜底：en 表缺键会先回退到这里，这里再缺才返回 key，
-所以 A6 补 en 时不必担心漏一个就把界面文案打回英文键名。
+zh 值是 t() 取不到时的兜底：en 表缺键先回退这里，这里再缺才返回 key。
 
-种子词条，A6/A7 按 menu.* / hint.* / set.* / theme.* / engine.* 分层继续扩充。
-
-写入纪律：
-- zh 值照抄抽串前的原文，连标点都不要动（只优化 ASCII 占位符为 {param}）；
-- 一条msgid 里若含字面的 { }，必须写成 {{ }}，否则 t(**params) 会 KeyError；
-- 键名维护分层前缀，新增前先看一眼相邻键，别造出两套同义前缀。
+写入纪律：zh 值照抄抽串前原文，连标点都不要动（只把 ASCII 占位符改为 {param}）；
+一条 msgid 里若含字面 { }，必须写成 {{ }}，否则 t(**params) 会 KeyError；键名维护
+分层前缀，新增前先看相邻键，别造出两套同义前缀。
 """
 from __future__ import annotations
 
@@ -32,6 +28,11 @@ MESSAGES: dict[str, str] = {
     "welcome.card_lang_desc": "英文识别请在设置中切换云端引擎",
     "welcome.card_key_title": "云端引擎（可选）",
     "welcome.card_key_desc": "填写密钥启用云端引擎，识别率更高",
+    # 外部服务不可用时的欢迎框第二张卡（替代上面「仅中文」「云端引擎」
+    # 两张）：此状态下只带内置离线引擎，这段引导不出现外部服务/密钥字样。
+    # 可用时由 welcome_dialog 选回上面那两张卡（见 external_services_allowed）
+    "welcome.card_offline_title": "完全离线，无需密钥",
+    "welcome.card_offline_desc": "识别全程在本机完成，不需要账号、密钥或订阅",
     "welcome.privacy": "隐私政策",
     "welcome.start": "开始使用",
     "welcome.go_settings": "去设置",
@@ -40,16 +41,48 @@ MESSAGES: dict[str, str] = {
     "welcome.no_key_hint": "请到设置填写引擎密钥：本地引擎仅支持中文；英文语音或更高准确率需云端引擎。",
     "err.no_microphone": "未检测到可用的麦克风输入设备。\n\n请连接麦克风并在 Windows 设置中确认后重试。",
 
-    # ---- 设置页「平台」分组（A8；仅 商店版显示）----
+    # ---- 设置页「平台」分组（仅发行构建显示）----
     "set.steam.group": "Steam",
     "set.steam.cloud_sync_keys": "云存档同步密钥",
-    "set.steam.cloud_sync_keys_desc": "默认仅同步脱敏配置；开启后密钥会同步到 Steam 云，任何登录该账号的设备可获取",
-    "set.steam.cloud_sync_keys_tip": "含全部云厂商与 LLM 密钥字段",
+    "set.steam.cloud_sync_keys_desc": "关闭时密钥只存本机，且会清掉云端副本；开启后随云存档上传，换台设备登录同一账号即自动恢复",
+    "set.steam.cloud_sync_keys_tip": "含全部云厂商与 LLM 密钥字段；任何登录该账号的设备都能读取",
     "set.steam.use_gpu": "显卡加速",
     "set.steam.use_gpu_desc": "使用免费 DLC 提供的 CUDA 版本地引擎（仅 N 卡，下次启动生效）",
     "set.steam.use_gpu_tip": "非 N 卡保持关闭",
     "set.steam.gpu_install": "安装显卡加速包",
     "set.steam.gpu_install_hint": "检测到 NVIDIA 显卡：可在设置中一键安装免费显卡加速包",
+    # 创意工坊卡片
+    "set.workshop.group": "创意工坊",
+    "set.workshop.intro": "从社区下载离线模型包、主题包、字体、短语词表与功能扩展",
+    "set.workshop.browse": "浏览社区创意工坊",
+    "set.workshop.refresh": "刷新",
+    "set.workshop.empty": "尚未订阅任何内容。到社区页面订阅后会出现在这里。",
+    "set.workshop.unavailable": "创意工坊不可用（需在 Steam 中启动本应用）",
+    "set.workshop.installed": "已安装",
+    "set.workshop.installing": "下载中 {percent}%",
+    "set.workshop.needs_update": "可更新",
+    "set.workshop.subscribed": "已订阅",
+    "set.workshop.unsubscribe": "退订",
+    "set.workshop.unsubscribe_confirm": "退订后 Steam 会移除本地已下载的内容，之后仍可重新订阅。确定要退订吗？",
+    "set.workshop.unsubscribed": "已退订",
+    "set.workshop.unsubscribe_failed": "退订失败，请重试",
+    "set.workshop.view_community": "在社区中查看",
+    "set.workshop.item_id": "ID {item_id}",
+    "set.workshop.priority_now": "立即下载",
+    "set.workshop.publish": "发布本地目录",
+    "set.workshop.publish_tip": "把本地目录（含 ori_workshop.json）上传为创意工坊物品",
+    "set.workshop.publishing": "上传中 {percent}%",
+    "set.workshop.published": "发布成功：{title}",
+    "set.workshop.publish_failed": "发布失败，请重试",
+    "set.workshop.select_folder": "选择要发布的目录",
+    "set.workshop.folder_missing_manifest": "所选目录缺少 ori_workshop.json，无法作为创意工坊物品发布",
+    "set.workshop.readonly": "已加载 {count} 个内容包（离线模式：内容正常生效，订阅与发布需经 Steam 启动）",
+    "set.workshop.kind.models": "模型",
+    "set.workshop.kind.themes": "主题",
+    "set.workshop.kind.fonts": "字体",
+    "set.workshop.kind.phrases": "短语",
+    "set.workshop.kind.prompts": "提示词",
+    "set.workshop.kind.addon": "功能扩展",
     "err.config_load": "配置加载失败：{err}\n\n请检查 exe 同目录 config.yaml 是否损坏后重试。",
     "err.core_import": "核心模块加载失败：{err}",
     "err.runtime": "运行时错误：{err}\n\n详情见 exe 同目录 logs 文件夹。",
@@ -88,6 +121,8 @@ MESSAGES: dict[str, str] = {
     "menu.game_mode_tip": "开启：识别结果强制经剪贴板粘贴进输入框（用于逐字输入无效的游戏等自绘输入框），「注入方式」自动锁定为剪贴输入；期间识别结果直接覆盖剪贴板且不恢复，「逐字同步」自动锁定关闭",
     "menu.live_sync": "逐字同步",
     "menu.live_sync_tip": "开启：说话时识别文字实时进输入框（新增字增量追加）；关闭：仅当一句话说完才一次性上屏（更稳）。AI 修正、剪贴输入或语音命令启用期间本项自动锁定为关闭，解除锁定后自动恢复",
+    # 外部服务不可用时：不渲染 AI 修正入口，tooltip 只保留剪贴板粘贴一种锁定情形。
+    "menu.live_sync_tip_offline": "开启：说话时识别文字实时进输入框（新增字增量追加）；关闭：仅当一句话说完才一次性上屏（更稳）。剪贴板粘贴输入启用期间本项自动锁定为关闭，解除锁定后自动恢复",
     "menu.llm_correction": "AI 修正",
     "menu.llm_correction_tip": "识别完成后后台调大模型修正错别字/标点/口癖（需已在设置中配置接口地址与 API Key，未配置时开启会提示）。开启时「逐字同步」自动锁定为关闭（修正替换与实时上屏叠加会闪烁）",
     "menu.voice_commands": "语音命令",
@@ -171,14 +206,14 @@ MESSAGES: dict[str, str] = {
 
     # ---- funasr 本地引擎（非分类表项，单独拼）----
     # 「（需安装）」是状态后缀，与模型名分开拼：本地依赖缺失时才追加。
-    # 三处「仅中文」标注之一（spec §8/§10.10）：引擎菜单标签必须点明仅支持中文，
-    # 另两处是设置页引擎卡片（set.funasr.chinese_only，第四批）与欢迎框（welcome.card_lang_title，A7）。
+    # 三处「仅中文」标注之一：引擎菜单标签必须点明仅支持中文；另两处在设置页
+    # 引擎卡片（set.funasr.chinese_only）与欢迎框（welcome.card_lang_title）。
     "engine.funasr.label": "Paraformer 流式 · 中文",
     "engine.funasr.short": "Paraformer 流式",
     "engine.funasr.needs_install": "（需安装）",
 
     # ---- 通用按钮 ----
-    # common.confirm / not_now 是 ConfirmButtons 的**默认**文案（语义为
+    # common.confirm / not_now 是 ConfirmButtons 的默认文案（语义为
     # 「开启 / 暂不」）；调用方传 yes_text/no_text 时覆盖。ok/cancel 是
     # 冲突确认（「确认 / 取消」）与提权询问（「立即提权 / 暂不」）用的。
     "common.confirm": "开启",
@@ -209,10 +244,9 @@ MESSAGES: dict[str, str] = {
     "bubble.copied.all": "已复制全部",
 
     # ---- 悬浮条提示与按钮 tooltip ----
-    # 两个前缀分工：bar.tip.* = 按钮/标题栏的 tooltip（鼠标悬停看的）；
-    # hint.* = 条上/气泡里的**状态提示文字**（录音中、识别中这类）。
-    # 两者文案可能撞车（"开始/停止录音" vs "开始录音"），但受众与显示位置不同，
-    # 合并会让某一边的措辞被迫迁就另一边。
+    # 两个前缀分工：bar.tip.* = 按钮/标题栏 tooltip（鼠标悬停看）；
+    # hint.* = 条上/气泡里的状态提示（录音中、识别中）。两者文案可能撞车，
+    # 但受众与显示位置不同，合并会让某一边措辞被迫迁就另一边。
     "bar.tip.toggle_record": "开始/停止录音",
     "bar.tip.minimize": "最小化到托盘",
     "hint.model_loading": "本地模型加载中",
@@ -463,6 +497,7 @@ MESSAGES: dict[str, str] = {
         "set.page.commands": "语音命令",
         "set.page.recording": "录音检测",
         "set.page.voice_mode": "语音模式",
+        "set.page.steam": "Steam",
         "set.page.about": "关于",
         "set.window_title": "Open-RealtimeASR-UI 设置",
         "set.title": "设置",
@@ -480,6 +515,7 @@ MESSAGES: dict[str, str] = {
         "set.group.output": "输出",
         "set.group.interface": "界面",
         "set.group.llm_common": "通用 AI 接口",
+        "set.llm_common.desc": "语音命令「帮我」与 AI 修正共用的接口地址、密钥与模型",
         "set.group.commands": "触发与命令",
         "set.group.recording": "录音",
         "set.group.vad": "语音检测（VAD）",
@@ -526,6 +562,9 @@ MESSAGES: dict[str, str] = {
         "engine.provider.volcengine": "火山引擎",
         "engine.provider.funasr": "FunASR 本地",
         "set.funasr.chinese_only": "本地模型仅支持中文；英文语音请使用云端引擎（自带密钥）",
+        # 外部服务不可用时：不提云端引擎、不提密钥，只陈述事实。取键逻辑在
+        # settings_dialog._engine_param_desc_key。
+        "set.funasr.chinese_only_offline": "本地模型针对中文普通话优化，其他语言识别效果有限",
         "set.aliyun.api_key.desc": "阿里云百炼访问密钥（sk- 开头）",
         "set.aliyun.api_key": "API Key",
         "set.aliyun.api_key.tip": "从百炼控制台 bailian.console.aliyun.com 获取，配合右键菜单的阿里云引擎使用",
@@ -547,7 +586,7 @@ MESSAGES: dict[str, str] = {
         "set.audio.warmup_capture.tip": "任务栏麦克风图标常亮；关闭后每次录音时才开麦，更省电但可能吞首字",
         "set.commands.ai_prefix.desc": "触发词后跟此前缀则走 LLM 处理选中文本（如润色/翻译/扩写）",
         "set.commands.ai_prefix": "AI 命令前缀",
-        "set.commands.ai_prefix.tip": "默认「帮我」；接口与密钥在「通用设置 → 通用 AI 接口」配置，无需开启 AI 修正",
+        "set.commands.ai_prefix.tip": "默认「帮我」；接口与密钥在「引擎密钥 → 通用 AI 接口」配置，无需开启 AI 修正",
         "set.commands.ai_prompt_template.desc": "「帮我」请求用的提示词模板；留空/清空 = 内置默认透传模板",
         "set.commands.ai_prompt_template": "AI 命令提示词",
         "set.commands.ai_prompt_template.tip": "用 {selection} 放选中文本、{command} 放口令；多行换行、直接输出结果的指令都先写在这里",
@@ -629,14 +668,14 @@ MESSAGES: dict[str, str] = {
         "set.dialog_asr.model": "对话模型档",
         "set.dialog_hermes.api_key.desc": "即服务器 ~/.hermes/.env 里的 API_SERVER_KEY",
         "set.dialog_hermes.api_key": "API Key",
-        "set.dialog_hermes.base_url.desc": "Hermes API server 地址，如 http://192.168.0.242:8642",
+        "set.dialog_hermes.base_url.desc": "Hermes API server 地址，如 http://192.168.1.10:8642",
         "set.dialog_hermes.base_url": "服务地址",
         "set.dialog_hermes.base_url.tip": "填了 /v1 后缀也能识别，程序会自动剥掉",
         "set.dialog_hermes.connect_timeout_ms.desc": "健康检查与建会话的超时",
         "set.dialog_hermes.connect_timeout_ms": "连接超时",
         "set.dialog_hermes.model.desc": "保留字段：当前版本不随请求发出，改它不生效",
         "set.dialog_hermes.model": "模型名",
-        "set.dialog_hermes.model.tip": "服务端是否接受 model 尚未实测，故先只留配置位（M1）",
+        "set.dialog_hermes.model.tip": "服务端是否接受 model 尚未实测，故先只留配置位",
         "set.dialog_hermes.session_title.desc": "每轮进入对话在 Hermes 侧建的会话标题，仅用于在服务端辨认",
         "set.dialog_hermes.session_title": "会话标题",
         "set.dialog_hermes.session_title.tip": "留空 = 服务端会话无标题，不影响对话本身",
@@ -728,7 +767,7 @@ MESSAGES: dict[str, str] = {
         "set.llm.disable_thinking.tip": "「帮我」命令的思考开关独立，见语音命令页「AI 命令思考模式」",
         "set.llm.enable.desc": "识别后由大模型修正错别字与标点",
         "set.llm.enable": "启用 AI 修正",
-        "set.llm.enable.tip": "接口与密钥在「通用设置 → 通用 AI 接口」配置",
+        "set.llm.enable.tip": "接口与密钥在「引擎密钥 → 通用 AI 接口」配置",
         "set.llm.history_context.desc": "修正时把最近 15 条历史记录一并发给 AI 作语境参考（专有名词/上下文更准）",
         "set.llm.history_context": "附带历史上下文",
         "set.llm.history_context.tip": "历史仅作参考不修正；会增大每次请求的 token 消耗，关历史记录后无记录可附",
@@ -861,8 +900,21 @@ MESSAGES: dict[str, str] = {
         "set.about.app_title": "关于本应用",
         "set.about.app_desc": "产品介绍",
         "set.about.app_body": "实时语音输入法：按下热键说话，文字直接输入到光标位置，适用于任何输入框。内置离线中文识别引擎；可接入自有云端引擎提升准确率，支持 AI 功能与语音命令。",
+        # 外部服务不可用时的正文：主打内置离线与本机完成；云端内容不作并列提及
+        # 口径与工坊页面、README 一致。
+        "set.about.app_body_offline": "实时语音输入法：按下热键说话，文字直接输入到光标位置，适用于任何输入框。内置离线中文识别引擎，识别全程在本机完成，无需联网、无需账号。",
         "set.about.app_flow": "使用流程：按热键唤出悬浮条 → 说话 → 文字自动输入到光标位置。",
         "set.about.version": "版本: {version}",
+        "set.about.help_title": "使用帮助",
+        "set.about.help_desc": "完整功能说明与常见问题",
+        "set.about.help_btn": "打开使用文档",
+        "set.about.help_btn_tip": "打开随应用内置的离线文档",
+        "set.about.help_btn_online": "在线文档",
+        "set.about.help_missing": "本机未找到内置文档，请查看在线文档",
+        "set.about.help_open_fail": "内置文档打开失败，请查看在线文档或重新安装本应用",
+        "set.about.doc_title": "使用文档",
+        "set.about.doc_find": "查找内容",
+        "set.about.doc_find_next": "下一处",
         "set.about.oss_title": "开源组件",
         "set.about.oss_desc": "第三方开源库及许可证声明",
         "set.about.oss_footer": "完整第三方许可清单与商用说明见仓库 THIRD_PARTY_NOTICES.md。",
@@ -880,6 +932,14 @@ MESSAGES: dict[str, str] = {
         "set.cmdref.hotkey_effect": "免说触发词，按下直接进入待命态；可在上方「命令热键」修改或清空停用",
         "set.cmdref.toggle_suffix": "（说「关/停用」即关闭）",
         "set.cmdref.note": "注：「帮我」默认开思考模式（更准更慢），返回为空时先关掉再试。",
+        "set.textmenu.undo": "撤销",
+        "set.textmenu.redo": "重做",
+        "set.textmenu.cut": "剪切",
+        "set.textmenu.copy": "复制",
+        "set.textmenu.paste": "粘贴",
+        "set.textmenu.delete": "删除",
+        "set.textmenu.select_all": "全选",
+        "set.textmenu.copy_link": "复制链接地址",
         "set.cmdref.effect.enter": "按回车（发送）",
         "set.cmdref.effect.delete_last": "删除刚听写的文本",
         "set.cmdref.effect.select_all": "全选输入框文字",

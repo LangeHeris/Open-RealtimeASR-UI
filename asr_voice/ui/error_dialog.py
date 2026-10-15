@@ -31,7 +31,7 @@ class _SeverityIcon(QWidget):
         super().__init__(parent)
         self.setFixedSize(side, side)
 
-    def paintEvent(self, event) -> None:  # noqa: N802  Qt 命名
+    def paintEvent(self, event) -> None:  # noqa: N802 Qt 命名
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         side = min(self.width(), self.height())
@@ -102,7 +102,7 @@ class ErrorDialog(QDialog):
         self.setMinimumWidth(440)
         self.setMaximumWidth(560)
 
-    def keyPressEvent(self, event) -> None:  # noqa: N802  Qt 命名
+    def keyPressEvent(self, event) -> None:  # noqa: N802 Qt 命名
         if event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Return,
                            Qt.Key.Key_Enter):
             self.accept()

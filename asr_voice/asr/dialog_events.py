@@ -7,19 +7,18 @@
 一张映射表，控制器与下行链路（播放器/闸门/barge-in/重连）零改动。
 
 放 asr/ 层：两客户端（asr/）与控制器（core/）都 import，避免 asr→core 倒挂。
-设计文档：docs/superpowers/specs/2026-09-11-qwen-audio-realtime-provider-design.md §3。
 """
 
 from __future__ import annotations
 
 # ---- 中立语义事件（on_event 第一参数的取值；payload 键见各事件注释）----
-SESSION_READY = "session_ready"        # 会话就绪 → 控制器进 LISTENING   {dialog_id}
-USER_TRANSCRIPT = "user_transcript"    # 用户 ASR 中间/最终              {text, is_final}
-USER_TURN_END = "user_turn_end"        # 用户说完 → 进 THINKING          {}
-AI_TURN_START = "ai_turn_start"        # AI 本轮开始，开音频闸门          {reply_id}
-AI_TRANSCRIPT = "ai_transcript"        # AI 回复文本（供上屏）           {text}
-BARGE_IN = "barge_in"                  # 用户打断 → 清播放 + 关闸门       {}
-AI_TURN_END = "ai_turn_end"            # AI 本轮结束 → 排空判定          {exit_intent}
+SESSION_READY = "session_ready"        # 会话就绪 → 控制器进 LISTENING {dialog_id}
+USER_TRANSCRIPT = "user_transcript"    # 用户 ASR 中间/最终 {text, is_final}
+USER_TURN_END = "user_turn_end"        # 用户说完 → 进 THINKING {}
+AI_TURN_START = "ai_turn_start"        # AI 本轮开始，开音频闸门 {reply_id}
+AI_TRANSCRIPT = "ai_transcript"        # AI 回复文本（供上屏） {text}
+BARGE_IN = "barge_in"                  # 用户打断 → 清播放 + 关闸门 {}
+AI_TURN_END = "ai_turn_end"            # AI 本轮结束 → 排空判定 {exit_intent}
 AI_FULL_TEXT = "ai_full_text"          # 整轮完整文本（豆包 550）：本轮无 350 文本时兜底上屏 {text}
 
 
@@ -38,10 +37,8 @@ class DialogError(Exception):
 class DialogErrorEvent:
     """on_error 回调的中立错误载荷：客户端自己分类自己的错误码。
 
-    reconnectable 由客户端判定（只有它认识自己的码段）；控制器据此 +
-    auto_reconnect 配置 + 每轮一次限额决定是否重建会话。hint 是单行中文
-    提示（悬浮条右截断），同样从控制器下沉到客户端。
-    code 可为 int（豆包）或 str（Qwen error.code）。
+    reconnectable 由客户端判定（只有它认识自己的码段），控制器据此 + auto_reconnect 配置
+    + 每轮一次限额决定是否重建会话；hint 是单行中文提示（悬浮条右截断）。code 可为 int 或 str。
     """
 
     __slots__ = ("code", "message", "hint", "reconnectable")

@@ -1,34 +1,12 @@
-"""讯飞实时语音转写封装（大模型版 rtasr_llm + 标准版 rtasr）。
-
-接口与 tencent_realtime.TencentRealtimeASR 完全一致，便于在 VoiceApp 中互换：
-- start() 建立 WebSocket 连接（握手失败抛 ASRError）
-- send_audio(block) 推送音频块（numpy int16 数组，以 binary message 发送）
-- stop() 发送 end 信号并等待最终结果后关闭连接
-- is_connected() 连接是否可用
-- 回调：on_result(text, slice_type, index) / on_error(code, message) / on_state(state)
-
-大模型版 rtasr_llm（XfyunRealtimeASR）：
-- URL: wss://office-api-ast-dx.iflyaisol.com/ast/communicate/v1?{params}
-- 鉴权：除 signature 外所有参数按 key 升序，键值分别 URL 编码后拼接为
-  "k=v&k=v"，对该串做 HmacSHA1(APISecret) 再 Base64 得 signature
-- 密钥：AppID / APIKey(accessKeyId) / APISecret(accessKeySecret)
-- 消息路由：action / msg_type 两字段文档并存，取任一：
-  started=握手确认，result=转写结果，error=异常；
-  res_type=frc 或 data.normal=false 表示转写功能异常
-- 结果树：data.cn.st.rt[].ws[].cw[0].w 逐词拼接为当前句文本；
-  st.type 为字符串："1"=中间结果 -> SLICE_INTERMEDIATE，"0"=确定结果 -> SLICE_FINAL；
-  data.ls=true 为最后一帧，服务端随后结束推送
-- 结束：发送 {"end": true, "sessionId": "..."}（text message）
-- 注意：code 字段为字符串（"0" 表示成功），不能与整数直接比较
-
-标准版 rtasr（XfyunStdASR）：
-- URL: wss://rtasr.xfyun.cn/v1/ws?{appid&ts&signa&lang[&pd]}
-- 鉴权：signa = Base64(HmacSHA1(MD5(appid + ts), APIKey))，无需 APISecret
-- 结果：action=result 时 data 为 JSON 字符串，需二次解析，
-  内部结构与大模型版相同（cn.st.rt.ws.cw）；无 ls 最终帧标记，
-  发送 end 后服务端推完剩余结果主动断连
-- 翻译消息（data 内 biz=trans）忽略
-- 结束：发送 {"end": true}（binary message）
+"""讯飞实时语音转写封装（大模型版 rtasr_llm + 标准版 rtasr）；接口与 tencent_realtime 一致可互换：
+start() 握手失败抛 ASRError，send_audio(block) 推 int16 块，stop() 发 end 并等最终结果，
+回调 on_result(text, slice_type, index) / on_error(code, message) / on_state(state)。
+大模型版 XfyunRealtimeASR：鉴权 = 参数按 key 升序拼 "k=v&k=v" 后 HmacSHA1(APISecret)+Base64；
+结果取 data.cn.st.rt[].ws[].cw[0].w 逐词拼句，st.type "1"=中间/"0"=确定，data.ls=true 为最后帧，
+结束发 {"end": true, "sessionId"}。**code 是字符串（"0"=成功），不能与整数比较**。
+标准版 XfyunStdASR（独立密钥，与大模型版不通用）：signa = Base64(HmacSHA1(MD5(appid+ts), APIKey))；
+消息 data 是 JSON 字符串需二次解析；无 ls 最终帧，发 {"end": true}（binary）后服务端推完主动断连，
+biz=trans 的翻译消息忽略。
 """
 
 from __future__ import annotations
@@ -304,9 +282,8 @@ class XfyunRealtimeASR:
     def _extract_text(self, st: dict) -> str:
         """拼接 data.cn.st.rt[].ws[].cw[0].w 为整句文本。
 
-        cw 为候选词数组，取第一个（最优候选）；
-        wp 词标识在 cw 元素内（n 普通 / s 顺滑语气词 / p 标点 / g 分段），
-        filter_modal 时丢弃 wp="s" 的顺滑语气词（嗯/啊等）。
+        cw 为候选词数组，取第一个（最优候选）；wp 词标识在 cw 内（n 普通 / s 顺滑语气词 /
+        p 标点 / g 分段），filter_modal 时丢弃 wp="s" 的顺滑语气词（嗯/啊等）。
         """
         parts: list[str] = []
         for rt in st.get("rt") or []:
@@ -382,7 +359,7 @@ class XfyunRealtimeASR:
         self._set_state(STATE_CONNECTING)
 
         try:
-            # close_timeout=1：讯飞标准版服务端收到 end 后不回 close 握手帧，
+            # close_timeout=1：讯飞标准版服务端收到 end 后不回 close 握手帧
             # 默认 10 秒的关闭等待会拖垮整个 stop 流程（曾致"关闭超时"）
             self._ws = await websockets.connect(url, max_size=None, close_timeout=1)
         except Exception as exc:
@@ -425,7 +402,7 @@ class XfyunRealtimeASR:
                 try:
                     audio = await asyncio.wait_for(self._audio_queue.get(), timeout=0.5)
                 except asyncio.TimeoutError:
-                    # 用户长时间停顿（无真实音频）：周期性喂静音帧保活，
+                    # 用户长时间停顿（无真实音频）：周期性喂静音帧保活
                     # 避免服务端因发送间隔超时断连；正常说话时不插入
                     if time.monotonic() - last_send >= self.KEEPALIVE_INTERVAL:
                         await self._ws.send(self.SILENCE_CHUNK)
@@ -469,9 +446,8 @@ class XfyunRealtimeASR:
     async def _shutdown(self) -> None:
         """发送 end 信号，等接收循环收完剩余结果后关闭连接。
 
-        不直接调 ws.recv()（会和 _recv_loop 冲突导致 ConcurrencyError），
-        而是等 _recv_task 自然结束（大模型版收到 ls=true 后 break；
-        标准版由服务端推完结果主动断连触发）。
+        不直接调 ws.recv()（会和 _recv_loop 冲突导致 ConcurrencyError），而是等 _recv_task
+        自然结束（大模型版收到 ls=true 后 break；标准版由服务端推完结果主动断连触发）。
         """
         # 1. 发送结束标识（大模型版带 sessionId；标准版为 binary 帧）
         if self._ws is not None:
@@ -572,7 +548,7 @@ class XfyunRealtimeASR:
             raise
         except Exception as exc:
             self._cleanup_loop()
-            # 带上异常类型名：CancelledError/TimeoutError 等的 str 为空，
+            # 带上异常类型名：CancelledError/TimeoutError 等的 str 为空
             # 只拼 str 会得到 "启动失败：" 空消息，无从排查
             raise ASRError(f"启动失败：{type(exc).__name__}: {exc}") from exc
 
@@ -617,11 +593,9 @@ class XfyunRealtimeASR:
 
 class XfyunStdASR(XfyunRealtimeASR):
     """讯飞实时语音转写标准版（rtasr v1/ws）客户端。
-
-    使用标准版独立密钥（console.xfyun.cn/services/rtasr 领取，与大模型版互不通用）；
-    signa = Base64(HmacSHA1(MD5(appid + ts), APIKey))。
-    结果消息的 data 为 JSON 字符串需二次解析；标准版无 ls 最终帧标记，
-    发送 {"end": true}（binary）后服务端推完剩余结果主动断连。
+    用标准版独立密钥（与大模型版互不通用，console.xfyun.cn/services/rtasr 领取）；
+    signa = Base64(HmacSHA1(MD5(appid + ts), APIKey))。消息 data 是 JSON 字符串需二次解析；
+    无 ls 最终帧标记，发 {"end": true}（binary）后服务端推完剩余结果主动断连。
     """
 
     WS_HOST = "rtasr.xfyun.cn"

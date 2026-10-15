@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QPainterPath, QPen, QPolygon, QRegion
 # 录音中停止图标专用警红
 STOP_ICON_COLOR = "#FF2E4C"
 
-# 长按准备中（spec §3.2.1）的切角边框色：暗红，与录音警红拉开——准备中可能被
+# 长按准备中的切角边框色：暗红，与录音警红拉开——准备中可能被
 # 撤销（轻点丢弃），用录音色会"红一下又消失"，像出错
 ARMED_FRAME_COLOR = "#a03c3c"
 
@@ -61,7 +61,7 @@ def draw_frame(painter, rect, bar) -> None:
     """悬浮窗描边：霓虹细边 + 左下切角；长按准备中改暗红。
 
     该主题的既有语言就是"边框/霓虹线取色"，准备中沿用同一条边、只换色
-    （不新增视觉元素），见 spec §3.2.1。
+    （不新增视觉元素）。
     """
     # 函数内 import：避开「floating_bar -> 本包 -> floating_bar」的模块级循环
     from ..floating_bar import UI_ARMED

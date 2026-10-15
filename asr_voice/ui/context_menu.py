@@ -26,6 +26,7 @@ from ..core import history as _history
 from ..hotkey.hold import hold_flag_enabled
 from ..i18n import t
 from ..paths import state_dir
+from ..steam_integration import external_services_allowed
 from .fonts import get_loaded_family
 from .presets import ENGINE_CATEGORIES, get_engines, provider_menu_items
 from .theme_features import get_feature
@@ -50,11 +51,8 @@ _GROUP_TITLE_KEYS = {
 def _group_title(group: str) -> str:
     """分组标题显示名（未知分组回退原键名，确保菜单不出现空行）。
 
-    不加 `default=`：`_GROUP_TITLE_KEYS.get(group, group)` 已保证未知分组
-    走"拿 group 本身当键"，`t()` 找不到会返回该键，兜底已经在了；再加一层
-    `default` 反而会把"词典漏了新分组的词条"这件事**静默吞掉**，菜单里
-    冒出 `engine.group.newvendor` 而测试全绿。留 `t()` 自带的 debug 日志，
-    至少还留了条线索。
+    不加 `default=`：`.get(group, group)` 已兜底；再加一层会把"词典漏了词条"
+    **静默吞掉**（菜单露出键名而测试全绿），留 `t()` 的 debug 日志即可。
     """
     return t(_GROUP_TITLE_KEYS.get(group, group))
 
@@ -135,16 +133,10 @@ def menu_stylesheet(bar: "FloatingBar") -> str:
     """
     light = bar._is_light(bar._bg_color.name())
 
-    # 菜单字号最小 14px：Windows 默认 9pt 菜单字体偏小发虚；
-    # 字重 500（Medium）与悬浮条文字一致：Regular 偏细，无 Medium 字面的
-    # 字体（如雅黑）自动落回最近字重，无副作用
-    # 文字列对齐（2026-09-09 两轮用户报障后探针实测定案）：Qt 对含勾选项的
-    # 菜单**整菜单**预留 15px 勾选列（宽=QMenu::indicator 的 width），勾选图标
-    # 画在该列（项左缘+2），**不占 padding**。故勾选项与非勾选项共用同一条
-    # padding 规则即全文字同列；早先给勾选项另加 28/20px 左 padding 是在预留列
-    # 之外又叠一层缩进（「语音模式」比兄弟项右移 16/8px 的根因）。
-    # 右侧 28px：菜单宽度由最宽项撑起，收窄后用户报「太窄了」（2026-09-10），
-    # 恢复原右留白；子菜单箭头锚在项右缘（margin-right 1px），不受 padding 影响
+    # 菜单字号最小 14px（Windows 默认 9pt 菜单字体偏小发虚）；字重 500 与
+    # 悬浮条一致，无 Medium 字面的字体自动落回最近字重。
+    # 勾选项与非勾选项共用同一条 padding 规则才全文字同列：给勾选项另加左
+    # padding 会让它比兄弟项右移。
     menu_px = max(14, int(getattr(bar.cfg, "font_size_bar", 13) or 13))
     # 自定义字体时显式声明 font-family 防被系统字体覆盖，否则用雅黑族
     family = get_loaded_family()
@@ -220,12 +212,9 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
     menu = QMenu(menu_parent)
     menu.setStyleSheet(menu_stylesheet(bar))
 
-    # 启停录音。三态分流：录音中→「停止录音」；长按准备中（ARMED：键已按下、未越
-    # 阈值）→「准备中…」且**置灰不可点**；其余（待机/对话等）→「开始录音」。
-    # ARMED 不能沿用「开始录音」：此刻用户正按着键，报"开始录音"是错的，点下去会
-    # 开出一段与本次长按无关的录音，而松手时长按侧不认它（_hold_owns_session 未
-    # 归属），那一段只能等静音自动停止或 60 秒硬上限收场。置灰比只改文案可靠——
-    # 改了文案照样点得动。
+    # 启停录音三态分流：录音中→「停止录音」；长按准备中（ARMED）→「准备中…」
+    # 且置灰；其余→「开始录音」。ARMED 不能沿用「开始录音」甚至只改文案——
+    # 此刻键已按下，点下去会开出与本次长按无关的一段录音，故必须置灰（禁用）。
     if bar._state == UI_ARMED:
         act_toggle = menu.addAction(t("menu.preparing"))
         act_toggle.setEnabled(False)
@@ -239,11 +228,14 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
     # 完整配置（bar.cfg 只是 cfg.ui 子节，无密钥与 dialog 节字段）：
     # 对话入口显隐与下方引擎密钥过滤都要用
     full_cfg = bar._full_cfg or bar.cfg
+    # 外部服务不可用时（见 steam_integration.external_services_allowed）：
+    # 语音模式、AI 修正、引擎子菜单三处整体不出现，只剩内置离线引擎。
+    _ext = external_services_allowed()
 
     # 语音模式（spec：右键菜单顶部一项 checkable，给不想记热键的人一个入口）。
     # dialog.enable=False 时整项不添加（功能总开关，同时会注销对话热键与
     # 悬浮条对话入口）；读不到配置时 dialog_enabled 默认启用，不误隐藏
-    if dialog_enabled(full_cfg):
+    if _ext and dialog_enabled(full_cfg):
         act_dialog = menu.addAction(t("menu.dialog_mode"))
         act_dialog.setCheckable(True)
         act_dialog.setChecked(bar._state.startswith("dialog_"))
@@ -283,7 +275,7 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
     act_keep.triggered.connect(
         lambda checked: bar.signals.keep_clipboard_toggled.emit(checked)
     )
-    # 游戏模式：强制剪贴板粘贴注入（不降级逐字、不恢复剪贴板），
+    # 游戏模式：强制剪贴板粘贴注入（不降级逐字、不恢复剪贴板）
     # 用于逐字输入无效的游戏等自绘输入框
     act_game = inj_menu.addAction(t("menu.game_mode"))
     act_game.setCheckable(True)
@@ -298,25 +290,29 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
     act_live = inj_menu.addAction(t("menu.live_sync"))
     act_live.setCheckable(True)
     act_live.setChecked(bar._live_intermediate)
-    act_live.setToolTip(t("menu.live_sync_tip"))
+    # tooltip 按可用性分叉：外部服务不可用时无 AI 修正，只保留剪贴板粘贴一种锁定情形
+    act_live.setToolTip(
+        t("menu.live_sync_tip" if _ext else "menu.live_sync_tip_offline"))
     act_live.triggered.connect(
         lambda checked: bar.signals.live_intermediate_toggled.emit(checked)
     )
 
     # AI 修正：结果先上屏，后台大模型修正错别字/口癖再替换；参数在设置页配置
-    try:
-        llm_on = bool(
-            getattr(getattr(bar._full_cfg or bar.cfg, "llm", None), "enable", False)
+    # 外部服务不可用时本项不出现（见上方 _ext 注释）
+    if _ext:
+        try:
+            llm_on = bool(
+                getattr(getattr(bar._full_cfg or bar.cfg, "llm", None), "enable", False)
+            )
+        except Exception:
+            llm_on = False
+        act_llm = inj_menu.addAction(t("menu.llm_correction"))
+        act_llm.setCheckable(True)
+        act_llm.setChecked(llm_on)
+        act_llm.setToolTip(t("menu.llm_correction_tip"))
+        act_llm.triggered.connect(
+            lambda checked: bar.signals.llm_enable_toggled.emit(checked)
         )
-    except Exception:
-        llm_on = False
-    act_llm = inj_menu.addAction(t("menu.llm_correction"))
-    act_llm.setCheckable(True)
-    act_llm.setChecked(llm_on)
-    act_llm.setToolTip(t("menu.llm_correction_tip"))
-    act_llm.triggered.connect(
-        lambda checked: bar.signals.llm_enable_toggled.emit(checked)
-    )
 
     # 语音命令总开关：句首触发词执行命令不上屏；关闭则触发词当普通文本（commands.enable）
     try:
@@ -334,78 +330,75 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
         lambda checked: bar.signals.commands_toggled.emit(checked)
     )
 
-    # 引擎子菜单，每次构建都重新检测密钥：
-    # - 分组标题不能用 addSection（QSS 的 separator 高 1px 会把标题压成线），改用禁用 action
-    # - 过滤：engine_show_<provider> 手动隐藏；密钥未配置的组不显示，当前引擎所在组除外。
-    #   funasr 不走密钥过滤（无密钥概念）：按依赖可用性过滤会让打包版里
-    #   "引擎提供商显隐"开关永远被覆盖，显隐只由设置开关控制；依赖缺失时
-    #   点击会走预热/启动错误路径给出明确提示
-    engine_menu = menu.addMenu(t("menu.engine"))
-    active_group = bar._engine_group_of(bar._current_engine or "tencent")
-    # 逐模型显隐：设置页「引擎排序」折叠清单里关闭的模型不在菜单出现
-    hidden_ids = {
-        e.strip()
-        for e in str(getattr(bar.cfg, "engine_hidden_models", "") or "").split(",")
-        if e.strip()
-    }
-    # 先按全部过滤规则收集可见引擎，再按组渲染：
-    # 整组都被隐藏（厂商开关关闭 / 所有模型隐藏）时不渲染孤立分组标题
-    visible: list[tuple[str, str, str]] = []
-    for engine_id, label in get_engines(getattr(bar.cfg, "engine_order", None)):
-        group = bar._engine_group_of(engine_id)
-        # 该提供商被设置里隐藏：整组跳过（标题与引擎项都不显示）
-        if not bar._engine_group_visible(group):
-            continue
-        # 密钥未配置：隐藏，当前引擎组除外（funasr 无密钥，跳过此过滤）
-        if group != "funasr" and group != active_group and not engine_group_configured(full_cfg, group):
-            continue
-        if engine_id in hidden_ids:
-            continue
-        visible.append((group, engine_id, label))
-
-    def _add_engine_action(menu: QMenu, engine_id: str, label: str) -> None:
-        action = menu.addAction(label)
-        action.setCheckable(True)
-        action.setChecked(bar._current_engine == engine_id)
-        action.triggered.connect(
-            lambda checked, e=engine_id: bar.signals.engine_changed.emit(e)
-        )
-
-    # 云引擎分组渲染：对 ENGINE_CATEGORIES 注册的组（腾讯/阿里/讯飞/火山）
-    # 只显示分类名（如 大模型2.0/大模型版/通用引擎/豆包大模型 2.0），点击
-    # 即切换到该档配置的模型（设置页「引擎参数」下拉配置，见 presets.
-    # provider_menu_items）；funasr 单项引擎保持平铺。组顺序跟随
-    # get_engines，任一叶子可见即渲染该组；档配置的模型被隐藏时该分类
-    # 项不显示
-    rendered_groups: set[str] = set()
-    current_group = None
-    for group, engine_id, label in visible:
-        if group in ENGINE_CATEGORIES:
-            if group in rendered_groups:
+    # 外部服务不可用时只剩内置离线引擎，没有可切换项，整个引擎子菜单不出现
+    # （见上方 _ext 注释）
+    if _ext:
+        # 引擎子菜单每次构建都重新检测密钥；分组标题用禁用 action（QSS 的
+        # separator 高 1px 会把 addSection 标题压成线）。funasr 无密钥概念，
+        # 不走密钥过滤——按依赖可用性过滤会让显隐开关永远被覆盖。
+        engine_menu = menu.addMenu(t("menu.engine"))
+        active_group = bar._engine_group_of(bar._current_engine or "tencent")
+        # 逐模型显隐：设置页「引擎排序」折叠清单里关闭的模型不在菜单出现
+        hidden_ids = {
+            e.strip()
+            for e in str(getattr(bar.cfg, "engine_hidden_models", "") or "").split(",")
+            if e.strip()
+        }
+        # 先按全部过滤规则收集可见引擎，再按组渲染：
+        # 整组都被隐藏（厂商开关关闭 / 所有模型隐藏）时不渲染孤立分组标题
+        visible: list[tuple[str, str, str]] = []
+        for engine_id, label in get_engines(getattr(bar.cfg, "engine_order", None)):
+            group = bar._engine_group_of(engine_id)
+            # 该提供商被设置里隐藏：整组跳过（标题与引擎项都不显示）
+            if not bar._engine_group_visible(group):
                 continue
-            rendered_groups.add(group)
-            # 局部名不能叫 `t`：本模块 import 了 i18n 的 t()，此处 `t` 的绑定
-            # 会让整个函数里的 t("key") 变成 UnboundLocalError（守卫见
-            # test_i18n.NoShadowingOfTranslationHelperTest）。
-            items = [(slot, title, model_id)
-                     for slot, title, model_id in provider_menu_items(group, full_cfg)
-                     if model_id not in hidden_ids]
-            if not items:
+            # 密钥未配置：隐藏，当前引擎组除外（funasr 无密钥，跳过此过滤）
+            if group != "funasr" and group != active_group and not engine_group_configured(full_cfg, group):
                 continue
-            engine_menu.addAction(_group_title(group)).setEnabled(False)
-            for slot, title, model_id in items:
-                action = engine_menu.addAction(title)
-                action.setCheckable(True)
-                action.setChecked(bar._current_engine == model_id)
-                action.triggered.connect(
-                    lambda checked, m=model_id: bar.signals.engine_changed.emit(m)
-                )
-            continue
-        if group != current_group:
-            header = engine_menu.addAction(_group_title(group))
-            header.setEnabled(False)  # 禁用项 = 分组标题，不可点击
-            current_group = group
-        _add_engine_action(engine_menu, engine_id, label)
+            if engine_id in hidden_ids:
+                continue
+            visible.append((group, engine_id, label))
+
+        def _add_engine_action(menu: QMenu, engine_id: str, label: str) -> None:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(bar._current_engine == engine_id)
+            action.triggered.connect(
+                lambda checked, e=engine_id: bar.signals.engine_changed.emit(e)
+            )
+
+        # 云引擎分组渲染：ENGINE_CATEGORIES 注册的组（腾讯/阿里/讯飞/火山）
+        # 只显示分类名，点击切到该档配置的模型（见 presets.provider_menu_items）；
+        # funasr 单项引擎保持平铺。组内模型被隐藏时该分类项不显示。
+        rendered_groups: set[str] = set()
+        current_group = None
+        for group, engine_id, label in visible:
+            if group in ENGINE_CATEGORIES:
+                if group in rendered_groups:
+                    continue
+                rendered_groups.add(group)
+                # 局部名不能叫 `t`：本模块 import 了 i18n 的 t()，此处 `t` 的绑定
+                # 会让整个函数里的 t("key") 变成 UnboundLocalError（守卫见
+                # test_i18n.NoShadowingOfTranslationHelperTest）。
+                items = [(slot, title, model_id)
+                         for slot, title, model_id in provider_menu_items(group, full_cfg)
+                         if model_id not in hidden_ids]
+                if not items:
+                    continue
+                engine_menu.addAction(_group_title(group)).setEnabled(False)
+                for slot, title, model_id in items:
+                    action = engine_menu.addAction(title)
+                    action.setCheckable(True)
+                    action.setChecked(bar._current_engine == model_id)
+                    action.triggered.connect(
+                        lambda checked, m=model_id: bar.signals.engine_changed.emit(m)
+                    )
+                continue
+            if group != current_group:
+                header = engine_menu.addAction(_group_title(group))
+                header.setEnabled(False)  # 禁用项 = 分组标题，不可点击
+                current_group = group
+            _add_engine_action(engine_menu, engine_id, label)
 
     # 主题子菜单（内置主题 + 已加载主题包）：注册表按内部键索引，显示名单独取
     theme_menu = menu.addMenu(t("menu.theme"))
@@ -505,13 +498,9 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
     act_pause_bg.triggered.connect(
         lambda checked: bar.signals.pause_bg_audio_toggled.emit(checked)
     )
-    # 长按说话：勾选态按当前配置实时给出；写配置、重建热键、以及在
-    # 「热键解析不出主键」时明确报错都由 app._on_hold_to_talk_toggled 负责，
-    # 故提示里只承诺到那里为止（不写"已开启"，那种情况下它其实不生效）。
-    # 勾选态走与运行时**同一个** hold_flag_enabled：这里原先用 bool()，而运行时
-    # reject 掉认不出的值（拼错的字符串、YAML 裸整数 1）——两套真值规则下，配置里
-    # 手写一个裸 `1` 就是「菜单勾着、功能却是关的」，用户看到的是假象（"meby" 那个
-    # 缺陷的镜像）。显示端必须与运行时同源，哪怕因此显示为「关」（fail closed）。
+    # 长按说话：勾选态走与运行时同一个 hold_flag_enabled（认不出的值如 YAML
+    # 裸 `1` 一律 fail closed 显示为「关」），显示端必须与运行时同源；
+    # 写配置/重建热键/报错由 app._on_hold_to_talk_toggled 负责。
     act_hold = window_menu.addAction(t("menu.behavior.hold_to_talk"))
     act_hold.setCheckable(True)
     act_hold.setChecked(hold_flag_enabled(
@@ -530,11 +519,9 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
     if _elevated:
         act_elevate.setEnabled(False)
         act_elevate.setToolTip(t("menu.behavior.elevate.running_as_admin"))
-        # 全局菜单 QSS 把 :disabled 项渲染成"分组标题"样式（加粗小字、
-        # 左侧内缩 12px），禁用后的「程序提权」会字号变小且文字错位。
-        # 「程序行为」子菜单内没有分组标题，这里覆盖一条规则：禁用项
-        # 保持正常行的字号/字重/位置，仅文字置灰。置灰色沿用各主题
-        # 各自的禁用色（默认浅/深、凯尔特、赛博朋克）
+        # 全局 QSS 把 :disabled 渲染成"分组标题"样式（加粗小字、左缩进
+        # 12px）；「程序行为」子菜单无分组标题，这里覆盖一条规则：禁用项
+        # 保持正常行字号/字重/位置，仅文字置灰（沿用各主题禁用色）。
         if bar._knot_icon_mode:
             _dis_color = "#8a8a8a"
         elif bar._top_line_color is not None:
@@ -585,22 +572,8 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
 def prewarm_context_menu(bar: "FloatingBar") -> bool:
     """把「首次弹出菜单」的一次性成本从用户第一次右键挪到启动后。
 
-    实测（Windows / PySide6，本机）：**首次** `menu.exec()` 弹出要
-      * 创建 Qt::Popup 原生窗口（含 WA_TranslucentBackground 分层窗口 + DWM 合成）
-        —— 连空白无 QSS 的 QMenu 首次都要 ~0.42s；
-      * 首次解析菜单 QSS（QStyleSheetStyle 初始化）—— 再 ~0.26s；
-    合计 ~0.65~0.76s；**第二次只要 ~0.02s**。用户机器上这套被放大到 3s+，
-    表现为「初次启动后第一次右键要等一会儿」。
-
-    做法：在屏幕外 popup 一次同样的菜单并立刻关闭。两条路径都走完，
-    窗口类注册/样式引擎/分层窗合成都完成，而用户看不到任何东西。
-
-    必须真的 popup：`WA_DontShowOnScreen` 只做到一半（实测仅 0.65→0.167s）。
-    popup 之后**不需要** `processEvents()`——实测 `popup(); close()` 直连同样是
-    0.017s，省掉它可避免在事件循环回调里重入。
-
-    只构建/弹出、不触发任何 action，故无副作用。任何异常都吞掉并返回 False：
-    预热失败只意味着"第一次右键慢一次"，绝不能让启动失败。
+    必须真的 popup（`WA_DontShowOnScreen` 只省一部分成本），之后不要
+    processEvents 以免重入；任何异常都吞掉并返回 False，绝不拖垮启动。
     """
     try:
         menu = build_context_menu(bar, bar)
@@ -609,6 +582,6 @@ def prewarm_context_menu(bar: "FloatingBar") -> bool:
         menu.deleteLater()
         logger.debug("右键菜单已预热")
         return True
-    except Exception:      # noqa: BLE001  预热失败绝不能打断启动
+    except Exception:      # noqa: BLE001 预热失败绝不能打断启动
         logger.debug("右键菜单预热失败（忽略；首次右键会稍慢）", exc_info=True)
         return False

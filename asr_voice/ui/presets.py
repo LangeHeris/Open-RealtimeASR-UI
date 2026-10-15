@@ -1,20 +1,16 @@
 """引擎与主题预设。
 
-i18n（A6）：本模块的引擎档位名与模型标签是**导入期常量**（模块级列表），
-不能在定义处调 t() —— import 时界面语言还没定（见 i18n 模块 docstring 的
-「导入期求值禁令」）。故表里只存 **i18n 键**，由取值函数在调用点 t()：
-
-- 档位分类名：`engine.cat.<provider>.<slot>`（slot 在 provider 间会重名，
-  如 tencent 的 "general" 与 xfyun 的 "general" 文案不同，键必须带 provider）
+引擎档位名与模型标签是**导入期常量**（模块级列表），定义处不能调 t()（import
+时界面语言未定，见 i18n 模块 docstring），故表里只存 **i18n 键**在调用点取：
+- 档位分类名：`engine.cat.<provider>.<slot>`（slot 跨 provider 会重名，键必须带 provider）
 - 模型标签：`engine.model.<归一化 engine_id>`，见 `_model_key()`
-- 主题显示名：`theme.<键>`（由 `theme_registry.theme_display_name` 解析，
-  本模块 THEMES 的 "name" 仅是主题包自带原文的兜底）
+- 主题显示名：`theme.<键>`，由 `theme_registry.theme_display_name` 解析
 
-「每个模型都有词条」由 tests/test_engine_preset_i18n.py 守着：新增引擎
-模型却忘记补词条，测试立刻红（而不是等到切英文时菜单裸奔出 key）。
+「每个模型都有词条」由 tests/test_engine_preset_i18n.py 守着，漏补即红。
 """
 from ..config.loader import funasr_available
 from ..i18n import t
+from ..steam_integration import external_services_allowed
 
 # 腾讯云引擎三档分类：右键菜单只显示三个分类名，点击分类名即切换到该档
 # 配置的模型；每档实际调用哪个模型在设置页「引擎参数」的下拉菜单里配置
@@ -45,7 +41,7 @@ TENCENT_CATEGORIES = [
 
 # 阿里云百炼两档分类：官方无 1.0/2.0 版本线，按「大模型版/通用引擎」分。
 # 仅收录实时语音识别流式输出模型（8k 电话场景等非流式用途不列出）。
-# 每档单一模型（qwen3-asr-flash-realtime / fun-asr-realtime 即将下线，已移除），
+# 每档单一模型（qwen3-asr-flash-realtime / fun-asr-realtime 即将下线，已移除）
 # 均走 run-task 协议。
 ALIYUN_CATEGORIES = [
     ("llm", "engine.cat.aliyun.llm", [
@@ -70,7 +66,7 @@ XFYUN_CATEGORIES = [
     ]),
 ]
 
-# 火山两档分类：官方即分 1.0/2.0（bigasr/seedasr），每档仅一个模型，
+# 火山两档分类：官方即分 1.0/2.0（bigasr/seedasr），每档仅一个模型
 # 计费方式由设置页 volcengine.<family>_billing 单独控制。
 VOLCENGINE_CATEGORIES = [
     ("large_2_0", "engine.cat.volcengine.large_2_0", [
@@ -97,26 +93,20 @@ _KEEP = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 
 
 def _model_key(engine_id: str) -> str:
-    """engine_id -> `engine.model.<归一化>` i18n 键。
-
-    `16k_zh_en_2.0` -> `engine.model.16k_zh_en_2_0`；
-    `aliyun:qwen-audio-3.0-asr-flash-streaming`
-        -> `engine.model.aliyun_qwen_audio_3_0_asr_flash_streaming`
+    """engine_id -> `engine.model.<归一化>` i18n 键（非字母数字换下划线）。
 
     **测试依赖，勿删**：生产路径读表里的键字面量，本函数只被
-    `tests/test_engine_preset_i18n.py` 用来反查「表里的键确实按规则派生」。
+    `tests/test_engine_preset_i18n.py` 用来反查键名规则。
     """
     norm = "".join(ch if ch in _KEEP else "_" for ch in engine_id.lower())
     return f"engine.model.{norm}"
 
 
 def _cat_key(provider: str, slot: str) -> str:
-    """档位分类名的 i18n 键。
+    """档位分类名的 i18n 键（slot 跨 provider 会重名，键必须带 provider）。
 
-    **测试依赖，勿删**：生产路径（`provider_menu_items`）读表里的键字面量，
-    本函数只被 `tests/test_engine_preset_i18n.py` 用来反查键名规则。
-    键必须带 provider：slot 在 provider 之间会重名（如 general/llm），
-    只写 `engine.cat.<slot>` 会撞键。
+    **测试依赖，勿删**：生产路径读表里的键字面量，本函数只被
+    `tests/test_engine_preset_i18n.py` 反查键名规则。
     """
     return f"engine.cat.{provider}.{slot}"
 
@@ -124,13 +114,8 @@ def _cat_key(provider: str, slot: str) -> str:
 def provider_menu_items(group: str, cfg) -> list[tuple[str, str, str]]:
     """某云引擎组右键菜单分类项：[(slot, 分类名, engine_id), ...]。
 
-    档位值读取：
-    - tencent：menu_model_<slot> 配置键（设置页「调用」下拉可改）；
-    - aliyun：每档单一模型，无配置键，回落该档首项；
-    - xfyun：general 档复用 std_lang（cn/en -> "xfyun:std:cn"/"xfyun:std:en"），
-      llm 档固定 autodialect；
-    - volcengine：每档单模型，无需配置。
-    缺失/非法一律回落该档首项，保证配置写坏时菜单仍可用。
+    档位值来源：tencent 读 menu_model_<slot>；xfyun general 档复用 std_lang；
+    aliyun/volcengine 每档单模型取首项；缺失/非法一律回落该档首项（写坏仍可用）。
     """
     cats = ENGINE_CATEGORIES.get(group)
     if not cats:
@@ -165,7 +150,7 @@ def get_engines(order: str | None = None):
     组内枚举必须和设置界面可选项一一对应，否则配置里的 engine_id 在菜单里没有勾选项。
     """
     # 组内项与设置界面可选项一一对应，否则选中后菜单无勾选项。
-    # 云引擎组为各分类下全部叶子模型的平铺（右键菜单按分类名渲染，
+    # 云引擎组为各分类下全部叶子模型的平铺（右键菜单按分类名渲染
     # 此处供设置页「引擎排序」显隐过滤与显示名解析使用）
     by_group = {
         group: [(model_id, t(label_key))
@@ -174,11 +159,17 @@ def get_engines(order: str | None = None):
         for group, cats in ENGINE_CATEGORIES.items()
     }
     # 「（需安装）」是状态后缀而非模型名的一部分，故单独拼（未装依赖时提示用户去装）。
-    # 标签本身带「· 中文」（spec §8「仅中文」三处标注之一：引擎菜单）。
+    # 标签本身带「· 中文」：三处「仅中文」标注之一（引擎菜单）。
     funasr_label = t("engine.funasr.label")
     if not funasr_available():
         funasr_label += t("engine.funasr.needs_install")
     by_group["funasr"] = [("funasr:paraformer-zh-streaming", funasr_label)]
+
+    # 外部服务不可用时只呈现内置离线引擎（见 external_services_allowed）：
+    # 云引擎整组不进清单，右键「识别引擎」与设置页「引擎排序」都由此收敛为
+    # funasr 一项。放在排序之前 return，省掉 order 的无用计算。
+    if not external_services_allowed():
+        return list(by_group["funasr"])
 
     # 默认顺序；order 非空时按其重排，缺失项追加
     default_order = ["tencent", "aliyun", "xfyun", "volcengine", "funasr"]
@@ -218,11 +209,9 @@ def engines_by_group(order: str | None = None) -> dict[str, list[tuple[str, str]
     return grouped
 
 
-# 窄场景（悬浮条提示）用的更短显示名：条形主题文本区仅 ~211px，
-# 菜单标签「已切换：Paraformer 流式 · 中文」实测超宽，会被 elide_right 截掉尾部，
-# 故另配去掉「· 中文」的短名（199px 刚好放下）。只影响提示文案，右键菜单与设置页
-# 清单仍用 get_engines 的完整 label（funasr 不属 ENGINE_CATEGORIES，
-# 故 provider_menu_items 的分类标题也不受影响）。
+# 窄场景（悬浮条提示）用的更短显示名：文本区仅 ~211px，完整标签会被
+# elide_right 截尾，故另配去掉「· 中文」的短名。只影响提示文案，右键菜单与
+# 设置页清单仍用 get_engines 的完整 label。
 _HINT_SHORT_NAME_KEYS = {
     "funasr:paraformer-zh-streaming": "engine.funasr.short",
 }
@@ -243,22 +232,12 @@ def engine_display_name(engine_id: str) -> str:
     return engine_id
 
 
-# 内置主题预设：light/dark/minimal（任何构建都包含）。
-# 键为内部键（语言无关，写进 config 的 ui.theme_name），显示名放 "name"。
-# 主题键参与持久化与 i18n，不能跟界面语言绑死（历史上是中文名，见
-# loader.LEGACY_THEME_NAMES 的一次性迁移）。
-# 扩展主题（如赛博朋克风/凯尔特风格）走外部主题包：themes/ 目录 +
-# theme_registry 加载，见 docs/superpowers/specs/2026-08-28-theme-pack-dlc-design.md。
-# bg、text、accent 必填；border、top_line 可选，缺省由 _is_light 按明暗派生
-#
-# i18n（A6）：内置主题的 "name" 存的是 **i18n 键**而非显示名。它存在的意义
-# 只是与外部主题包的 theme.yaml 字段同构（`theme_registry._load_pack` 会把
-# 包里的 name 原样放进同一位置当兜底），**内置主题的取值永远走不到它**：
-# `theme_display_name` 先查 `theme.<键>` 词条，6 个内置键都有词条，兜底分支
-# 不会被触达。写中文会让守卫判它硬编；写键则即便某天真被读到，用户看到的
-# 也只是一个键名——比露出中文更符合"英文界面不该有中文"的底线。
+# 内置主题预设（light/dark/minimal，任何构建都含）。键为内部键，写进
+# config 的 ui.theme_name，参与持久化与 i18n，不能跟界面语言绑死
+# （loader.LEGACY_THEME_NAMES 负责一次性迁移）。bg/text/accent 必填，
+# border/top_line 可选，缺省由 _is_light 按明暗派生。"name" 存 i18n 键。
 THEMES = {
-    # 浅色：近白底、深灰字、蓝 accent；描边 15% 黑软边（#AARRGGBB），
+    # 浅色：近白底、深灰字、蓝 accent；描边 15% 黑软边（#AARRGGBB）
     # 与右键菜单表面同灰阶（context_menu 浅色分支同一 #f7f7f8）
     "light": {
         "name": "theme.light",

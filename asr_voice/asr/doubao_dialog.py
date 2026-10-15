@@ -1,32 +1,12 @@
-"""豆包端到端实时语音大模型（S2S RealtimeAPI）—— 客户端类层。
+"""豆包端到端实时语音大模型（S2S RealtimeAPI）客户端类层。
 
-接口文档：火山引擎《豆包端到端实时语音大模型 API》（修订记录最新 26.04.29）。
-帧编解码纯函数在 doubao_dialog_codec.py（Plan 1，已逐字节联调定案）；本模块
-只做 IO 编排：独立线程跑 asyncio loop、两段式握手时序、收发循环、生命周期
-与 4 个回调。
+帧编解码在 doubao_dialog_codec.py；本模块做 IO 编排：独立线程跑 asyncio
+loop、两段式握手、收发循环与 4 个回调。主线程调同步接口，回调在 asyncio
+线程触发，UI 层须经信号槽切回主线程。
 
-线程模型（照搬 volcengine_realtime.VolcengineRealtimeASR）：
-- 主线程调 start() / send_audio() / interrupt() / finish_session() / stop() 同步接口
-- "dialog-loop" 守护线程跑 asyncio loop：_connect / _send_loop / _recv_loop / _shutdown
-- 回调（on_state / on_event / on_audio / on_error）都在 asyncio 线程触发，
-  UI 层需经信号槽切回主线程（DialogController，Plan 3）
-
-与 ASR 客户端的关键差异（P0 联调定案，见设计文档「联调待验证清单」）：
-- 握手两段式：StartConnection(1) → 等 ConnectionStarted(50) →
-  StartSession(100) → 等 SessionStarted(150)（返回 dialog_id）
-- 无 sequence、无 gzip、无静音保活（server_vad 模式文档明确无需补静音）
-- 音频帧必须带 session id（定案 #2）
-- stop() 必须容忍 FinishSession 超时路径（前置约束 #2）：AI 正要开口时收尾，
-  等 152 超时 5s 后 FinishConnection 会收到 55000000 "the stream is done" 错误
-  帧——常态。_finishing 置位后所有错误帧/错误事件只记日志、不回调 on_error
-- 握手失败只打 status_code / 响应体 / X-Tt-Logid 三个字段，绝不 dump 鉴权头
-  （前置约束 #1：build_auth_headers 的 dict 含 X-Api-Access-Key）
-
-回调归属（消除歧义）：
-- 352 等音频帧 → on_audio(pcm)，不走 on_event
-- 51 / 153 / 599 / 0b1111 错误帧 → on_error(DialogErrorEvent)，不走 on_event
-- 其余 JSON 事件经 _translate_event 译成中立词汇 → on_event(neutral_event, payload)
-- 握手期间（150 未回）的错误不回调 on_error，统一由 start() 抛 DialogError 上报
+约束：stop() 须容忍 FinishSession 超时——等 152 超时后 FinishConnection 会
+回 55000000 "the stream is done" 错误帧，属常态；握手失败只打 status_code /
+响应体 / X-Tt-Logid，绝不 dump 含密钥的鉴权头。
 """
 
 from __future__ import annotations
@@ -78,7 +58,7 @@ STATE_SESSION_READY = "session_ready"  # SessionStarted(150) 已回，可收发
 STATE_DISCONNECTED = "disconnected"
 STATE_ERROR = "error"
 
-# ---- 客户端逻辑用到的服务端事件 ID（全集见设计文档「事件 ID 常量」）----
+# ---- 客户端逻辑用到的服务端事件 ID ----
 SERVER_CONNECTION_STARTED = 50
 SERVER_CONNECTION_FAILED = 51
 SERVER_SESSION_STARTED = 150
@@ -105,7 +85,7 @@ ErrorCallback = Callable[[DialogErrorEvent], None]   # 中立错误对象
 _ERROR_EVENTS = (SERVER_CONNECTION_FAILED, SERVER_SESSION_FAILED,
                  SERVER_DIALOG_ERROR)
 
-# ---- 豆包错误码 → 中文提示 / 可重连判定（从 core/dialog.py 下沉，spec §3.2）----
+# ---- 豆包错误码 → 中文提示 / 可重连判定（自 core/dialog.py 下沉）----
 
 DIALOG_ERROR_HINTS = {
     42000020: "对话配置有误，请到设置检查模型与人设",
@@ -153,11 +133,10 @@ def _make_error_event(code: int, message: str) -> DialogErrorEvent:
 
 
 def _header_items(headers) -> list[tuple[str, str]]:
-    """从 websockets 的 Headers 对象安全取 (name, value) 列表。
+    """从 websockets 的 Headers 安全取 (name, value) 列表。
 
-    websockets 17 的 Headers 是多值容器，dict()/items() 遇到重复头
-    （实测服务端会回两个 server-timing）会抛 KeyError，必须走 raw_items()；
-    旧版 websockets 的 response_headers 本身就是 (name, value) 列表，直接迭代。
+    多值容器走 raw_items()：重复头（服务端会回两个 server-timing）用
+    dict()/items() 会抛 KeyError；旧版 response_headers 是 pair 列表，直接迭代。
     """
     if headers is None:
         return []
@@ -180,14 +159,8 @@ def _header_items(headers) -> list[tuple[str, str]]:
 class DoubaoDialogClient:
     """豆包 S2S 对话客户端（一次实例 = 一条 WebSocket = 一个会话）。
 
-    每次进入对话新建实例（不复用连接）；跨轮上下文由上层把旧 dialog_id
-    传入构造参数、服务端在 150 返回新值续接（前置约束 #3）。
-
-    超时类常量做类属性，便于测试按实例覆盖加速：
-        CONNECT_TIMEOUT        建 ws + 等 ConnectionStarted(50)
-        SESSION_TIMEOUT        等 SessionStarted(150)
-        FINISH_SESSION_TIMEOUT 等 SessionFinished(152)——超时是常态（见模块 docstring）
-        SHUTDOWN_TIMEOUT       stop() 整体上限（含上一项）
+    每次进入对话新建实例（不复用连接）；跨轮上下文由上层把旧 dialog_id 传入
+    构造参数，服务端在 150 返回新值续接。
     """
 
     CONNECT_TIMEOUT = 10.0
@@ -228,7 +201,7 @@ class DoubaoDialogClient:
         self.app_id = app_id
         self.access_token = access_token
 
-        # StartSession payload 参数（build_start_session_payload 的子集，
+        # StartSession payload 参数（build_start_session_payload 的子集
         # DialogController 在 Plan 3 从配置节读出来传进来）
         self._session_kwargs: dict = {
             "model": model,
@@ -348,11 +321,10 @@ class DoubaoDialogClient:
                    or payload.get("error_message") or "")
 
     def _translate_event(self, event_id: int, payload: dict) -> list[tuple[str, dict]]:
-        """豆包 wire 事件 → 0..N 个中立 (event, payload)（spec 表 A）。
+        """豆包 wire 事件 → 0..N 个中立 (event, payload)。
 
         350 一对多：AI_TURN_START（开闸门/记 reply_id）+ AI_TRANSCRIPT（上屏文本）。
-        50/152/351/559/154 等不驱动状态机的事件落到末尾 return []，由该处记
-        INFO 日志留痕（DEBUG 默认不开，生产排障需 INFO），不上抛控制器。
+        不驱动状态机的轮末事件落到末尾 return [] 并记 INFO 留痕（DEBUG 默认不开）。
         """
         if event_id == SERVER_SESSION_STARTED:
             return [(SESSION_READY, {"dialog_id": self.dialog_id})]
@@ -510,11 +482,10 @@ class DoubaoDialogClient:
     # ---- 握手时序 ----
 
     async def _connect(self) -> None:
-        """两段式握手：建 ws → StartConnection(1) → 等 50 → StartSession(100) → 等 150。
+        """两段式握手：建 ws → StartConnection → 等 50 → StartSession → 等 150。
 
-        任一步失败/超时抛 DialogError（消息含 code 与 X-Tt-Logid）；失败与取消
-        （start 超时会 cancel 本协程）路径统一由 finally 关闭 ws，成功路径保留
-        连接并启动收发循环。
+        任一步失败/超时抛 DialogError；失败与取消路径由 finally 关 ws，成功路径
+        保留连接并启动收发循环。
         """
         self._audio_queue = asyncio.Queue()
         self._stop_event = asyncio.Event()
@@ -664,7 +635,7 @@ class DoubaoDialogClient:
                                    timeout=self.FINISH_SESSION_TIMEOUT)
         except asyncio.TimeoutError:
             # 前置约束 #2：AI 正要开口时收尾，152 不回是常态；继续走
-            # FinishConnection（随后服务端会回 55000000 "the stream is done"，
+            # FinishConnection（随后服务端会回 55000000 "the stream is done"
             # 由 _finishing 抑制，见 _on_error_frame）
             logger.warning("等待 SessionFinished(152) 超时 %.0fs（收尾常态路径）",
                            self.FINISH_SESSION_TIMEOUT)
@@ -715,10 +686,8 @@ class DoubaoDialogClient:
     def start(self) -> None:
         """建连并开会话（阻塞至 SessionStarted 或失败）。
 
-        失败抛 DialogError（消息含错误码与 X-Tt-Logid）；成功时 on_state 已
-        依次回调 connecting → connected → session_ready。超时预算含 ws 建连
-        （open_timeout 默认 10s）+ 两段握手 + 调度余量；超时会 cancel 建连
-        协程（触发其收尾关 ws）再清理线程。
+        失败抛 DialogError（含错误码与 X-Tt-Logid）；成功时 on_state 已依次回调
+        connecting → connected → session_ready。超时会 cancel 建连协程后再清理线程。
         """
         if self._thread is not None:
             raise DialogError("对话客户端已启动，请先 stop")
@@ -787,9 +756,8 @@ class DoubaoDialogClient:
     def send_audio(self, pcm: bytes) -> None:
         """上行一包 PCM（int16 小端 16k，20ms=640B）。未就绪时静默丢弃。
 
-        本方法从 PortAudio 采集回调线程调用（20ms 一次），不能抛异常：经
-        call_soon_threadsafe 投递（不建协程，无「检查后 loop 被清理」的
-        TOCTOU 泄漏），入队与背压（超上限丢最旧）都在 loop 线程内做。
+        从 PortAudio 采集回调线程调用，不能抛异常：经 call_soon_threadsafe 投递
+        （不建协程，避免检查后 loop 被清理的 TOCTOU 泄漏），入队与背压在 loop 线程内做。
         """
         loop = self._loop
         if not self._session_ready or loop is None or self._audio_queue is None:
@@ -814,9 +782,8 @@ class DoubaoDialogClient:
     def interrupt(self) -> None:
         """ClientInterrupt(515)。
 
-        MVP 不调用：server_vad 模式下服务端检测到用户开口会自行停止生成并
-        用 ASRInfo(450) 通知停播；515 是 push_to_talk 模式的打断手段，
-        留给将来接 push_to_talk（DialogController 不引用）。
+        当前不调用：server_vad 模式下服务端检测到用户开口会自行停播；515 是
+        push_to_talk 模式的打断手段，留给将来接入。
         """
         loop = self._loop
         if not self._session_ready or loop is None or not loop.is_running():

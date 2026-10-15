@@ -12,13 +12,16 @@ from __future__ import annotations
 import logging
 import math
 import sys
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal, QEvent, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QGuiApplication,
     QIcon,
+    QImage,
     QPainter,
     QPainterPath,
     QPen,
@@ -37,6 +40,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -52,6 +57,8 @@ from PySide6.QtWidgets import (
 from .. import __version__
 from ..hotkey.hold import hold_flag_enabled
 from ..i18n import t
+from ..steam_integration import external_services_allowed, is_steam_build
+from .doc_viewer import doc_path
 from .icons import app_icon, uac_shield_icon
 from .presets import (
     ENGINE_CATEGORIES,
@@ -78,12 +85,7 @@ from .settings_widgets import (
 logger = logging.getLogger(__name__)
 
 def _key_part(value: str) -> str:
-    """把 combo 选项值归一化成 i18n 键的一段。
-
-    选项值形如 "2"、"cn"、"1.2.1.1"、"qwen-audio-3.0-realtime-plus"，
-    其中的 . / - / 大小写都不宜直接进键名；空串（"跟随「识别引擎」"这类
-    "无选择"项）用 "auto" 占位，避免出现 set.combo.x.y. 这种悬空键。
-    """
+    """combo 选项值归一化成键名一段：非字母数字转 `_`，空串用 "auto" 占位（免悬空键）。"""
     part = str(value or "").strip().lower()
     if not part:
         return "auto"
@@ -133,7 +135,7 @@ _COMBO_LABELS = {
         "cpu": "set.combo.funasr.device.cpu",
         "cuda": "set.combo.funasr.device.cuda",
     },
-    # FunASR 分块档位：**值为中文原文**（历史持久化值，见 core/funasr 的取值判定），
+    # FunASR 分块档位：值为中文原文（历史持久化值，见 core/funasr 的取值判定）
     # 只翻显示名，不动值——否则老配置读不回来。
     ("funasr", "chunk_preset"): {
         "默认": "set.combo.funasr.chunk_preset.default",  # noqa: i18n
@@ -215,14 +217,9 @@ _FLOAT_FIELDS = {("dialog.qwen", "vad_threshold")}
 
 
 def _sec(title_key: str) -> tuple:
-    """分组卡片内的小节标题（如「实时语音转写大模型 / 标准版」「豆包 1.0 / 2.0」）。
+    """分组内小节标题：复用字段七元组、wtype="header" 渲染为次级标题行。
 
-    复用字段七元组结构，wtype="header" 时 _build_group 渲染为
-    次级标题行而非表单行。
-
-    title_key 是 i18n 键而非文案：本函数在导入期被 _FIELDS 之外的
-    调用点求值（页构建期），但为与其它字段位口径一致、也避免调用方
-    忘记 t()，这里只收键，文案统一在渲染点 t(field[2]) 取。
+    `title_key` 是 i18n 键而非文案，文案统一在渲染点 t(field[2]) 取。
     """
     return ("", None, title_key, "header", None, "", "")
 
@@ -235,13 +232,30 @@ def _tier_models(group: str, slot: str) -> list[str]:
     return []
 
 
-# ---- 图标（自绘线稿，参考图风格：细线 1.5px + 圆头端点） ----
+# ---- 图标（常规图标＝自绘线稿：细线 1.5px + 圆头端点；steam 例外，用官方标志位图） ----
+
+def _steam_symbol_pixmap(color: str) -> QPixmap | None:
+    """内置 Steam 标志（已按最终尺寸预渲染）→ 染成目标色；资源缺失返回 None。
+
+    运行期只染色、不缩放（先渲大再缩会糊掉圆环细节）；图形形状不得改动。
+    """
+    path = Path(__file__).resolve().parent.parent / "assets" / "steam_symbol.png"
+    pm = QPixmap(str(path))
+    if pm.isNull():
+        return None
+    # SourceIn：只保留原图透明度、整体覆盖成目标色（单色化）
+    q = QPainter(pm)
+    q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    q.fillRect(pm.rect(), QColor(color))
+    q.end()
+    return pm
+
 
 def _nav_pixmap(kind: str, color: str) -> QPixmap:
     """画一个 18×18 线稿图标（导航用）。
 
-    kind：grid=常规（四方块）/ key=引擎密钥（钥匙）/ sliders=引擎参数（滑杆）/
-    sparkle=AI 修正（四角星）/ mic=录音检测（麦克风）/ info=关于（圆点 i）。
+    kind：grid=四方块 / key=钥匙 / sliders=滑杆 / sparkle=四角星 /
+    mic=麦克风 / steam=官方标志位图 / info=圆点 i。
     """
     pm = QPixmap(18, 18)
     pm.fill(Qt.GlobalColor.transparent)
@@ -286,6 +300,16 @@ def _nav_pixmap(kind: str, color: str) -> QPixmap:
         p.drawRoundedRect(QRectF(8, 8.5, 8.5, 7), 3, 3)
         p.drawLine(14.5, 15.5, 15.5, 17.5)
         p.drawLine(15.5, 17.5, 12, 15.5)
+    elif kind == "steam":
+        # Steam 页：官方标志（不再手绘，见 _steam_symbol_pixmap 的来源说明）。
+        symbol = _steam_symbol_pixmap(color)
+        if symbol is not None:
+            off = (18 - symbol.width()) // 2
+            p.drawPixmap(off, off, symbol)
+        else:
+            # 兜底：资源缺失（被裁剪的构建 / 文件被删）时保底一个可辨识的图形
+            p.drawEllipse(QRectF(3.5, 3.5, 11, 11))
+            p.drawLine(6.5, 11.5, 11.5, 6.5)
     else:  # info
         p.drawEllipse(QRectF(1.5, 1.5, 15, 15))
         p.drawEllipse(QRectF(8.2, 4.8, 1.6, 1.6))
@@ -302,6 +326,97 @@ def _nav_icon(kind: str) -> QIcon:
     return ic
 
 
+def _text_menu_dim_color(hex_color: str) -> str:
+    """#RRGGBB -> rgba(...) 透明版：禁用菜单项的弱化文字色（明暗主题通用）。"""
+    v = int(hex_color.lstrip("#"), 16)
+    return "rgba({},{},{},{})".format((v >> 16) & 255, (v >> 8) & 255, v & 255, 0.35)
+
+
+def _build_text_menu(edit, pal: dict, pos=None):
+    """构建文本框右键菜单（与 exec 拆开：测试可直接检查而不阻塞）。
+
+    启用态按当前文本状态算、对齐 Qt 默认菜单；只读框只留复制/全选。
+    禁用项必须有弱化色，否则与可用项同色分不出来。
+    """
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QMenu, QTextBrowser
+
+    is_line = isinstance(edit, QLineEdit)
+    is_browser = isinstance(edit, QTextBrowser)
+    read_only = edit.isReadOnly()
+    sel = (edit.hasSelectedText() if is_line
+           else edit.textCursor().hasSelection())
+    secret = (edit.echoMode() == QLineEdit.EchoMode.Password
+              if is_line else False)
+    if is_line:
+        full = edit.text()
+        fully = sel and edit.selectedText() == full
+    else:
+        cur = edit.textCursor()
+        full = edit.toPlainText()
+        fully = cur.selectionStart() == 0 and cur.selectionEnd() == len(full)
+    clip = QGuiApplication.clipboard().text()
+    paste_ok = (not read_only and bool(clip)) if is_line else edit.canPaste()
+    if is_line:
+        undo_ok, redo_ok = edit.isUndoAvailable(), edit.isRedoAvailable()
+    else:
+        # QTextEdit.undoAvailable 不带括号是信号不是属性值，走 document 读
+        undo_ok = edit.document().isUndoAvailable()
+        redo_ok = edit.document().isRedoAvailable()
+    menu = QMenu(edit)
+    menu.setStyleSheet(
+        "QMenu{background:%s;color:%s;border:1px solid %s;padding:4px;}"
+        "QMenu::item{padding:5px 18px;border-radius:4px;}"
+        "QMenu::item:selected{background:%s;}"
+        "QMenu::item:disabled{color:%s;}"
+        % (pal["panel"], pal["text"], pal["border"], pal["combo_sel"],
+           _text_menu_dim_color(pal["text"])))
+
+    def act(key, slot, enabled):
+        a = menu.addAction(t(key))
+        a.triggered.connect(slot)
+        a.setEnabled(enabled)
+
+    if read_only or is_browser:
+        # 只读框（热键捕获、文档浏览）默认菜单只有复制/全选，保持同形态；
+        # 浏览框光标在链接上时 Qt 还带「复制链接地址」，文档外链要保住
+        act("set.textmenu.copy", edit.copy, sel and not secret)
+        if is_browser and pos is not None:
+            href = (edit.cursorForPosition(pos)
+                    .charFormat().anchorHref() or "")
+            if href:
+                act("set.textmenu.copy_link",
+                    lambda: QGuiApplication.clipboard().setText(href), True)
+        act("set.textmenu.select_all", edit.selectAll, bool(full) and not fully)
+        return menu
+
+    act("set.textmenu.undo", edit.undo, undo_ok)
+    act("set.textmenu.redo", edit.redo, redo_ok)
+    menu.addSeparator()
+    act("set.textmenu.cut", edit.cut, sel and not read_only and not secret)
+    act("set.textmenu.copy", edit.copy, sel and not secret)
+    act("set.textmenu.paste", edit.paste, paste_ok)
+    act("set.textmenu.delete",
+        edit.del_ if is_line
+        else lambda: edit.textCursor().removeSelectedText(),
+        sel and not read_only)
+    menu.addSeparator()
+    act("set.textmenu.select_all", edit.selectAll, bool(full) and not fully)
+    return menu
+
+
+def _install_text_menu(edit, pal: dict) -> None:
+    """文本框右键换应用主题菜单：windows11 默认菜单带系统图标，与界面不符。"""
+    edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def _on_menu(pos) -> None:
+        menu = _build_text_menu(edit, pal, pos)
+        menu.exec(edit.mapToGlobal(pos))
+        menu.deleteLater()
+
+    edit.customContextMenuRequested.connect(_on_menu)
+
+
 # 页面名 i18n 键 -> 图标 kind（导航顺序即页面顺序）。
 # 键化而非直接存页名：本表在导入期求值，此刻语言未定（见 i18n 模块的
 # 「导入期求值禁令」），存中文会把页名永久冻结成导入时那一门语言。
@@ -312,14 +427,13 @@ _NAV_KINDS = {
     "set.page.ai_fix": "sparkle",
     "set.page.recording": "mic",
     "set.page.voice_mode": "chat",
+    "set.page.steam": "steam",
     "set.page.about": "info",
 }
 
-# 关于页「开源组件」卡：(库名, 许可证)。按许可证声明要求，
-# 打包版实际随附的解释器与间接依赖（CPython、PortAudio、CFFI 等）一并列出。
-# 许可号是**法律标识**（SPDX 标识 / 官方名称），不翻译、不抽串；
-# 仅"MIT 类许可""MIT（代码）/ Apache-2.0（模型权重）"这两条含描述性汉字，
-# 故第二项直接存 i18n 键，渲染时 t()（无词条时 t() 回退键名，等价于原样显示）。
+# 关于页「开源组件」卡：(库名, 许可证)。
+# 许可号是法律标识（SPDX 标识 / 官方名称），不翻译、不抽串；含描述性汉字的条目
+# 第二项直接存 i18n 键，渲染时 t()（无词条时回退键名，等价于原样显示）。
 _ABOUT_OSS = [
     ("CPython", "PSF"),
     ("PySide6 / Shiboken6", "LGPL-3.0"),
@@ -342,15 +456,366 @@ _ABOUT_OSS = [
 # 关于页「联系方式」卡：B 站空间动态（文档阅读 / 版本更新发布渠道）
 _ABOUT_CONTACT_URL = "https://space.bilibili.com/3492318/dynamic"
 
+# 关于页「使用帮助」卡：仓库里的用户文档，按界面语言选中文/英文版
+_ABOUT_DOC_URLS = {
+    "zh": "https://github.com/LangeHeris/Open-RealtimeASR-UI/blob/main/docs/User_Doc_zh.md",
+    "en": "https://github.com/LangeHeris/Open-RealtimeASR-UI/blob/main/docs/User_Doc_en.md",
+}
+_ABOUT_DOC_URL = _ABOUT_DOC_URLS["zh"]
+
+
+# ---- 创意工坊：物品行的文本与提示 ----
+# 标题从本地清单（ori_workshop.json）读，等价于发布流程上传的标题——不必走
+# Steam 的异步 UGC 查询（flat 层拿不到 CallResult 绑定）。
+# 未安装 / 无清单的物品退回显示 `#ID`，完整 ID 与本地目录在悬停提示里。
+def _workshop_installed_manifest(item):
+    """已安装的 SDK 物品 → 解析本地清单；未安装 / 无清单返回 None。"""
+    if not item.install_dir:
+        return None
+    from pathlib import Path
+
+    from ..workshop import parse_manifest
+
+    return parse_manifest(Path(item.install_dir), item.item_id)
+
+
+def _workshop_kind_bits(manifest) -> tuple:
+    """清单 → （方块字形, 副标题文案）。SDK 视图与文件系统视图共用防漂移。"""
+    kinds = list(manifest.kinds)
+    if manifest.capabilities and not kinds:
+        kinds = ["addon"]
+    glyph = (_WORKSHOP_KIND_GLYPH.get(kinds[0], "package")
+             if len(kinds) == 1 else "package")
+    subtitle = "、".join(t(f"set.workshop.kind.{k}") for k in manifest.kinds)
+    if manifest.capabilities:
+        extra = t("set.workshop.kind.addon")
+        subtitle = f"{subtitle}、{extra}" if subtitle else extra
+    return glyph, subtitle
+
+
+def _workshop_item_text(item, name: str = "") -> str:
+    """一行状态文本：安装/下载/待更新 三态（有包名时以包名替代 ID 作主语）。"""
+    label = name or t("set.workshop.item_id", item_id=item.item_id)
+    if item.downloading or item.download_pending:
+        return f"{label} — " + t("set.workshop.installing",
+                                percent=item.download_percent)
+    if item.needs_update:
+        return f"{label} — " + t("set.workshop.needs_update")
+    if item.installed:
+        return f"{label} — " + t("set.workshop.installed")
+    return f"{label} — " + t("set.workshop.subscribed")
+
+
+def _workshop_item_tooltip(item) -> str:
+    """悬停详情：物品 ID 与本地目录（排查"装了却不生效"时最有用的一行）。"""
+    lines = [t("set.workshop.item_id", item_id=item.item_id)]
+    if item.install_dir:
+        lines.append(item.install_dir)
+    return "\n".join(lines)
+
+
+def _workshop_pack_text(manifest) -> str:
+    """只读视图的一行：**包名**（ori_workshop.json 的 name）+ 内容类型。"""
+    parts = [t(f"set.workshop.kind.{k}") for k in manifest.kinds]
+    # capabilities 不是内容类型（kinds 里不会有），功能包单独补一个标签——
+    # 否则"云端与 AI 功能包"这种无内容条目的物品在列表里只剩一个光秃秃的名字
+    if manifest.capabilities:
+        parts.append(t("set.workshop.kind.addon"))
+    kinds = "、".join(parts)
+    return f"{manifest.name} — {kinds}" if kinds else manifest.name
+
+
+def _workshop_pack_tooltip(manifest) -> str:
+    """只读视图的悬停详情：包目录 + 版本/作者（有就显示）。"""
+    lines = [str(manifest.item_dir)]
+    meta = " · ".join(x for x in (manifest.version, manifest.author) if x)
+    if meta:
+        lines.append(meta)
+    return "\n".join(lines)
+
+
+def _workshop_selected_id(lst) -> int:
+    """取列表当前选中行的物品 ID（无选中返回 0）。"""
+    row = lst.currentRow()
+    if row < 0:
+        return 0
+    entry = lst.item(row)
+    if entry is None:
+        return 0
+    try:
+        return int(entry.data(Qt.ItemDataRole.UserRole) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _workshop_community_url() -> str:
+    """本应用的社区创意工坊页。
+
+    用 AppID 而不是硬编码：AppID 只能由平台客户端注入（项目约定「真 ID
+    不入库」），拿不到时退回 Steam 首页而不是拼一个错的链接。
+    """
+    try:
+        from ..steam_integration import get_integration
+
+        integ = get_integration()
+        app_id = integ.app_id()
+    except Exception:
+        app_id = 0
+    if app_id:
+        return f"https://steamcommunity.com/app/{int(app_id)}/workshop/"
+    return "https://steamcommunity.com/workshop/"
+
+
+# ---- 创意工坊：物品行的渲染 ----
+# 行控件对鼠标透明（WA_TransparentForMouseEvents）——点击/悬停/选中/双击仍归
+# QListWidget 处理，否则交互被这层吃掉。
+# 所有 objectName 一律带 workshop 前缀，避免污染其它页面的样式。
+
+# 内容类型（ori_workshop.json 的 kinds 取值）-> 图标文件名（assets/workshop/ 下
+# Lucide，ISC 授权，见 THIRD_PARTY_NOTICES.md「界面图标」一节）。多类型 / 未知
+# -> package。换图标只改这里 + 换 assets/workshop/ 里的 SVG 再跑
+# tools/render_workshop_icons.py，手绘回退映射（_WORKSHOP_GLYPH_DRAWN）跟着加一项。
+_WORKSHOP_KIND_GLYPH = {
+    "models": "cpu",
+    "themes": "palette",
+    "fonts": "type",
+    "phrases": "list",
+    "prompts": "sparkles",
+    "addon": "puzzle",
+}
+
+# 图标名 -> 手绘图形的分支名。只在 assets/workshop/ 资源缺失时生效（精简
+# 安装 / 手动删文件 / 打包漏投），保证界面不破；资源正常时永远走上面的 PNG。
+_WORKSHOP_GLYPH_DRAWN = {
+    "cpu": "chip",
+    "palette": "drop",
+    "type": "letter",
+    "list": "lines",
+    "sparkles": "sparkle",
+    "puzzle": "plus",
+    "package": "package",
+}
+
+# 图标资源目录（与 _steam_symbol_pixmap 同一套 Path 定位：frozen 下也能解析）
+_WORKSHOP_ICON_DIR = Path(__file__).resolve().parent.parent / "assets" / "workshop"
+# (图标名, 颜色, 尺寸, dpr) -> 已染色的 QPixmap；设置页反复重绘列表时省掉重复加载
+_WORKSHOP_ICON_CACHE: dict = {}
+
+# 列表最多显示几行（再多交给滚动条），以及取不到行高时的回落值
+_WORKSHOP_LIST_MAX_ROWS = 5
+_WORKSHOP_ROW_FALLBACK_H = 52
+
+
+def _screen_dpr() -> float:
+    """主屏 devicePixelRatio；拿不到屏幕（offscreen / 极端早期启动）按 1.0。"""
+    try:
+        screen = QGuiApplication.primaryScreen()
+    except Exception:
+        return 1.0
+    return float(screen.devicePixelRatio()) if screen is not None else 1.0
+
+
+def _workshop_icon_pixmap(glyph: str, color: str, size: int,
+                          dpr: float) -> QPixmap | None:
+    """assets/workshop/ 的 Lucide 图标 → 染色后的 QPixmap；资源缺失返回 None。
+
+    单色位图 + SourceIn 整体染色，只保留原图透明度；@2x 自带 DPR=2，高 DPI 直接取用不放大。
+    """
+    key = (glyph, color, size, dpr)
+    cached = _WORKSHOP_ICON_CACHE.get(key, False)
+    if cached is not False:
+        return None if cached is None else cached
+    pm = None
+    # 高 DPI 优先 @2x，缺失退回 1x（渲染尺寸由 QLabel 侧按 DPR 缩放，只是略软）
+    for name in (f"{glyph}@2x.png" if dpr > 1.0 else f"{glyph}.png",
+                 f"{glyph}.png" if dpr > 1.0 else f"{glyph}@2x.png"):
+        path = _WORKSHOP_ICON_DIR / name
+        if path.is_file():
+            pm = QPixmap(str(path))
+            if not pm.isNull():
+                break
+            pm = None
+    if pm is None:
+        _WORKSHOP_ICON_CACHE[key] = None
+        return None
+    q = QPainter(pm)
+    q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    q.fillRect(pm.rect(), QColor(color))
+    q.end()
+    _WORKSHOP_ICON_CACHE[key] = pm
+    return pm
+
+
+def _workshop_glyph_pixmap(glyph: str, color: str, size: int = 20) -> QPixmap:
+    """size×size 的内容类型图标：优先 Lucide 位图，缺失时回退手绘线稿。
+
+    字形只按**内容类别**区分，不画厂商商标；坐标按 size×size 逻辑空间书写，高 DPI 整体 scale。
+    """
+    dpr = _screen_dpr()
+    icon = _workshop_icon_pixmap(glyph, color, size, dpr)
+    if icon is not None:
+        return icon
+    drawn = _WORKSHOP_GLYPH_DRAWN.get(glyph, "package")
+    # 手绘回退也走 QImage：带 DPR 的 QPixmap 上直接画圆角矩形会触发 Qt 的
+    # 右下角填充 bug（见 _workshop_tile_pixmap 的说明）
+    dev = max(1, int(round(size * dpr)))
+    img = QImage(dev, dev, QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if dpr != 1.0:
+        p.scale(dpr, dpr)
+    pen = QPen(QColor(color))
+    pen.setWidthF(1.5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    if drawn == "chip":                      # 模型：芯片
+        p.drawRoundedRect(QRectF(5.5, 5.5, 9.0, 9.0), 2.0, 2.0)
+        for x in (8.0, 12.0):
+            p.drawLine(x, 3.2, x, 5.5)
+            p.drawLine(x, 14.5, x, 16.8)
+    elif drawn == "drop":                    # 主题：一滴
+        path = QPainterPath()
+        path.moveTo(10.0, 3.0)
+        path.cubicTo(15.0, 9.0, 15.0, 12.0, 13.2, 14.2)
+        path.cubicTo(11.0, 17.0, 9.0, 17.0, 6.8, 14.2)
+        path.cubicTo(5.0, 12.0, 5.0, 9.0, 10.0, 3.0)
+        p.drawPath(path)
+    elif drawn == "letter":                  # 字体：A
+        p.drawLine(5.0, 16.0, 10.0, 4.0)
+        p.drawLine(10.0, 4.0, 15.0, 16.0)
+        p.drawLine(7.2, 11.6, 12.8, 11.6)
+    elif drawn == "lines":                   # 短语：三行词条
+        p.drawLine(4.0, 6.0, 16.0, 6.0)
+        p.drawLine(4.0, 10.0, 13.0, 10.0)
+        p.drawLine(4.0, 14.0, 16.0, 14.0)
+    elif drawn == "sparkle":                 # 提示词：四角星
+        path = QPainterPath()
+        pts = [(10.0, 2.6), (11.9, 8.1), (17.4, 10.0), (11.9, 11.9),
+               (10.0, 17.4), (8.1, 11.9), (2.6, 10.0), (8.1, 8.1)]
+        path.moveTo(*pts[0])
+        for px, py in pts[1:]:
+            path.lineTo(px, py)
+        path.closeSubpath()
+        p.drawPath(path)
+    elif drawn == "plus":                    # 功能扩展：圈加号
+        p.drawEllipse(QRectF(3.2, 3.2, 13.6, 13.6))
+        p.drawLine(10.0, 6.8, 10.0, 13.2)
+        p.drawLine(6.8, 10.0, 13.2, 10.0)
+    else:                                    # package：包裹盒（物品本身的默认形）
+        p.drawRoundedRect(QRectF(3.0, 4.5, 14.0, 12.0), 2.0, 2.0)
+        p.drawLine(3.0, 8.5, 17.0, 8.5)
+        p.drawLine(8.0, 8.5, 8.0, 11.0)
+        p.drawLine(8.0, 11.0, 12.0, 11.0)
+        p.drawLine(12.0, 11.0, 12.0, 8.5)
+    p.end()
+    pm = QPixmap.fromImage(img)
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
+def _workshop_tile_pixmap(glyph: str, bg: str, fg: str, size: int = 30) -> QPixmap:
+    """类型方块：圆角底 + 居中字形（按主屏 DPR 出图，高 DPI 不放大成马赛克）。
+
+    **必须画在 QImage 上再 `fromImage` 转 QPixmap**：Qt 对自带 DPR 的 QPixmap 直接
+    开 QPainter 画圆角矩形有 bug（圆角失效、右下角被填死）；QImage 无 DPR 语义。
+    """
+    dpr = _screen_dpr()
+    dev = max(1, int(round(size * dpr)))
+    img = QImage(dev, dev, QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(bg))
+    p.drawRoundedRect(QRectF(0.5, 0.5, dev - 1.0, dev - 1.0), 8.0 * dpr, 8.0 * dpr)
+    p.end()
+    g = _workshop_glyph_pixmap(glyph, fg)
+    # 图标可能自带 DPR（@2x 资源是 2.0）：先折成逻辑边长再居中，否则高 DPI 下
+    # 会把 40 设备像素当成 40 逻辑像素，图标跑出方块外
+    g_dpr = g.devicePixelRatio() or 1.0
+    off = (size - g.width() / g_dpr) / 2.0
+    q = QPainter(img)
+    q.setRenderHint(QPainter.RenderHint.Antialiasing)
+    q.drawPixmap(off * dpr, off * dpr, g)
+    q.end()
+    pm = QPixmap.fromImage(img)
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
+def _workshop_item_state(item) -> tuple:
+    """SDK 物品 -> (状态文案, 徽标 objectName, 下载百分比或 None)。
+
+    文案直接复用既有的 `set.workshop.*` 词条（不新增词条）：这些状态原来挤在
+    同一行文本的尾巴上，现在拆成"标题 + 徽标"两层信息。
+    """
+    if item.downloading or item.download_pending:
+        pct = int(item.download_percent or 0)
+        return (t("set.workshop.installing", percent=pct),
+                "workshopChipBusy", pct)
+    if item.needs_update:
+        return (t("set.workshop.needs_update"), "workshopChipTodo", None)
+    if item.installed:
+        return (t("set.workshop.installed"), "workshopChipDone", None)
+    return (t("set.workshop.subscribed"), "workshopChipIdle", None)
+
+
+class _WorkshopRow(QWidget):
+    """工坊列表的一行：方块 + 标题/副标题 +（可选）进度条 + 状态徽标。"""
+
+    def __init__(self, palette: dict, *, glyph: str, title: str, subtitle: str = "",
+                 chip: str = "", chip_style: str = "workshopChipIdle",
+                 progress: Optional[int] = None):
+        super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(9, 6, 10, 6)
+        row.setSpacing(10)
+
+        tile = QLabel()
+        # 方块底色刻意取 `card_border` 而不是 `input_bg`：列表自己的底色就是
+        # input_bg，同色等于方块整个隐形（目检发现）
+        tile.setPixmap(_workshop_tile_pixmap(
+            glyph, palette["card_border"], palette["accent"]))
+        tile.setFixedSize(30, 30)
+        row.addWidget(tile, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        name = QLabel(title)
+        name.setObjectName("workshopRowTitle")
+        col.addWidget(name)
+        if subtitle:
+            sub = QLabel(subtitle)
+            sub.setObjectName("workshopRowSub")
+            col.addWidget(sub)
+        if progress is not None:
+            bar = QProgressBar()
+            bar.setObjectName("workshopProgress")
+            bar.setRange(0, 100)
+            bar.setValue(max(0, min(100, progress)))
+            bar.setTextVisible(False)
+            bar.setFixedHeight(4)
+            col.addWidget(bar)
+        row.addLayout(col, 1)
+
+        if chip:
+            badge = QLabel(chip)
+            badge.setObjectName(chip_style)
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            row.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+
 
 
 # 字段定义：(section, key, label, widget类型, 附加参数, 行内说明, 悬停提示)
 # widget类型：str=文本框 / int=数字框(min,max) / slider=滑块+数字框(min,max,step[,suffix]) /
-#            bool=拨动开关 / combo=下拉(options) / secret=密码框 / hotkey=按键捕获 /
-#            device_combo=设备下拉 / billing=计费下拉 / header=小节标题
-# 命名约定：标签只写名词本身；单位进数字框后缀；版本限定（大模型版/标准版）
-# 用小节标题；说明（desc）一行内解释用途，细节（tip）悬停展开。
-# 引擎主开关不在此处（右键菜单"识别引擎"已可切换，避免重复入口）
+# bool=拨动开关 / combo=下拉(options) / secret=密码框 / hotkey=按键捕获 /
+# device_combo=设备下拉 / billing=计费下拉 / header=小节标题
 def _gpu_switch_available() -> bool:
     """显卡加速开关的显示条件：DLC 已装（能力层）或 env_gpu 目录存在（开发机）。
 
@@ -571,9 +1036,10 @@ _FIELDS = [
     ("dialog.qwen", "enable_search", "set.dialog_qwen.enable_search", "bool", None,
      "set.dialog_qwen.enable_search.desc",
      None),
-    # ---- 商店版专用 ----
-    # 字段恒在表里（配置项本身与发行渠道无关），是否成组渲染由
-    # 是否出现由发行层判定函数决定：开源版整组不出现。
+    # ---- 发行构建专用 ----
+    # 字段恒在表里（配置项本身与发行渠道无关），是否渲染由发行层判定函数
+    # 决定：源码构建整组不出现；cloud_sync_keys 另有「已打开过就仍渲染」的
+    # 例外，见 _steam_page_groups 里的说明。
     ("steam", "cloud_sync_keys", "set.steam.cloud_sync_keys", "bool", None,
      "set.steam.cloud_sync_keys_desc",
      "set.steam.cloud_sync_keys_tip"),
@@ -610,7 +1076,7 @@ _ADVANCED_FIELDS = [
      "set.funasr.model.tip"),
     ("funasr", "device", "set.funasr.device", "combo", ["auto", "cpu", "cuda"],
      "set.funasr.device.desc", None),
-    # 候选值是**持久化原文**（中文），显示名在 _COMBO_LABELS 里映射到词条
+    # 候选值是持久化原文（中文），显示名在 _COMBO_LABELS 里映射到词条
     ("funasr", "chunk_preset", "set.funasr.chunk_preset", "combo", ["默认", "低延迟", "高准确"],  # noqa: i18n
      "set.funasr.chunk_preset.desc",
      "set.funasr.chunk_preset.tip"),
@@ -745,12 +1211,7 @@ _ADVANCED_FIELDS = [
 
 
 def _field_label_keys() -> dict:
-    """(section, key) -> 该字段标签的 i18n 键。
-
-    供运行时报错文案取「哪个字段有问题」的显示名用（如数值校验失败）。
-    不在导入期缓存：_FIELDS/_ADVANCED_FIELDS 里的第 3 位本身就是键，
-    每次现算开销可忽略，且避免再多一处导入期求值点。
-    """
+    """(section, key) -> 该字段标签的 i18n 键（运行时报错文案取显示名用）。"""
     out = {}
     for table in (_FIELDS, _ADVANCED_FIELDS):
         for f in table:
@@ -856,6 +1317,12 @@ class SettingsDialog(QDialog):
     # 语音对话测试连接完成（后台线程 emit，自动 queued 回主线程）
     dialog_test_done = Signal(bool, str)
 
+    # 创意工坊：后台动作完成通知（ok, 动作, 详情）。
+    # 动作："publish"（详情=标题）/ "unsubscribe"（详情=物品 ID）。
+    # 之所以不让后台线程直接碰控件：退订/上传都是阻塞调用
+    # （上传大包可达十几分钟），跑在后台线程里，回主线程只能靠信号。
+    workshop_done = Signal(bool, str, str)
+
     # 「永久为管理员启动」已确认 UAC：提权实例已接管，app 收到后退出当前实例
     restart_requested = Signal()
 
@@ -873,11 +1340,9 @@ class SettingsDialog(QDialog):
         # Win11 DWM 自动裁切，文字恢复 ClearType 锐度（Win10 为方角）
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
 
-        # 字体：设置界面固定字体栈（不跟随用户自定义字体）——用户字体通常只有
-        # 单字重，加粗/层次出不来；栈首普惠体（与悬浮条/菜单统一，多字重已随
-        # fonts/ 全量注册），文件缺失时 Qt 自动落栈内系统回退位，不崩不空白。
-        # 基础字号 10.5pt：输入框/按钮/下拉框等无显式字号的控件整体更清晰
-        # （设置界面在 125%/150% 缩放下不再偏小）
+        # 字体：设置界面固定字体栈（不跟随用户自定义字体）——用户字体通常只有单字重，
+        # 加粗/层次出不来；栈首普惠体（多字重已随 fonts/ 全量注册），文件缺失时
+        # Qt 自动落栈内系统回退位，不崩不空白。基础字号 10.5pt。
         font = QFont()
         font.setFamilies(["Alibaba PuHuiTi 3.0",
                           "Segoe UI Variable Text", "Segoe UI",
@@ -903,7 +1368,7 @@ class SettingsDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # 标题栏（可拖动窗口；左侧标题，右侧「打开配置文件」胶囊 + 关闭按钮，
+        # 标题栏（可拖动窗口；左侧标题，右侧「打开配置文件」胶囊 + 关闭按钮
         # 与参考图顶栏一致）
         self._drag_pos: Optional[object] = None
         title_bar = QWidget()
@@ -969,7 +1434,7 @@ class SettingsDialog(QDialog):
         stack = QStackedWidget()
 
         def add_page(page_key: str, page: QWidget) -> None:
-            # page_key 是 i18n 键（_NAV_KINDS 同口径）；显示名在此处才 t()，
+            # page_key 是 i18n 键（_NAV_KINDS 同口径）；显示名在此处才 t()
             # 因为此刻语言已由 main 的 apply_configured_language 定好。
             item = QListWidgetItem(_nav_icon(_NAV_KINDS.get(page_key, "info")),
                                    t(page_key))
@@ -977,30 +1442,33 @@ class SettingsDialog(QDialog):
             # _build_page 已内置滚动区，不再外包 QScrollArea
             stack.addWidget(page)
 
-        # 通用设置：永久提权按钮（置顶，无分区标题）/ 热键 / 输出 / 界面 / 通用 AI 接口 / 引擎排序
-        # 通用 AI 接口放「设置界面主题」下方：语音命令「帮我」与 AI 修正共用
-        # 的端点/密钥/模型在此配置，不需要开启 AI 修正即可使用语音命令 AI 功能
+        # 外部服务不可用时（见 steam_integration.external_services_allowed）：
+        # 引擎密钥页、AI 修正页、语音对话页、通用 AI 接口分组、引擎排序编辑器、
+        # 语音命令的 AI 字段全部不装配，只留内置离线引擎与纯本地功能。
+        _ext = external_services_allowed()
+
+        # 通用设置：永久提权按钮（置顶，无分区标题）/ 热键 / 输出 / 界面 / 引擎排序
         # 参考图无页头：内容直接从分区开始，页面归属只看左侧导航选中态；
         # 提权按钮行作为 QWidget 直插页顶（不走分组，无「程序行为」标题）
-        add_page("set.page.general", self._build_page([
+        general_groups = [
             self._build_admin_launch_row(),
             # 长按说话：两个面向用户的字段与「录音热键」同组紧邻显示。
-            # pick(section, keys, src) 只在 src 那一张表里过滤，而「录音热键」
-            # 与这两个字段都定义在 _FIELDS，hold_poll_ms 定义在 _ADVANCED_FIELDS，
-            # 故分两次 pick 后拼接；写成单次 pick(..., _ADVANCED_FIELDS) 会得到
-            # 空分组，把「录音热键」一起悄悄抹掉（字段在表里存在、却不在任何
-            # 页面渲染——本任务最容易踩的坑，tests/test_hold_ui_config.py 有护栏）
+            # pick 只在单张表里过滤，「录音热键」在 _FIELDS、hold_poll_ms 在 _ADVANCED_FIELDS，
+            # 故分两次 pick 后拼接；写成单次 pick(..., _ADVANCED_FIELDS) 会得到空分组，
+            # 把「录音热键」悄悄抹掉（tests/test_hold_ui_config.py 有护栏）。
             ("set.group.hotkey", pick("hotkey", ("toggle", "hold_to_talk",
                                      "hold_threshold_ms"))
              + pick("hotkey", ("hold_poll_ms",), _ADVANCED_FIELDS)),
             ("set.group.output", pick("injection", ("paste_delay_ms",), _ADVANCED_FIELDS)),
             ("set.group.interface", pick("ui", ("language", "auto_hide_seconds",
                                                 "bar_opacity", "settings_style"))),
-            ("set.group.llm_common",
-             pick("llm", ("base_url", "api_key", "model"), _ADVANCED_FIELDS)
-             + [self._build_llm_test_row()]),
-            self._build_engine_order_editor(),
-        ] + self._steam_page_groups(pick)))
+        ]
+        if _ext:
+            general_groups.append(self._build_engine_order_editor())
+        # Steam 相关项不再挂在「通用设置」页：它们与通用配置是两码事
+        # （云存档 / 显卡加速扩展包 / 创意工坊），挤在同一页会让"通用"越滚越长。
+        # 独立成「Steam」页，见下方 add_page("set.page.steam", ...)。
+        add_page("set.page.general", self._build_page(general_groups))
 
         # 引擎密钥：各厂商一张可展开卡（复刻参考图「插件配置」卡片列表）；
         # 显示/隐藏与排序开关已移至"常规 -> 引擎排序"。当前引擎的卡片默认展开。
@@ -1014,6 +1482,9 @@ class SettingsDialog(QDialog):
         }
         ordered = self._ordered_providers()
         current_engine = str(getattr(self.cfg, "engine", "") or "").split(":", 1)[0]
+        if not _ext:
+            # 外部服务不可用时只剩内置离线引擎：厂商卡片与厂商参数卡不渲染
+            ordered = [p for p in ordered if p == "funasr"]
         key_cards = []
         for p in ordered:
             spec = keys_by_provider.get(p)
@@ -1031,7 +1502,15 @@ class SettingsDialog(QDialog):
                 t(self._ENGINE_PROVIDER_TITLES[p]),
                 t(self._ENGINE_KEY_DESCS.get(p, "")),
                 fields, expanded=(p == current_engine)))
-        add_page("set.page.keys", self._build_page(key_cards))
+        # 外部服务不可用时无厂商密钥可填，该页不出现（留一个空页只会让人以为漏了功能）
+        if _ext:
+            # 通用 AI 接口：语音命令「帮我」与 AI 修正共用的端点/密钥/模型，
+            # 卡片样式与厂商卡一致，排在厂商卡之后
+            key_cards.append(self._build_accordion_group(
+                t("set.group.llm_common"), t("set.llm_common.desc"),
+                pick("llm", ("base_url", "api_key", "model"), _ADVANCED_FIELDS)
+                + [self._build_llm_test_row()]))
+            add_page("set.page.keys", self._build_page(key_cards))
 
         # 引擎参数：各厂商识别效果参数，合并到一页折叠卡列表展示。
         # 卡片顺序与名称跟随 ui.engine_order 与统一短名（与引擎密钥页/右键菜单一致）；
@@ -1070,35 +1549,40 @@ class SettingsDialog(QDialog):
         param_cards = []
         _frozen = bool(getattr(sys, "frozen", False))
         for p in ordered:
-            # 打包版不含本地引擎依赖：FunASR 参数页换成"不可用说明"卡片，
+            # 打包版不含本地引擎依赖：FunASR 参数页换成"不可用说明"卡片
             # 避免用户误以为填了本地目录/下载渠道就能用
             if p == "funasr" and _frozen:
                 param_cards.append(self._build_funasr_frozen_card())
                 continue
             param_cards.append(self._build_accordion_group(
                 t(self._ENGINE_PROVIDER_TITLES[p]),
-                t(self._ENGINE_PARAM_DESCS.get(p, "")),
+                t(self._engine_param_desc_key(p)),
                 params_by_provider[p], expanded=(p == current_engine)))
         add_page("set.page.params", self._build_page(param_cards))
 
         # 页名已是"AI 修正"，组内不再重复"文本修正"标题（多余）；
         # 主开关也可在右键菜单「注入逻辑」处快速启停，这里统一管理修正行为参数。
-        # 端点/密钥/模型/连通性检测在「通用设置 → 通用 AI 接口」（语音命令共用）
-        add_page("set.page.ai_fix", self._build_page([
-            ("", pick("llm", ("enable", "wait_for_correction", "history_context",
-                              "timeout_ms", "disable_thinking",
-                              "batch_sentences", "batch_idle_ms",
-                              "prompt"),
-                      _ADVANCED_FIELDS)),
-        ]))
+        # 端点/密钥/模型/连通性检测在「引擎密钥 → 通用 AI 接口」（语音命令共用）
+        # 外部服务不可用时 AI 修正页不出现
+        if _ext:
+            add_page("set.page.ai_fix", self._build_page([
+                ("", pick("llm", ("enable", "wait_for_correction", "history_context",
+                                  "timeout_ms", "disable_thinking",
+                                  "batch_sentences", "batch_idle_ms",
+                                  "prompt"),
+                          _ADVANCED_FIELDS)),
+            ]))
 
         phrase_editor = self._build_phrase_editor()
+        # 语音命令页：外部服务不可用时去掉「帮我」AI 前缀相关字段（走外部 LLM 服务）
+        # 其余本地命令（删除上一句、自定义短语、待命热键）完整保留
+        _cmd_keys = (("prefix", "hotkey", "ai_prefix", "ai_thinking",
+                      "ai_prompt_template", "phrases_enable", "standby_seconds")
+                     if _ext else
+                     ("prefix", "hotkey", "phrases_enable", "standby_seconds"))
         add_page("set.page.commands", self._build_page([
             ("set.group.commands",
-             pick("commands", ("prefix", "hotkey", "ai_prefix", "ai_thinking",
-                               "ai_prompt_template",
-                               "phrases_enable", "standby_seconds"),
-                  _ADVANCED_FIELDS)),
+             pick("commands", _cmd_keys, _ADVANCED_FIELDS)),
             self._build_command_reference(),
             phrase_editor,
         ]))
@@ -1123,29 +1607,37 @@ class SettingsDialog(QDialog):
 
         # 语音模式页：接入（三家共用）→ provider 专属字段区（豆包 / Qwen /
         # Hermes 互斥显隐）→ 收音与播报（三家共用）。provider 下拉切换只显当前
-        # 提供商字段组，复用短语编辑器 phrase_sw.toggled→setVisible 显隐先例
-        # （spec §7.3）。
-        provider_area, doubao_grp, qwen_grp, hermes_grp = (
-            self._build_dialog_provider_area(pick))
-        add_page("set.page.voice_mode", self._build_page([
-            ("set.group.dialog_in",
-             pick("dialog", ("enable",)) +
-             pick("hotkey", ("dialog",)) +
-             pick("dialog", ("provider",)) +
-             [self._build_dialog_test_row()]),
-            provider_area,
-            ("set.group.dialog_io",
-             pick("dialog", ("output_device", "half_duplex", "auto_reconnect"))),
-        ]))
-        # provider 显隐联动：初始按配置值设定，之后随下拉切换（_widgets 已在
-        # _build_dialog_provider_area/_build_page 期间填充，绑定须在构建之后）
-        self._dialog_doubao_group = doubao_grp
-        self._dialog_qwen_group = qwen_grp
-        self._dialog_hermes_group = hermes_grp
-        self._on_dialog_provider_changed()
-        _prov_combo = self._widgets.get(("dialog", "provider"))
-        if _prov_combo is not None:
-            _prov_combo.currentIndexChanged.connect(self._on_dialog_provider_changed)
+        # 提供商字段组（显隐联动同短语编辑器 phrase_sw.toggled→setVisible）。
+        # 外部服务不可用时语音对话页不出现（三家都是外部付费服务）。
+        if _ext:
+            provider_area, doubao_grp, qwen_grp, hermes_grp = (
+                self._build_dialog_provider_area(pick))
+            add_page("set.page.voice_mode", self._build_page([
+                ("set.group.dialog_in",
+                 pick("dialog", ("enable",)) +
+                 pick("hotkey", ("dialog",)) +
+                 pick("dialog", ("provider",)) +
+                 [self._build_dialog_test_row()]),
+                provider_area,
+                ("set.group.dialog_io",
+                 pick("dialog", ("output_device", "half_duplex", "auto_reconnect"))),
+            ]))
+            # provider 显隐联动：初始按配置值设定，之后随下拉切换（_widgets 已在
+            # _build_dialog_provider_area/_build_page 期间填充，绑定须在构建之后）
+            self._dialog_doubao_group = doubao_grp
+            self._dialog_qwen_group = qwen_grp
+            self._dialog_hermes_group = hermes_grp
+            self._on_dialog_provider_changed()
+            _prov_combo = self._widgets.get(("dialog", "provider"))
+            if _prov_combo is not None:
+                _prov_combo.currentIndexChanged.connect(self._on_dialog_provider_changed)
+
+        # Steam 页（仅发行构建）：云存档 / 显卡加速扩展包 / 创意工坊。
+        # 整页创建挂在 is_steam_build() 上：_steam_page_groups 对源码构建返回空，
+        # 无条件建页会让源码构建多出一个空白「Steam」标签。
+        if is_steam_build():
+            add_page("set.page.steam",
+                     self._build_page(self._steam_page_groups(pick)))
 
         # 关于：头部信息卡（图标+名称+版本）+ 可展开卡列表（同引擎密钥页样式）
         add_page("set.page.about", self._build_page(
@@ -1198,13 +1690,8 @@ class SettingsDialog(QDialog):
     def eventFilter(self, obj, ev) -> bool:
         """边缘拉伸过滤器：悬停显示方向箭头，左键按住走系统级缩放。
 
-        命中边缘时吞掉按下事件（返回 True），标题栏的拖动逻辑不会
-        与顶部边缘的拉伸冲突；未命中则放行给原处理。
-
-        局部变量名刻意用 ev_type 而非 t：Python 的局部变量判定是**函数级**
-        的，函数里只要出现过一次 `t = ...`，整个函数的 `t` 都解析为局部名，
-        本模块导入的 i18n.t() 在此函数内会被遮蔽、调用即 UnboundLocalError。
-        守这条的是 tests/test_i18n.py 的 t 遮蔽检查。
+        命中边缘时吞掉按下事件（返回 True），标题栏拖动不冲突。局部变量名刻意用 ev_type
+        而非 t：Python 变量判定是**函数级**的，一旦出现 `t = ...` 即遮蔽本模块的 i18n.t()。
         """
         ev_type = ev.type()
         if ev_type == QEvent.Type.MouseMove:
@@ -1262,11 +1749,9 @@ class SettingsDialog(QDialog):
         return Qt.CursorShape.SizeBDiagCursor
 
     def _build_page(self, groups: list, stretch: bool = True) -> QWidget:
-        """构建设置页（复刻参考图）：无页头，内容从分区直接开始，
-        扁平分区之间用发丝分割线串联成连续列表；手风琴卡片之间纯留白。
+        """构建设置页：无页头，扁平分区用发丝分割线串联，手风琴卡片之间纯留白。
 
-        groups 项可以是 ("标题", fields) 元组（走 _build_group 扁平分区）、
-        已构建的 QWidget（直接作为一张分区/卡片插入），或 AccordionCard。
+        groups 项可为 ("标题", fields) 元组、已构建的 QWidget 或 AccordionCard。
         """
         outer = QWidget()
         v = QVBoxLayout(outer)
@@ -1353,6 +1838,9 @@ class SettingsDialog(QDialog):
 
     def _build_about_cards(self) -> list:
         """关于页折叠卡列表：点击展开正文（同引擎密钥页手风琴样式）。"""
+        # 外部服务不可用时的正文不提云端引擎 / AI（那些入口不存在）
+        body_key = ("set.about.app_body" if external_services_allowed()
+                    else "set.about.app_body_offline")
         cards = []
 
         about = AccordionCard(t("set.about.app_title"), t("set.about.app_desc"),
@@ -1360,9 +1848,35 @@ class SettingsDialog(QDialog):
         v = QVBoxLayout(about.body_container())
         v.setContentsMargins(0, 4, 0, 6)
         v.setSpacing(8)
-        v.addWidget(self._about_text(t("set.about.app_body")))
+        v.addWidget(self._about_text(t(body_key)))
         v.addWidget(self._about_text(t("set.about.app_flow")))
         cards.append(about)
+
+        # 使用帮助：内置文档离线可读（不依赖网络 / 版本严格对应）
+        # 同时保留在线入口看最新版
+        help_card = AccordionCard(t("set.about.help_title"),
+                                  t("set.about.help_desc"))
+        v = QVBoxLayout(help_card.body_container())
+        v.setContentsMargins(0, 4, 0, 6)
+        v.setSpacing(8)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        doc_btn = QPushButton(t("set.about.help_btn"))
+        if doc_path() is None:
+            # 这台机器上没有随包文档（干净克隆缺文件等）：只留在线入口
+            doc_btn.setEnabled(False)
+            doc_btn.setToolTip(t("set.about.help_missing"))
+        else:
+            doc_btn.setToolTip(t("set.about.help_btn_tip"))
+        doc_btn.clicked.connect(self._open_bundled_doc)
+        row.addWidget(doc_btn)
+        online_btn = QPushButton(t("set.about.help_btn_online"))
+        online_btn.setToolTip(self._doc_url())
+        online_btn.clicked.connect(self._open_doc_url)
+        row.addWidget(online_btn)
+        row.addStretch(1)
+        v.addLayout(row)
+        cards.append(help_card)
 
         oss = AccordionCard(t("set.about.oss_title"), t("set.about.oss_desc"))
         v = QVBoxLayout(oss.body_container())
@@ -1396,6 +1910,26 @@ class SettingsDialog(QDialog):
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl(_ABOUT_CONTACT_URL))
+
+    @staticmethod
+    def _doc_url() -> str:
+        """用户文档链接：按界面语言选中/英文版，未知语言回落中文。"""
+        from ..i18n import language
+        return _ABOUT_DOC_URLS.get(language(), _ABOUT_DOC_URL)
+
+    def _open_bundled_doc(self) -> None:
+        """打开随包的内置文档（关于页「使用帮助」卡）。"""
+        from .doc_viewer import open_user_doc
+        dlg = open_user_doc(parent=self, cfg=self.cfg)
+        if dlg is None:
+            QMessageBox.warning(self, t("common.notice"),
+                                t("set.about.help_open_fail"))
+
+    def _open_doc_url(self) -> None:
+        """用系统默认浏览器打开使用文档（关于页「使用帮助」卡）。"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(self._doc_url()))
 
     def _build_command_reference(self) -> QWidget:
         """语音命令参考表：默认收起的折叠区（点标题展开/收起），不占页面空间。"""
@@ -1437,7 +1971,7 @@ class SettingsDialog(QDialog):
             (t("set.cmdref.trigger_say"), t("set.cmdref.trigger_effect")),
             (t("set.cmdref.hotkey_say"), t("set.cmdref.hotkey_effect")),
         ]
-        # 说法列直接取命令表全部变体：参考表与实际匹配永远同步，
+        # 说法列直接取命令表全部变体：参考表与实际匹配永远同步
         # 以后补变体（如口音替代词）不需要改这里
         from ..core import voice_commands
 
@@ -1486,8 +2020,7 @@ class SettingsDialog(QDialog):
     def _build_phrase_editor(self) -> QWidget:
         """自定义短语词表编辑器：两列表格（短语名/短语内容）+ 添加/删除。
 
-        点设置对话框「保存」时随其他配置一并写盘
-        状态目录 phrases.json（同 prompt_editor 写 prompts.json 的先例）。
+        点「保存」时随其他配置一并写入状态目录 phrases.json。
         """
         from ..core import custom_phrases
 
@@ -1719,12 +2252,8 @@ class SettingsDialog(QDialog):
     def _make_row(self, field) -> Optional[QWidget]:
         """构建一个字段行：标签+说明在左，控件右对齐。
 
-        参考图行样式：行内左侧堆叠标签（半粗）与说明（灰），
-        控件贴右垂直居中；行与行之间由 _build_group 插细分割线。
-
-        字段七元组里的 label/desc/tip 是**导入期求值**的 i18n 键
-        （见 _FIELDS 上方注释），渲染时才 t()；_widgets 以
-        (section, key) 为键，与语言无关。
+        字段七元组里的 label/desc/tip 是**导入期求值**的 i18n 键，渲染时才 t()；
+        _widgets 以 (section, key) 为键，与语言无关。
         """
         section, key, label_key, wtype, extra, desc_key, tip_key = field
         widget = self._make_widget(section, key, label_key, wtype, extra)
@@ -1787,12 +2316,10 @@ class SettingsDialog(QDialog):
         return row
 
     def _build_group(self, title: str, fields: list) -> QWidget:
-        """构建扁平分区（参考图样式）：纯文字分区标题 + 行清单 + 行间细分割线。
+        """构建扁平分区：纯文字分区标题 + 行清单 + 行间细分割线。
 
-        fields 项为七元组 (section, key, label, wtype, extra, desc, tip)，
-        也允许混入 _sec() 生成的小节标题行（wtype="header"），渲染为
-        分区内的次级标题；以及已构建的 QWidget（如连通性检测按钮行），
-        直接作为一行插入并参与行间分割线排版。
+        fields 项为七元组，也可混入 _sec() 的小节标题行（wtype="header"）
+        或已构建的 QWidget（直接作为一行插入并参与行间分割线排版）。
         """
         sec = QWidget()
         v = QVBoxLayout(sec)
@@ -1834,8 +2361,10 @@ class SettingsDialog(QDialog):
 
     def _build_accordion_group(self, title: str, desc: str, fields: list,
                                expanded: bool = False) -> QWidget:
-        """构建可展开卡片（复刻参考图「插件配置」）：头部标题+说明+箭头，
-        点击展开内容区（字段行清单 + 行间分割线）。"""
+        """构建可展开卡片：头部标题+说明+箭头，点击展开字段行清单。
+
+        fields 允许混入已构建的 QWidget（如连通性检测按钮行），同样走行间分割线排版。
+        """
         card = AccordionCard(title, desc, expanded)
         body = card.body_container()
         v = QVBoxLayout(body)
@@ -1843,14 +2372,17 @@ class SettingsDialog(QDialog):
         v.setSpacing(0)
         count = 0
         for field in fields:
-            if field[3] == "header":
+            if isinstance(field, QWidget):
+                row = field
+            elif field[3] == "header":
                 h = QLabel(t(field[2]))
                 h.setObjectName("cardSection")
                 v.addWidget(h)
                 continue
-            row = self._make_row(field)
-            if row is None:
-                continue
+            else:
+                row = self._make_row(field)
+                if row is None:
+                    continue
             sep = QFrame()
             sep.setObjectName("rowSep")
             sep.setFrameShape(QFrame.Shape.HLine)
@@ -1895,6 +2427,15 @@ class SettingsDialog(QDialog):
         "funasr": "set.funasr.chinese_only",
     }
 
+    def _engine_param_desc_key(self, provider: str) -> str:
+        """引擎参数卡的说明词条键（funasr 按可用性分叉）。
+
+        外部服务不可用时无云端引擎入口，"英文请使用云端引擎"这句不成立，故换一份纯事实文案。
+        """
+        if provider == "funasr" and not external_services_allowed():
+            return "set.funasr.chinese_only_offline"
+        return self._ENGINE_PARAM_DESCS.get(provider, "")
+
     def _ordered_providers(self) -> list:
         """按 ui.engine_order 排序的提供商列表（与右键菜单一致）。
 
@@ -1911,16 +2452,10 @@ class SettingsDialog(QDialog):
         return ordered
 
     def _build_engine_order_editor(self) -> QWidget:
-        """识别引擎排序编辑器：苹果「分组列表」风（iOS/macOS 设置的
-        inset grouped list）——所有厂商住在一个大圆角组里，行间只用
-        inset 发丝分隔线，组下方灰色脚注。
+        """识别引擎排序编辑器：苹果「分组列表」风（大圆角组 + inset 发丝分隔线）。
 
-        厂商头行两行式（▸ + 名称 + 副标题，右侧步进器 + 开关）；
-        上下按钮调整 provider 在右键"识别引擎"菜单中的分组顺序，立即写
-        ui.engine_order（后台线程，避免文件 IO 阻塞 UI），同时就地更新
-        self.cfg.ui.engine_order，悬浮条下次构建右键菜单即用新顺序（无需等热加载）。
-        展开区：该厂商下各模型一行（名称 + 显示/隐藏开关）；模型不参与
-        排序，仅控制是否出现在右键菜单中，写入 ui.engine_hidden_models。
+        上下按钮调整 provider 分组顺序：后台线程写 ui.engine_order（避免 IO 阻塞）并就地
+        更新 self.cfg.ui.engine_order；展开区各模型行只控制显隐（ui.engine_hidden_models）。
         """
         order_str = getattr(self.cfg.ui, "engine_order", "") or ""
         order = [p.strip() for p in str(order_str).split(",") if p.strip()]
@@ -1985,13 +2520,8 @@ class SettingsDialog(QDialog):
                                     badge: str = "") -> QWidget:
         """单个厂商行块（EngineOrderRow，苹果分组列表风）。
 
-        头行 = ▸ + 厂商名/模型数副标题（左），竖排 ▲▼ 步进器 + 显隐开关
-        （右，开关最右是 iOS 惯例）；点头部任意处展开/收起。展开区是该
-        厂商的模型行（缩进对齐厂商文本，行间隔发丝线），每行只有名称 +
-        显隐开关——无面板无底色的纯列表。显示开关关闭时头行文字置灰、
-        模型区整体禁用。模型不参与排序（分组顺序由 ▲▼ 决定），显隐写入
-        ui.engine_hidden_models；副标题随显隐实时刷新「N 个分类/模型，
-        M 个已隐藏」（注册分类的厂商按分类展示，见 ENGINE_CATEGORIES）。
+        头行 = 厂商名/副标题 + 步进器 + 显隐开关；展开区为各模型行（仅名称 + 显隐开关）。
+        总开关关闭时头行置灰、模型区整体禁用；显隐写入 ui.engine_hidden_models。
         """
         models = engines_by_group().get(provider, [])
         if provider in ENGINE_CATEGORIES:
@@ -2041,8 +2571,8 @@ class SettingsDialog(QDialog):
         model_toggles: list[ToggleSwitch] = []
 
         def _refresh_desc() -> None:
-            # 迭代变量取名 sw 而非 t：同一函数里的 t() 是 i18n 取词，
-            # 重名会让读者（和静态检查）误以为遮蔽；genexp 作用域虽不真遮蔽，
+            # 迭代变量取名 sw 而非 t：同一函数里的 t() 是 i18n 取词
+            # 重名会让读者（和静态检查）误以为遮蔽；genexp 作用域虽不真遮蔽
             # 但一旦日后改成显式 for 循环就会变成真遮蔽。
             n = sum(1 for sw in model_toggles if not sw.isChecked())
             row.set_desc(f"{len(models)}{unit}" + (
@@ -2175,9 +2705,7 @@ class SettingsDialog(QDialog):
     def _on_engine_show_toggled(self, provider: str, checked: bool) -> None:
         """引擎提供商"显示"开关：后台线程写 config.yaml，热加载即时刷新右键菜单。
 
-        写文件放后台线程：文件 IO 在杀软实时扫描/云同步盘介入时可达数秒，
-        同步执行会卡死 UI 线程（开关动画不动、"点了没反应"的根源）。
-        后台写完成后 QFileSystemWatcher 照常触发热加载，链路不变。
+        文件 IO 在杀软扫描/云同步盘介入时可达数秒，同步执行会卡死 UI 线程。
         """
         import threading
 
@@ -2213,12 +2741,8 @@ class SettingsDialog(QDialog):
     def _build_prompt_editor(self, current: str) -> QWidget:
         """AI 修正 Prompt 编辑器：版本下拉 + 多行编辑 + 新增/保存/删除。
 
-        逻辑按字面语义：
-        - 下拉选中版本 -> 编辑框载入其内容（可任意修改，不自动切换选中）
-        - 新增：弹命名框 -> 创建一个空的自定义版本并选中，等待输入
-        - 保存：把编辑框当前内容写入选中的版本（内置"内置方案"除外）
-        - 删除：删除选中的自定义版本，回到默认
-        运行时生效的仍是 llm.prompt（设置页点"保存"写编辑器内容）。
+        下拉选中版本即载入其内容（编辑期间不自动切换选中）；保存把编辑框内容写入
+        选中的版本（内置"内置方案"除外）；运行时生效的仍是 llm.prompt（点「保存」才落盘）。
         """
         container = QWidget()
         v = QVBoxLayout(container)
@@ -2240,6 +2764,7 @@ class SettingsDialog(QDialog):
         edit = QTextEdit()
         edit.setFixedHeight(120)
         edit.setPlaceholderText(t("set.prompt.placeholder"))
+        _install_text_menu(edit, self._workshop_palette())
         v.addWidget(edit)
 
         self._prompt_combo = combo
@@ -2257,14 +2782,10 @@ class SettingsDialog(QDialog):
         return container
 
     def _build_admin_launch_row(self) -> QWidget:
-        """通用设置页置顶：永久提权动作行（Wallpaper Engine 式：全宽动作按钮 +
-        灰色说明/状态，上下堆叠；无分区标题与字段标签——按钮文案自描述，
-        避免「程序行为/永久为管理员启动」与按钮文字重复）。
-        未开启蓝色按钮「永久以管理员身份启动」，已开启绿色按钮「取消以管理员身份启动」。
+        """通用设置页置顶：永久提权动作行（全宽动作按钮 + 灰色说明/状态）。
 
-        点击立即写配置（不等「保存」）。开启时创建"以最高权限运行"的
-        计划任务：首次需 UAC 确认一次（提权实例里建任务），此后开机由
-        任务直接管理员拉起、手动启动触发任务运行，都不再弹 UAC。
+        点击立即写配置（不等「保存」）：开启时创建"以最高权限运行"计划任务，
+        首次需 UAC 确认一次，此后开机/手动启动都由任务管理员拉起、不再弹 UAC。
         """
         from ..core.elevation import (
             create_admin_task,
@@ -2282,12 +2803,12 @@ class SettingsDialog(QDialog):
         v.setContentsMargins(0, 12, 0, 12)
         v.setSpacing(8)
 
-        # 全宽动作按钮：未开启蓝（btnWide）/ 已开启绿（btnWideGreen），
+        # 全宽动作按钮：未开启蓝（btnWide）/ 已开启绿（btnWideGreen）
         # _refresh 里切 objectName 后 re-polish 使新样式生效；
         # 计划任务机制细节放 tooltip（原先挂在字段标签上，标签已去掉）
         btn = QPushButton()
         btn.setCursor(Qt.PointingHandCursor)
-        # UAC 盾牌图标置于按钮文字左侧（Windows 提权按钮惯例），
+        # UAC 盾牌图标置于按钮文字左侧（Windows 提权按钮惯例）
         # 蓝/绿两态背景上蓝黄盾牌均清晰，无需随态切换
         btn.setIcon(uac_shield_icon())
         btn.setIconSize(QSize(16, 16))
@@ -2295,7 +2816,7 @@ class SettingsDialog(QDialog):
         btn.setToolTipDuration(10000)
         v.addWidget(btn)
 
-        # 文案刻意回避「标」字：用户环境特定 DPI 下该字形光栅化出黑点，
+        # 文案刻意回避「标」字：用户环境特定 DPI 下该字形光栅化出黑点
         # 调整落位无效（见提权行上轮改动），直接换掉该字符最稳
         desc = QLabel(
             t("set.admin.desc")
@@ -2364,8 +2885,8 @@ class SettingsDialog(QDialog):
                 self.restart_requested.emit()
                 return
             # 提权没成立（用户点了「否」/ 其它失败）≠ 已启用：把上面刚写下去的
-            # 配置回滚。留一个 true 会让按钮显示"已开启"，而且**每次启动都会再弹
-            # 一次 UAC**——用户明明已经拒绝过，还要被反复问。想启用再点一次即可。
+            # 配置回滚。留一个 true 会让按钮显示"已开启"，而且每次启动都会再弹
+            # 一次 UAC——用户明明已经拒绝过，还要被反复问。想启用再点一次即可。
             if not update_config_field(
                 "always_admin", "false", section="ui", value_type="bool",
             ):
@@ -2386,10 +2907,10 @@ class SettingsDialog(QDialog):
         return row
 
     def _steam_page_groups(self, pick) -> list:
-        """渠道发行分组（仅商店版渲染）。
+        """渠道发行分组（仅发行构建渲染）。
 
         `pick` 是 __init__ 内的闭包（按 _FIELDS 过滤），故由调用处传进来。
-        开源版返回空列表，通用设置页与以前一模一样。
+        源码构建返回空列表，通用设置页与以前一模一样。
         """
         from ..steam_integration import (
             STEAM_DLC_GPU_APP_ID,
@@ -2400,14 +2921,409 @@ class SettingsDialog(QDialog):
 
         if not is_steam_build():
             return []
-        rows = list(pick("steam", ("cloud_sync_keys",)))
+        # 「云存档同步密钥」开关。渲染条件（满足其一）：external_services_allowed()
+        # （源码构建 / 发行构建装了工坊内容包），或配置里开关已是 True（绝不把打开过的
+        # 用户锁在外面，能看见也能关掉）。默认 False＝密钥默认不进云。真双向同步：
+        # 开关决定密钥随云存档上传，恢复时云上那份含密钥文件存在与否决定是否下载回来。
+        _keys_already_on = bool(getattr(
+            getattr(self.cfg, "steam", None), "cloud_sync_keys", False))
+        if external_services_allowed() or _keys_already_on:
+            rows = list(pick("steam", ("cloud_sync_keys",)))
+        else:
+            rows = []
         if _gpu_switch_available():
             rows = rows + pick("steam", ("use_gpu",))
         # 有 N 卡但没装扩展包：补一个安装入口（配置里也提示过一次，见 app.run）
         if STEAM_DLC_GPU_APP_ID and nvidia_gpu_present() and \
                 not get_integration().dlc_installed(STEAM_DLC_GPU_APP_ID):
             rows.append(self._build_gpu_install_row())
-        return [("set.steam.group", rows)]
+        # 创意工坊作为独立一张卡（不走扁平分区）：它内部有列表 + 多按钮，塞进
+        # _build_group 的字段流会被行间分割线排版拉坏。SDK 不可用时照样建卡，
+        # 让用户看到"为什么没有工坊"而不是以为功能凭空消失。
+        return [("set.steam.group", rows), self._build_workshop_card()]
+
+    # ---- 创意工坊 ----
+    def _build_workshop_card(self) -> QWidget:
+        """「创意工坊」卡片（仅发行构建）。
+
+        只做「查看订阅 + 单物品管理 + 上传本地目录」，不设强制项；
+        阻塞调用（退订 / 上传）一律丢后台线程，否则会冻住整个设置界面。
+        """
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from ..steam_integration import get_integration
+
+        integ = get_integration()
+
+        card = QWidget()
+        card.setObjectName("accordionCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        v = QVBoxLayout(card)
+        v.setContentsMargins(14, 12, 14, 14)
+        v.setSpacing(10)
+
+        # 卡片自带标题：它是直接插进页面的 QWidget（不走 _build_group）
+        # 不像其它分组由外面渲染标题，缺了就成了一张无名的卡
+        title = QLabel(t("set.workshop.group"))
+        title.setObjectName("sectionTitle")
+        v.addWidget(title)
+
+        intro = QLabel(t("set.workshop.intro"))
+        intro.setObjectName("cardSection")
+        intro.setWordWrap(True)
+        v.addWidget(intro)
+
+        # 按钮行：浏览社区 / 发布本地目录 / 刷新
+        tools = QHBoxLayout()
+        tools.setSpacing(8)
+        btn_browse = QPushButton(t("set.workshop.browse"))
+        # 按钮行给出层级：「去社区看看」是这一页唯一的"往前一步"动作
+        # 用与主按钮同族的实底（但仍是本卡专属 objectName，不动全局主按钮样式）
+        btn_browse.setObjectName("workshopPrimary")
+        btn_browse.setCursor(Qt.PointingHandCursor)
+        btn_browse.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(_workshop_community_url())))
+        btn_refresh = QPushButton(t("set.workshop.refresh"))
+        btn_refresh.setObjectName("btnGhost")
+        btn_refresh.setCursor(Qt.PointingHandCursor)
+        btn_refresh.clicked.connect(self._refresh_workshop)
+        btn_publish = QPushButton(t("set.workshop.publish"))
+        btn_publish.setObjectName("btnGhost")
+        btn_publish.setCursor(Qt.PointingHandCursor)
+        btn_publish.setToolTip(t("set.workshop.publish_tip"))
+        btn_publish.clicked.connect(self._on_workshop_publish)
+        for b in (btn_browse, btn_publish, btn_refresh):
+            tools.addWidget(b)
+        tools.addStretch(1)
+        v.addLayout(tools)
+
+        # 状态标签：不可用 / 空 / 上传进度 三态共用
+        self._workshop_status = QLabel()
+        self._workshop_status.setWordWrap(True)
+        self._workshop_status.setVisible(False)
+        v.addWidget(self._workshop_status)
+
+        # 物品列表。高度贴合内容（见 _fit_workshop_list_height）：原来固定
+        # minHeight=120，只有一两个物品时下方留一大片空白，像"没加载完"。
+        self._workshop_list = QListWidget()
+        self._workshop_list.setObjectName("workshopList")
+        self._workshop_list.setUniformItemSizes(True)
+        self._workshop_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._workshop_list.setVerticalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._workshop_list.itemDoubleClicked.connect(
+            self._on_workshop_priority)
+        # 右键菜单：在社区中查看 / 立即下载 / 退订（见 _on_workshop_menu）。
+        # 不用行内按钮：行控件对鼠标透明（见 _WorkshopRow），点击/选中/双击
+        # 全归 QListWidget，在透明行里塞按钮要另造一套事件转发，不值。
+        self._workshop_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self._workshop_list.customContextMenuRequested.connect(
+            self._on_workshop_menu)
+        v.addWidget(self._workshop_list)
+
+        if not integ.workshop_available():
+            # SDK 不可用（提权启动 / 没经 Steam 拉起）：内容照样能被文件系统
+            # 来源发现并加载（见 workshop.py 顶部说明），只是订阅/下载/发布
+            # 这些写操作做不了。所以列表要照常列出已装的包——直接隐藏会让人
+            # 以为"工坊彻底废了"，而实际上模型/主题/字体/短语都在生效。
+            self._refresh_workshop()
+            btn_publish.setEnabled(False)
+            btn_refresh.setEnabled(False)
+        else:
+            self._refresh_workshop()
+            # 下载状态由 Steam 客户端在后台推进，启动一个轻量定时器
+            # 让列表里的进度跟着走（否则数字会一直停在打开设置那一刻）
+            self._workshop_timer = QTimer(self)
+            self._workshop_timer.setInterval(1500)
+            self._workshop_timer.timeout.connect(self._refresh_workshop)
+            self._workshop_timer.start()
+        self.workshop_done.connect(self._on_workshop_done)
+        return card
+
+    def _refresh_workshop(self) -> None:
+        """重建物品列表：SDK 可用走 SDK 物品列表（有状态/进度），
+        不可用（提权 / 非 Steam 拉起）退回文件系统发现，列出本机已装包。
+        """
+        from ..steam_integration import get_integration
+
+        lst = getattr(self, "_workshop_list", None)
+        if lst is None:
+            return
+        # 重建前记住选中的物品 ID：clear + addAll 会丢掉选中态
+        # 用户每点一次刷新就得重新点一遍自己关心的那一行
+        selected = _workshop_selected_id(lst)
+        lst.clear()
+
+        integ = get_integration()
+        if integ.workshop_available():
+            lst.setVisible(True)
+            self._fill_workshop_list_from_sdk(lst, selected)
+            return
+        self._fill_workshop_list_from_filesystem(lst)
+
+    def _fill_workshop_list_from_sdk(self, lst, selected: int) -> None:
+        from ..steam_integration import get_integration
+
+        items = get_integration().workshop_items()
+        if not items:
+            self._show_workshop_status(t("set.workshop.empty"))
+            self._fit_workshop_list_height()
+            return
+        self._show_workshop_status("")
+        palette = self._workshop_palette()
+        for item in items:
+            # item 自身的文本必须清空：QListView 会先画 item 文本、再把
+            # setItemWidget 的行控件铺在它上面，而行控件是透明的 —— 留着文本
+            # 就是两层字叠在一起（目检发现）。语义文本改挂 AccessibleTextRole
+            # 读屏与 diag 脚本照旧拿得到，只是不再"画"出来。
+            manifest = _workshop_installed_manifest(item)
+            name = manifest.name if manifest is not None else ""
+            entry = QListWidgetItem("")
+            entry.setData(Qt.ItemDataRole.AccessibleTextRole,
+                          _workshop_item_text(item, name))
+            entry.setData(Qt.ItemDataRole.UserRole, item.item_id)
+            entry.setToolTip(_workshop_item_tooltip(item))
+            chip, chip_style, progress = _workshop_item_state(item)
+            # 已安装的读本地清单显示包名 + 内容类型（与文件系统视图同一套
+            # 文案）；未安装 / 无清单退回紧凑的 `#ID`。原来一律显示「ID 300…」：
+            # 长 ID 把主标题占满、整列一模一样，用户分不清谁是谁。
+            if manifest is not None:
+                glyph, subtitle = _workshop_kind_bits(manifest)
+                row = _WorkshopRow(
+                    palette, glyph=glyph, title=manifest.name,
+                    subtitle=subtitle, chip=chip, chip_style=chip_style,
+                    progress=progress)
+            else:
+                row = _WorkshopRow(
+                    palette, glyph="package", title=f"#{item.item_id}",
+                    chip=chip, chip_style=chip_style, progress=progress)
+            entry.setSizeHint(QSize(0, max(
+                _WORKSHOP_ROW_FALLBACK_H, row.sizeHint().height())))
+            lst.addItem(entry)
+            lst.setItemWidget(entry, row)
+            if item.item_id == selected:
+                entry.setSelected(True)
+        self._fit_workshop_list_height()
+
+    def _fill_workshop_list_from_filesystem(self, lst) -> None:
+        """SDK 不可用时的只读视图：列出文件系统发现到的内容包。"""
+        from ..workshop import installed_manifests
+
+        manifests = installed_manifests()
+        if not manifests:
+            # 一个包都没有：连列表一起藏掉。留着会是个刺眼的白框
+            # ，而"不可用"提示本身已经说清了状况。
+            lst.setVisible(False)
+            self._show_workshop_status(t("set.workshop.unavailable"))
+            self._fit_workshop_list_height()
+            return
+        # 有内容就显示（即使 SDK 挂了，这些包也确实在生效）。
+        # "能用"与"能管"是两件事——不说清会让人以为是坏了。
+        lst.setVisible(True)
+        self._show_workshop_status(
+            t("set.workshop.readonly", count=len(manifests)))
+        palette = self._workshop_palette()
+        for manifest in manifests:
+            entry = QListWidgetItem("")
+            entry.setData(Qt.ItemDataRole.AccessibleTextRole,
+                          _workshop_pack_text(manifest))
+            entry.setData(Qt.ItemDataRole.UserRole, 0)
+            entry.setToolTip(_workshop_pack_tooltip(manifest))
+            # 包名做主标题、内容类型做副标题（逻辑与 SDK 视图共用
+            # _workshop_kind_bits，防两处漂移）
+            glyph, subtitle = _workshop_kind_bits(manifest)
+            row = _WorkshopRow(
+                palette, glyph=glyph, title=manifest.name, subtitle=subtitle,
+                chip=t("set.workshop.installed"),
+                chip_style="workshopChipDone")
+            entry.setSizeHint(QSize(0, max(
+                _WORKSHOP_ROW_FALLBACK_H, row.sizeHint().height())))
+            lst.addItem(entry)
+            lst.setItemWidget(entry, row)
+        self._fit_workshop_list_height()
+
+    def _workshop_palette(self) -> dict:
+        """取当前配色（自绘方块要用到颜色）。
+
+        `_palette` 在 `__init__` 里就设好了；这里仍兜一层，因为 diag 脚本会
+        用 `__new__` 造半个对话框来单独渲染这张卡。
+        """
+        pal = getattr(self, "_palette", None)
+        if not pal:
+            pal = _theme_palette(getattr(self, "cfg", None))
+            self._palette = pal
+        return pal
+
+    def _fit_workshop_list_height(self) -> None:
+        """列表高度贴合内容（最多 `_WORKSHOP_LIST_MAX_ROWS` 行，更多交给滚动条）。
+        """
+        lst = getattr(self, "_workshop_list", None)
+        if lst is None:
+            return
+        rows = lst.count()
+        # 用 isHidden() 而不是 isVisible()：构建期父窗口还没显示，isVisible()
+        # 恒为 False，会把高度压成 0。isHidden() 只看"是否被显式隐藏"。
+        if rows == 0 or lst.isHidden():
+            lst.setFixedHeight(0)
+            return
+        per = lst.sizeHintForRow(0)
+        if per <= 0:
+            per = _WORKSHOP_ROW_FALLBACK_H
+        # 2px 是 item 的上下外边距（见 QSS `#workshopList::item`）
+        # 12px 是列表自己的 padding + 边框，不留出来最后一行会被裁
+        lst.setFixedHeight(
+            min(rows, _WORKSHOP_LIST_MAX_ROWS) * (per + 2) + 12)
+
+    def _on_workshop_priority(self, item) -> None:
+        """把某个物品的下载提到最高优先级（双击列表项触发）。"""
+        if not isinstance(item, QListWidgetItem):
+            return
+        item_id = int(item.data(Qt.ItemDataRole.UserRole) or 0)
+        if not item_id:
+            return
+        self._request_workshop_download(item_id)
+
+    def _request_workshop_download(self, item_id: int) -> None:
+        """请求把物品的下载提到最高优先级（双击与右键菜单共用）。"""
+        from ..steam_integration import get_integration
+
+        get_integration().workshop_download(int(item_id))
+        self._refresh_workshop()
+
+    def _on_workshop_menu(self, pos) -> None:
+        """物品行右键菜单：在社区中查看 / 立即下载 / 退订。"""
+        lst = getattr(self, "_workshop_list", None)
+        if lst is None:
+            return
+        entry = lst.itemAt(pos)
+        if entry is None:
+            return
+        item_id = int(entry.data(Qt.ItemDataRole.UserRole) or 0)
+        if not item_id:
+            # 文件系统视图（只读模式）：行携带 0，没有可管理的物品 ID
+            return
+        lst.setCurrentItem(entry)
+        self._build_workshop_item_menu(item_id).exec(
+            lst.viewport().mapToGlobal(pos))
+
+    def _build_workshop_item_menu(self, item_id: int):
+        """构建物品右键菜单（与 exec 拆开：测试可直接检查而不阻塞）。"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtWidgets import QMenu
+
+        palette = self._workshop_palette()
+        menu = QMenu(self)
+        # 样式照气泡右键菜单的轻量做法（bar_widgets._show_menu）：只染
+        # 表面 / 文字 / 描边 / 选中底色，不引入完整的悬浮条菜单体系
+        menu.setStyleSheet(
+            "QMenu{background:%s;color:%s;border:1px solid %s;padding:4px;}"
+            "QMenu::item{padding:5px 18px;border-radius:4px;}"
+            "QMenu::item:selected{background:%s;}"
+            % (palette["panel"], palette["text"], palette["border"],
+               palette["combo_sel"]))
+        act_view = menu.addAction(t("set.workshop.view_community"))
+        act_view.triggered.connect(
+            lambda: QDesktopServices.openUrl(
+                QUrl(f"steam://url/CommunityFilePage/{int(item_id)}")))
+        act_download = menu.addAction(t("set.workshop.priority_now"))
+        act_download.triggered.connect(
+            lambda: self._request_workshop_download(int(item_id)))
+        # 退订是破坏性操作，与上面两项隔开
+        menu.addSeparator()
+        act_unsub = menu.addAction(t("set.workshop.unsubscribe"))
+        act_unsub.triggered.connect(
+            lambda: self._on_workshop_unsubscribe(int(item_id)))
+        return menu
+
+    def _on_workshop_unsubscribe(self, item_id: int) -> None:
+        """退订物品：先确认，再丢后台线程执行（取消订阅后 Steam 移除本地内容）。
+
+        确认框不能省（误点代价是重新订阅 + 重新下载），默认按钮放「否」；
+        阻塞调用必须在后台线程等结果，经 workshop_done 回主线程刷新与提示。
+        """
+        if not item_id:
+            return
+        answer = QMessageBox.question(
+            self, t("set.workshop.unsubscribe"),
+            t("set.workshop.unsubscribe_confirm"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        import threading
+
+        threading.Thread(
+            target=self._unsubscribe_worker, args=(int(item_id),),
+            daemon=True, name="workshop-unsubscribe").start()
+
+    def _unsubscribe_worker(self, item_id: int) -> None:
+        """后台线程：执行退订并把结果发回主线程（不碰任何控件）。"""
+        from ..steam_integration import get_integration
+
+        ok = bool(get_integration().workshop_unsubscribe(int(item_id)))
+        self.workshop_done.emit(ok, "unsubscribe", str(item_id))
+
+    def _on_workshop_publish(self) -> None:
+        """选目录 → 后台线程上传。"""
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
+
+        from ..steam_integration import get_integration
+        from ..workshop import MANIFEST_NAME, parse_manifest
+
+        folder = QFileDialog.getExistingDirectory(
+            self, t("set.workshop.select_folder"))
+        if not folder:
+            return
+        # 先校验清单：缺清单/无有效内容的目录即使上传成功
+        # 应用也永远不会认它 —— "发布成功但没有任何效果"是最难解释的一种结果
+        manifest = parse_manifest(Path(folder))
+        if manifest is None:
+            QMessageBox.warning(
+                self, t("set.workshop.group"),
+                t("set.workshop.folder_missing_manifest"))
+            return
+
+        self._show_workshop_status(t("set.workshop.publishing", percent=0))
+        title = manifest.name
+        # 物品页描述来自清单：发布方在 ori_workshop.json 里写什么，工坊
+        # 页面就展示什么——功能包尤其需要，页面上必须能看到"需自备密钥"
+        # 这类说明（口径与 README、应用内文案保持一致）
+        description = manifest.description
+
+        def _worker() -> None:
+            item_id = get_integration().workshop_publish(
+                folder, title=title, description=description,
+                tags=["OpenRealtimeASR"], change_note=title)
+            self.workshop_done.emit(bool(item_id), "publish", title)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True,
+                         name="workshop-publish").start()
+
+    def _on_workshop_done(self, ok: bool, action: str, detail: str) -> None:
+        """工坊后台动作完成（发布 / 退订）：刷新列表并按动作提示结果。"""
+        self._refresh_workshop()
+        if action == "unsubscribe":
+            self._show_workshop_status(
+                t("set.workshop.unsubscribed") if ok
+                else t("set.workshop.unsubscribe_failed"))
+            return
+        self._show_workshop_status(
+            t("set.workshop.published", title=detail) if ok
+            else t("set.workshop.publish_failed"))
+
+    def _show_workshop_status(self, text: str) -> None:
+        label = getattr(self, "_workshop_status", None)
+        if label is None:
+            return
+        label.setText(text or "")
+        label.setVisible(bool(text))
 
     def _build_gpu_install_row(self) -> QWidget:
         """「安装显卡加速包」按钮行：交给 平台客户端弹安装对话框。"""
@@ -2430,7 +3346,7 @@ class SettingsDialog(QDialog):
         return wrap
 
     def _build_llm_test_row(self) -> QWidget:
-        """「通用设置 → 通用 AI 接口」组内：连通性检测按钮行（读表单当前值发最小请求）。
+        """「引擎密钥 → 通用 AI 接口」卡内：连通性检测按钮行（读表单当前值发最小请求）。
 
         按钮发后台线程请求（不卡 UI），结果经 llm_test_done 信号回主线程，
         状态标签即时反馈：灰=检测中 / 绿=成功 / 红=失败（附原因）。
@@ -2532,9 +3448,7 @@ class SettingsDialog(QDialog):
     def _build_provider_container(self, groups: list) -> QWidget:
         """把 N 个 ("标题", fields) 分区竖排进一个可整组显隐的容器。
 
-        复刻 _build_page 的分区间分隔线样式（发丝线 groupSep + 上下留白），
-        使 provider 切换时「豆包组 / Qwen 组 / Hermes 组」各自呈现与主页面一致的
-        分区观感。
+        分区之间用与 _build_page 一致的发丝分隔线（groupSep + 上下留白）。
         """
         wrap = QWidget()
         lay = QVBoxLayout(wrap)
@@ -2553,16 +3467,11 @@ class SettingsDialog(QDialog):
         return wrap
 
     def _build_dialog_provider_area(self, pick) -> tuple:
-        """对话页 provider 专属字段区：豆包 / Qwen / Hermes 三个容器竖排，仅当前
-        provider 可见。pick 是 __init__ 内的字段筛选闭包 (section,keys)->fields，
-        按引用传入复用同一套 _FIELDS 过滤。返回
-        (area, doubao_container, qwen_container, hermes_container)。
+        """对话页 provider 专属字段区：豆包 / Qwen / Hermes 三容器竖排、互斥显隐。
+        返回 (area, doubao, qwen, hermes)；pick 为 __init__ 内的字段筛选闭包。
 
-        「对话专属识别」也归 Hermes 容器：dialog.asr.* 目前只被 Hermes 对话路径
-        消费（core/dialog.py 的 _create_hermes_client 用 dialog_asr_engine /
-        dialog_asr_overrides 注入 ASR 工厂；豆包与 Qwen 走服务端识别，本端根本
-        不起 ASR），对另两家显示这一组等于给用户一个拧了没反应的旋钮。
-        """
+        「对话专属识别」(dialog.asr.*) 只被 Hermes 对话路径消费，另两家走服务端识别、
+        本端不起 ASR，显示这一组等于给用户一个拧了没反应的旋钮。"""
         area = QWidget()
         v = QVBoxLayout(area)
         v.setContentsMargins(0, 0, 0, 0)
@@ -2609,19 +3518,16 @@ class SettingsDialog(QDialog):
     def _current_dialog_provider(self) -> str:
         """读 provider 下拉当前值并归一为 "doubao" | "aliyun" | "hermes"。
 
-        combo 显示中文名（_COMBO_LABELS），需反查回原始值（与 _save 同口径）；
-        控件缺失或值异常一律回退 "doubao"（向后兼容，不因 UI 态误触发别家）。
-        末行白名单必须与 loader.dialog_provider 的三值判定一致：漏掉的值在
-        这里被静默降级成 doubao，用户选了它、保存后又被改回去。
-        """
+        combo 显示中文名，需反查回原始值（与 _save 同口径）；控件缺失或值异常回退
+        "doubao"。白名单须与 loader.dialog_provider 三值判定一致，否则选中值被静默降级。"""
         combo = self._widgets.get(("dialog", "provider"))
         if combo is None:
             return "doubao"
         labels = self._combo_value_keys("dialog", "provider")
         text = combo.currentText()
         for val, key in labels.items():
-            # 键名反查：_COMBO_LABELS 存的是 i18n 键，下拉显示的是 t(键)，
-            # 故比较对象也要 t() 一次（A6 抽串前这里直接比中文显示名）
+            # 键名反查：_COMBO_LABELS 存的是 i18n 键，下拉显示的是 t(键)
+            # 故比较对象也要 t() 一次（抽串前这里直接比中文显示名）
             if t(key) == text:
                 return val
         return text if text in ("doubao", "aliyun", "hermes") else "doubao"
@@ -2646,12 +3552,8 @@ class SettingsDialog(QDialog):
     def _is_in_hidden_group(self, widget) -> bool:
         """widget 是否属于「另一 provider 的隐藏组」。
 
-        判据用容器 isHidden()（显式显隐标志，由 _on_dialog_provider_changed
-        维护）而非 widget.isVisible()：后者受导航页/窗口显示状态影响，用户
-        切走页签时会把两组都算成不可见，预校验与写盘都会被误跳过。_save 对
-        隐藏组字段既不校验也不写盘：另一家的残留值（如旧版写下的空串）既不
-        该拦住本次保存，也不该被本家的保存动作覆盖。
-        """
+        判据用容器 isHidden() 而非 widget.isVisible()：后者受导航页/窗口显示状态影响，
+        切走页签会把两组都算不可见、导致预校验与写盘被误跳过（_save 对隐藏组不校验不写盘）。"""
         for name in ("_dialog_doubao_group", "_dialog_qwen_group",
                      "_dialog_hermes_group"):
             group = getattr(self, name, None)
@@ -2698,11 +3600,8 @@ class SettingsDialog(QDialog):
     def _widget_value(self, section: str, key: str) -> str:
         """按 (section, key) 读标量/combo 类表单控件当前值。
 
-        仅覆盖 QComboBox（用 _COMBO_LABELS 把显示名反查回原始选项值）、
-        SliderSpinBox/QSpinBox（取整数）、QTextEdit/QLineEdit（取文本）；不处理
-        DeviceCombo/ThemeCardGroup 等需 currentData/专用取值的控件，故只用于读
-        region/workspace_id/api_key/model 这类标量字段（Qwen 测试连接）。控件
-        缺失或非上述类型返回 ""。
+        仅覆盖 QComboBox（显示名反查回原始值）/ SliderSpinBox / QSpinBox / QTextEdit /
+        QLineEdit；不处理 DeviceCombo 等需 currentData 的控件，缺失或类型不符返回 ""。
         """
         w = self._widgets.get((section, key))
         if w is None:
@@ -2735,10 +3634,8 @@ class SettingsDialog(QDialog):
     def _on_dialog_test(self) -> None:
         """发起测试连接：按当前 provider 分派（豆包 / Qwen / Hermes）。
 
-        Hermes 只给提示、不起握手：本按钮没有 provider 无关的路径，落进豆包分支
-        要么报出用户没问的问题（豆包口径的缺密钥提示），要么在本机填过火山密钥时
-        真的握手成功并显示绿色「连接正常」—— 用户会读成「Hermes 通了」，而首次
-        热键连接随后就失败。真连诊断见 tests/diag_hermes_dialog.py（Task 7）。
+        Hermes 只给提示、不起握手：走豆包分支会报出用户没问的问题或误显「连接正常」，
+        用户会读成「Hermes 通了」，而实际首次热键连接即失败。
         """
         if self._current_dialog_provider() == "hermes":
             self._show_dialog_test_result(
@@ -2812,9 +3709,8 @@ class SettingsDialog(QDialog):
     def _qwen_dialog_test_worker(self, api_key: str, ws_url: str) -> None:
         """后台线程：建 QwenDialogClient → start() 握手开会话 → 收尾，回发结果。
 
-        QwenDialogClient.start() 阻塞至 session.updated 或抛 DialogError（含中文
-        hint）；成功即 stop()（无 FinishSession 握手，重复调用安全）。回显 session.id
-        作报障凭据（对应豆包的 X-Tt-Logid 地位）。
+        start() 阻塞至 session.updated 或抛 DialogError（含中文 hint）；成功即 stop()
+        （无 FinishSession 握手，重复调用安全）。回显 session.id 作报障凭据。
         """
         from ..asr.qwen_dialog import QwenDialogClient
 
@@ -2848,7 +3744,7 @@ class SettingsDialog(QDialog):
         """更新测试状态标签：None=检测中（灰），True=成功（绿），False=失败（红）。
 
         neutral=True：中性提示（灰、按钮保持可用）——用于「这里测不了，请走诊断
-        脚本」这类**不是失败**的信息（M10），别拿红色失败样式吓用户。
+        脚本」这类**不是失败**的信息，别拿红色失败样式吓用户。
         """
         btn, status = getattr(self, "_dialog_test_btn", None), \
             getattr(self, "_dialog_test_status", None)
@@ -2868,11 +3764,9 @@ class SettingsDialog(QDialog):
         status.setVisible(True)
 
     def _themed_shell(self, title: str) -> tuple:
-        """无边框主题弹窗外壳：自绘标题栏（拖动/关闭）+ 圆角面板，紧凑尺寸。
+        """无边框主题弹窗外壳：自绘标题栏 + 圆角面板。返回 (dlg, body 布局)。
 
-        与设置主窗口同方案一体：去系统标题栏与窗口图标，QSS 走 promptDlg
-        平铺底色 + promptPanel 圆角面板（Win11 DWM 自动裁切圆角）。
-        Qt.Tool 保证弹窗不进任务栏、无窗口图标。返回 (dlg, body 布局)。
+        Qt.Tool 保证弹窗不进任务栏、无窗口图标；圆角由 Win11 DWM 自动裁切。
         """
         dlg = QDialog(self)
         dlg.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog | Qt.Tool)
@@ -2942,12 +3836,9 @@ class SettingsDialog(QDialog):
                     default: Optional[str] = None) -> str:
         """主题化消息框：无边框 + 自绘标题栏，与设置界面一体。
 
-        返回被点击的按钮文字；窗口被关闭（X/Esc）返回空串。
-        default 指定回车触发的默认按钮（缺省=最后一个，危险操作可设为「取消」）。
-
-        buttons/title 的缺省值在**函数体内**取（不能用默认参数）：默认参数
-        在导入期求值，写 t("common.ok") 会把导入时的界面语言焊死。
-        """
+        返回被点击的按钮文字；关闭（X/Esc）返回空串。default 指定回车触发的默认按钮
+        （缺省=最后一个）。buttons/title 缺省值须在**函数体内**取：默认参数导入期求值，
+        写 t() 会把当时的界面语言焊死。"""
         if buttons is None:
             buttons = (t("common.def.ok"),)
         if title is None:
@@ -2983,6 +3874,7 @@ class SettingsDialog(QDialog):
         edit = QLineEdit()
         if placeholder:
             edit.setPlaceholderText(placeholder)
+        _install_text_menu(edit, self._workshop_palette())
         body.addWidget(lbl)
         body.addWidget(edit)
         row = QHBoxLayout()
@@ -3003,9 +3895,8 @@ class SettingsDialog(QDialog):
     def _refresh_prompt_combo(self, content: str, select_name: Optional[str] = None) -> None:
         """重建版本下拉并选中合适项，编辑框内容随之设置。
 
-        选中规则：显式指定 > 内容与某版本一致 > 空内容选默认 > 临时项。
-        临时项仅在打开设置时 llm.prompt 非空且不匹配任何版本的情况下出现
-        （编辑期间不自动切换，切换选中项即消失）。
+        选中规则：显式指定 > 内容与某版本一致 > 空内容选默认 > 临时项
+        （临时项仅 llm.prompt 非空且不匹配任何版本时出现）。
         """
         from ..postprocess import prompt_presets
 
@@ -3124,12 +4015,8 @@ class SettingsDialog(QDialog):
     def _combo_options(self, section, key, extra) -> tuple[list[str], dict[str, str]]:
         """combo 字段的 (候选值列表, 值→i18n 键) 两元组。
 
-        extra 支持两种形态（历史与规格兼容）：
-        - list/tuple：候选项列表，显示名查 `_COMBO_LABELS`（无映射则原样显示，
-          此时"显示名"就是值本身，不需要 t()）。
-        - dict：值→**i18n 键**的映射（A6 起语言切换项等新字段用这种写法规避
-          在字段表里直接写文案）。注意 dict 的 key 必须包含全部候选值，
-          顺序即 dict 插入顺序。
+        extra 两种形态：list/tuple = 候选项列表，显示名查 `_COMBO_LABELS`（无映射
+        则原样显示）；dict = 值→**i18n 键**映射，key 须含全部候选值，顺序即插入顺序。
         """
         if isinstance(extra, dict):
             options = [str(v) for v in extra.keys()]
@@ -3160,9 +4047,11 @@ class SettingsDialog(QDialog):
             return self._build_prompt_editor(str(current if current is not None else ""))
         if wtype == "hotkey":
             w = HotkeyCaptureEdit(str(current if current is not None else ""))
+            _install_text_menu(w, self._workshop_palette())
             return w
         if wtype == "str":
             w = QLineEdit(str(current if current is not None else ""))
+            _install_text_menu(w, self._workshop_palette())
             return w
         if wtype == "text":
             # 多行文本（如「帮我」AI 命令提示词模板）：配置为空时预填内置
@@ -3177,6 +4066,7 @@ class SettingsDialog(QDialog):
             w.setAcceptRichText(False)
             w.setMinimumWidth(430)
             w.setMinimumHeight(180)
+            _install_text_menu(w, self._workshop_palette())
             return w
         if wtype == "secret":
             w = QLineEdit(str(current if current is not None else ""))
@@ -3184,6 +4074,7 @@ class SettingsDialog(QDialog):
             # 预填现值（回显为圆点）；清空则保存时跳过不覆盖
             if current:
                 w.setText(str(current))
+            _install_text_menu(w, self._workshop_palette())
             return w
         if wtype == "int":
             lo, hi = extra if extra else (0, 9999)
@@ -3208,13 +4099,10 @@ class SettingsDialog(QDialog):
         if wtype == "bool":
             w = ToggleSwitch(self._palette)
             if (section, key) == ("hotkey", "hold_to_talk"):
-                # 「长按说话」的开关显示必须与运行时**同一个**判定函数，不能
-                # 顺手 bool()：运行时 hold_flag_enabled 只认 True 与白名单字符串
-                # （认不出就是关，fail closed），而 bool() 会把拼错的字符串与
-                # YAML 裸整数 1 都显示成「开」——两套真值规则下，用户看到的是
-                # 「功能开着、按下去却毫无反应」的假象（右键菜单同步改掉了）。
-                # 其它 bool 字段不走这里：它们的运行时判据本来就是 bool()，
-                # 一起换反而会在那些字段上造出同一类不一致。
+                # 「长按说话」的开关显示必须与运行时同一个判定函数，不能顺手 bool()：
+                # hold_flag_enabled 只认 True 与白名单字符串（认不出就是关，fail closed），
+                # bool() 会把拼错字符串与 YAML 裸整数 1 显示成「开」——两套真值规则会让用户
+                # 看到「功能开着、按下去却毫无反应」。其它 bool 字段判据本就是 bool()，不动。
                 w.setChecked(hold_flag_enabled(current))
             else:
                 w.setChecked(bool(current))
@@ -3295,7 +4183,7 @@ class SettingsDialog(QDialog):
     def _save(self) -> None:
         from ..config.loader import update_config_field
 
-        # 自定义短语词表先校验（重名/成对），失败则整体不保存，
+        # 自定义短语词表先校验（重名/成对），失败则整体不保存
         # 避免配置已落盘但词表被拦截的半截状态
         phrases, phrase_err = self._collect_phrases()
         if phrase_err:
@@ -3303,11 +4191,9 @@ class SettingsDialog(QDialog):
             return
 
         # 数值字段预校验（与短语同策略：先全量校验再落盘，失败整体不保存）：
-        # vad_threshold 走自由文本框，可被清空/填非数字；若不拦，loader 的
-        # float 回退会把它写成带引号字符串且回读通过（保存"成功"），直到
-        # 对话启动时 float() 才崩成不可读的英文报错（NaN/Infinity 还会被
-        # loader 回读不符静默回滚）。另一 provider 隐藏组的字段跳过（见
-        # _is_in_hidden_group：其残留值不该拦住本家字段的保存）。
+        # vad_threshold 是自由文本框，可被清空/填非数字；不拦的话 loader 的 float
+        # 回退会把它写成带引号字符串且回读"成功"，直到对话启动时 float() 才崩。
+        # 另一 provider 隐藏组的字段跳过（见 _is_in_hidden_group）。
         for (section, key), widget in self._widgets.items():
             if (section, key) in _FLOAT_FIELDS and isinstance(widget, QLineEdit):
                 if self._is_in_hidden_group(widget):
@@ -3362,10 +4248,8 @@ class SettingsDialog(QDialog):
             elif isinstance(widget, QComboBox):
                 value = widget.currentText().strip()
                 # 友好显示名反查回原始值；整数型字段（如 filter_modal）写裸数字。
-                # labels 存 i18n 键、下拉显示 t(键)，故比较对象同样 t() 一次——
-                # 漏这一步会把显示用的中文当值写进 config.yaml。
-                # dict 形态 extra（如界面语言项）同样要反查：它的值→键映射
-                # 不在 _COMBO_LABELS 里，只查后者会把显示名当值写回配置。
+                # labels 存 i18n 键、下拉显示 t(键)，故比较对象同样 t() 一次——漏这一步会把
+                # 显示用的中文当值写进 config.yaml。
                 labels = self._combo_value_keys(section, key)
                 value = next((v for v, key2 in labels.items() if t(key2) == value),
                              value)

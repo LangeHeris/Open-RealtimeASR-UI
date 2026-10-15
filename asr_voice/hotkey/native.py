@@ -1,28 +1,12 @@
 """Windows 原生全局热键（RegisterHotKey）。
 
-为什么不用 keyboard 库的热键
----------------------------
-keyboard 库（0.13.5）的 add_hotkey 走低级键盘钩子：它把热键组合里出现的修饰键
-（Ctrl/Shift/Alt/Win）计入 _listener.filtered_modifiers，从而接管这些键的物理按下
-与抬起，并在"空按一次修饰键"之后补发一个没有配对的合成按下——系统于是认为修饰键
-一直被按住（Shift 滞留：后续输入变大写、Ctrl+V 变 Ctrl+Shift+V，再按一次该修饰键
-才恢复；Ctrl 同理）。真机复现见 tests/diag_hotkey_modifier_sticky.py。
+不用 keyboard 库热键：其 add_hotkey 走低级钩子，把组合里的修饰键计入 filtered_modifiers，
+空按一次修饰键后补发无配对的合成按下，系统遂认为修饰键一直被按住（Shift 滞留）。
+RegisterHotKey 由系统实现、不挂钩子、不读写键状态，命中只投 WM_HOTKEY：修饰键不被接管无滞留、
+含 Win 组合不再需管理员、组合被占用则报 ERROR_HOTKEY_ALREADY_REGISTERED。单普通键（backspace
+等"只监听不拦截"的键）不能走原生（会被系统吃掉），仍由 listener.py 走 keyboard 钩子。
 
-RegisterHotKey 由系统实现，不挂钩子、不读写任何键状态，命中时只投递一条 WM_HOTKEY：
-
-- 修饰键不会被接管，不存在滞留；
-- 含 Win 键的组合不再需要管理员权限（旧实现要靠钩子+提权才能捕获）；
-- 组合已被别的程序注册时会失败（ERROR_HOTKEY_ALREADY_REGISTERED），能明确报错，
-  而不是静默失效。
-
-本模块只负责"原生可用"的那部分。只有单个普通键的组合（backspace/delete 这类
-"只监听不拦截"的键）不能走原生——RegisterHotKey 会把该键从系统里吃掉——继续由
-listener.py 走 keyboard 钩子；此时库内没有任何 blocking 热键，修饰键状态机不会被
-启用，也不会滞留修饰键（见 listener.py 的说明）。
-
-实现要点：RegisterHotKey 需要一个窗口来接收 WM_HOTKEY，且注册/注销与消息循环
-最好在同一线程，因此这里起一个常驻线程创建隐藏窗口（HWND_MESSAGE）并跑消息循环，
-所有注册请求都投递到该线程执行。
+RegisterHotKey 需窗口接收 WM_HOTKEY 且注册/注销与消息循环宜同线程，故常驻线程建隐藏窗口（HWND_MESSAGE）跑消息循环。
 """
 
 from __future__ import annotations

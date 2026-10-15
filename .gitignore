@@ -87,8 +87,8 @@ models/
 # 运行时临时目录（会话修复/设置备份等）
 .dsh_tmp/
 
-# 开源推送口径（2026-09-25）：tests/ 与 tools/ 整体不入公开仓；商店筹备文档
-# 与过程文档同样私有。CI/本地构建刚需的 4 个脚本已移居 scripts/（公开）。
+# 开源推送口径：tests/ 与 tools/ 整体不入公开仓；发行筹备文档与过程文档
+# 同样私有。CI/本地构建刚需的 4 个脚本已移居 scripts/（公开）。
 # 注意：下方「渠道独占资产」哨兵段是 tests/test_public_repo_boundary.py 的
 # 真相源，本段条目**不得**写进哨兵段（改哨兵必须同步测试副本）。
 /tests/
@@ -119,6 +119,8 @@ models/
 # steam_appid.txt 时整条链路降级为 no-op，不需要额外的开关。
 /steam/
 /build_steam.bat
+# 渠道版源码启动器：引用的 runner 在 tools/ 下（同样不入公开仓）
+/start_steam.bat
 /requirements.steam.cpu.txt
 /requirements.steam.cuda.txt
 /tools/assemble_depot.py
@@ -129,6 +131,12 @@ models/
 /tests/test_gen_vdf.py
 /asr_voice/ui/theme_features/pixel.py
 /themes/像素/
+# 渠道版专用 UI 素材：程序在缺失时回退手绘
+/asr_voice/assets/steam_symbol.png
+/asr_voice/assets/steam_symbol.svg
+/asr_voice/assets/workshop/
+# 工坊物品发布源（渠道运营资产）
+/workshop-items/
 /docs/steam-launch-ops-checklist.md
 /docs/superpowers/plans/2026-09-20-steam-launch-code.md
 /docs/superpowers/plans/2026-09-20-steam-launch-packaging.md

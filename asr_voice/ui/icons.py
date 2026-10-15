@@ -1,13 +1,7 @@
-"""自绘矢量图标。用 QPainter 生成，与浮动条暗色风格统一。
+"""自绘矢量图标，用 QPainter 生成，与浮动条暗色风格统一。
 
-图标列表：
-- gear: 齿轮（配置）
-- close: X 形（退出）
-- play: 三角形（开始）
-- stop: 正方形（停止）
-- mic: 麦克风（托盘）
-- spinner: 加载中转圈弧线（模型加载期间悬浮条状态点用，可旋转）
-- uac_shield: UAC 安全盾牌（蓝黄四象限，设置页永久提权按钮用）
+图标：gear（齿轮）/ close（X）/ play（三角）/ stop（方块）/ mic（麦克风）/
+spinner（加载中转圈弧线，可旋转）/ uac_shield（UAC 安全盾牌，设置页永久提权按钮用）。
 """
 
 from __future__ import annotations
@@ -141,9 +135,8 @@ def spinner_pixmap(size: int = 10, color: str = "#5696e8",
                    angle_deg: float = 0.0) -> QPixmap:
     """加载中 spinner（QPixmap，可旋转）。
 
-    size: 输出边长。color: 弧线颜色。angle_deg: 顺时针角度；固定画布绕中心
-    旋转，不用 transformed()（会扩画布再压缩，观感缩放）。
-    形状是一段约 270° 圆弧 + 圆头笔帽，随角度转起来即"转圈加载"效果。
+    size: 输出边长。color: 弧线颜色。angle_deg: 顺时针角度。固定画布绕中心旋转，
+    不用 transformed()（会扩画布再压缩，观感缩放）。形状约 270° 圆弧 + 圆头笔帽。
     """
     # size<4 时弧半径为负或非正，QPainter 会发 begin/参数告警：退回透明空白图
     if size < 4:
@@ -183,7 +176,7 @@ def app_icon() -> QIcon:
 
 # ---- 极简（声纹）主题图标 ----
 # 原图深灰圆环+波形，背景是导出时烙进像素的近白棋盘格。
-# 运行期一次性处理并缓存：亮度转 alpha（亮→透明、暗→不透明），
+# 运行期一次性处理并缓存：亮度转 alpha（亮→透明、暗→不透明）
 # 线条提亮成米白，图案包围盒铺满输出边长。
 
 _VOICE_SHAPE: dict[str, tuple[QImage, QRect]] = {}

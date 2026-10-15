@@ -1,21 +1,12 @@
-"""文本注入。把识别到的文字写入当前焦点窗口。
+"""文本注入：把识别到的文字写入当前焦点窗口。
 
-方案：
-- clipboard_paste（默认）：写入剪贴板 + 模拟 Ctrl+V。结果是否留在剪贴板
-  由 keep_clipboard 决定：开=识别结果留在剪贴板（方便再粘，占用剪贴板）；
-  关=粘贴后恢复剪贴板原内容（不占用）
-- simulate_keys：逐字模拟按键（速度慢，仅作备选）
+clipboard_paste（默认）写剪贴板 + 模拟 Ctrl+V，结果是否留在剪贴板由 keep_clipboard 决定；
+simulate_keys 逐字模拟按键（慢）。实时识别的新中间结果是旧结果前缀扩展时只增量追加，前缀
+不匹配（ASR 回头修正）才整段退格重写。
 
-实时识别时支持中间结果替换：新中间结果是旧结果的前缀扩展时只增量追加
-新增字符（不整段重打，降低逐字同步上屏的闪烁）；前缀不匹配（ASR 回头
-修正）才整段退格重写。最终结果确认后不再删除。
-
-线程模型：所有注入操作经内部队列由专用 worker 线程串行执行，调用方立即
-返回。注入含 30-300ms 的 sleep 节流（目标程序就绪缓冲 / 退格防丢键 /
-剪贴板恢复等待），若在 Qt 主线程同步执行，每次上屏 + LLM 修正替换会
-冻结事件循环 0.5-1 秒（悬浮条动画停、菜单点击无响应）。SendInput 与
-pyperclip 均线程安全；keyboard 库的热键监听在其内部 listener 线程，
-与注入线程互不干扰。
+线程模型：所有注入操作经内部队列由专用 worker 线程串行执行，调用方立即返回——注入含
+30-300ms 的 sleep 节流，在 Qt 主线程同步执行会冻结事件循环。SendInput 与 pyperclip 线程安全，
+keyboard 热键监听在其内部 listener 线程，与注入线程互不干扰。
 """
 
 from __future__ import annotations
@@ -33,14 +24,19 @@ import pyperclip
 
 logger = logging.getLogger(__name__)
 
+# 「刚才那一下按键是我们自己发的」保留时长（秒）。
+
+# 必须有它：「删除键打断录音」监听区分不出合成键与真键（GetAsyncKeyState 只读物理键，
+# 钩子拿到的注入事件与真键同形），而注入器为退格重写会真发 Backspace，于是自我打断。
+# 取值覆盖"一串连发 + 25ms 轮询滞后"，又短到用户真按退格取消时不受影响。
+SYNTHETIC_INPUT_GUARD_S = 0.5
+
 
 def _process_name_by_pid(pid: int) -> str:
     """PID -> 进程名（如 WeChat.exe），失败返回空串。
 
-    主路径用 QueryFullProcessImageNameW 直接查询（单次 API 调用，
-    微秒级）；微信检测/诊断日志每次注入都要调用，原来每次 spawn
-    tasklist 子进程（50-300ms）是逐字同步高频注入时的卡顿源。
-    受保护/高权限进程 OpenProcess 会被拒，此时回退 tasklist（低频）。
+    主路径用 QueryFullProcessImageNameW（每次注入都调，spawn tasklist 子进程会成卡顿源）；
+    受保护/高权限进程 OpenProcess 被拒，此时回退 tasklist。
     """
     try:
         kernel32 = ctypes.windll.kernel32
@@ -177,7 +173,7 @@ def _current_integrity_level() -> Optional[int]:
     advapi32 = ctypes.windll.advapi32
     # GetCurrentProcess 返回伪句柄 -1：不声明 restype 时 ctypes 按 32 位
     # c_int 截断再传参，64 位下句柄失效、OpenProcessToken 必败——权限差检测
-    # 恒 None、UIPI 警告从未响过（2026-09-10 实测 own=None/fg=8192 定因）
+    # 恒 None、UIPI 警告从未响过
     kernel32.GetCurrentProcess.restype = ctypes.wintypes.HANDLE
     advapi32.OpenProcessToken.argtypes = (
         ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
@@ -196,7 +192,7 @@ def _current_integrity_level() -> Optional[int]:
 
 _WECHAT_PROCESS_HINTS = ("wechat", "weixin", "wxwork", "微信")
 
-# 终端类进程名：Ctrl+C 在其中是中断信号（会杀掉正在跑的命令），
+# 终端类进程名：Ctrl+C 在其中是中断信号（会杀掉正在跑的命令）
 # 语音命令的"读选中文本"（模拟 Ctrl+C）绝不能发往这些进程
 _TERMINAL_PROCESS_HINTS = (
     "windowsterminal", "cmd.exe", "powershell", "pwsh", "conhost", "mintty",
@@ -214,19 +210,10 @@ def _is_wechat_foreground() -> bool:
 
 
 def _send_unicode_text(text: str, delay: float = 0.0) -> None:
-    """通过 Windows SendInput + KEYEVENTF_UNICODE 直接发送 Unicode 字符。
+    """通过 Windows SendInput + KEYEVENTF_UNICODE 直接发送 Unicode 字符（delay=每字间隔秒）。
 
-    相比 keyboard.write 用 Alt+小键盘 方式，可靠性大幅提升：
-    - 不会触发目标程序的 Alt 菜单快捷键（首字丢失的根因）
-    - 不依赖 Num Lock 状态
-    - 中英文/标点同等对待，首字与后续字行为一致
-
-    delay：每字之间间隔（秒）。0 = 最快。
-
-    重要：INPUT 是 union（ki/mi/hi 三选一），64 位下最大成员 MOUSEINPUT
-    占 32 字节，sizeof(INPUT) 必须 = 40 字节（type 4 + padding 4 + 32）。
-    之前只用 KEYBDINPUT 凑出的 28 字节结构体会让 SendInput 读到错位数据，
-    所有事件被静默丢弃——文字进不去目标程序。
+    比 keyboard.write 可靠：不触发目标程序 Alt 菜单快捷键（首字丢失根因）、不依赖 Num Lock。
+    **INPUT 是 union，64 位下 sizeof 必须 = 40 字节**，否则 SendInput 读到错位数据、事件被静默丢弃。
     """
     if not text:
         return
@@ -310,9 +297,8 @@ def _send_unicode_text(text: str, delay: float = 0.0) -> None:
 class TextInjector:
     """文本注入器。
 
-    所有注入操作（inject/replace/cancel_intermediate/reset）经内部队列
-    由专用 worker 线程串行执行，调用方立即返回——注入节流的 sleep 若在
-    Qt 主线程同步执行会冻结事件循环（详见模块 docstring）。
+    所有注入操作（inject/replace/cancel_intermediate/reset）经内部队列由专用 worker
+    线程串行执行，调用方立即返回（节流 sleep 在 Qt 主线程会冻结事件循环）。
     """
 
     def __init__(
@@ -331,11 +317,16 @@ class TextInjector:
         # True=识别结果保留在剪贴板（粘贴后不恢复原内容，用户可随时 Ctrl+V 再粘贴）
         # False=粘贴后恢复剪贴板原内容（不占用剪贴板）
         self.keep_clipboard = bool(keep_clipboard)
-        # 游戏模式：强制剪贴板粘贴注入（不降级逐字、粘贴后不恢复剪贴板），
+        # 游戏模式：强制剪贴板粘贴注入（不降级逐字、粘贴后不恢复剪贴板）
         # 用于逐字输入无效的游戏等自绘输入框（右键菜单切换，配置持久化）
         self.game_mode = bool(game_mode)
         self._last_len = 0    # 上次注入的中间结果字符数（仅注入线程读写）
         self._last_text = ""  # 上次注入的中间结果原文（用于增量追加判断）
+        # 「合成输入」标记：注入任务开始/结束各打一次时间戳，消费者是删除键打断监听
+        # （见 SYNTHETIC_INPUT_GUARD_S）。单线程写、多线程读，只存一个 float 与一个 bool，
+        # CPython 下赋值本身原子，无需加锁。
+        self._last_synthetic_at = 0.0
+        self._job_running = False
         # read_selection 时保存的用户原剪贴板内容（同注入线程读写；
         # AI 命令粘贴完成后据此恢复，配合 keep_clipboard=False 语义）
         self.selection_prev_clip: str | None = None
@@ -352,10 +343,33 @@ class TextInjector:
             job = self._jobs.get()
             if job is None:
                 break
+            # 任务前后各打一次标记：所有发键原语（backspace / ctrl+v / keyboard.write /
+            # send_key / read_selection）都跑在本线程的任务里，故「任务在跑」=「正在合成输入」。
+            # 在任务外层打标记而非逐个发键点打，是为了不漏新加的发键路径（漏一处就自打断）。
+            self._job_running = True
+            self._mark_synthetic_input()
             try:
                 job()
             except Exception:
                 logger.exception("注入任务执行失败")
+            finally:
+                self._job_running = False
+                self._mark_synthetic_input()
+
+    def _mark_synthetic_input(self) -> None:
+        """记录「此刻是我们自己在合成输入」。仅注入线程调用。"""
+        self._last_synthetic_at = time.monotonic()
+
+    def synthetic_input_active(self) -> bool:
+        """此刻是否正处于（或刚结束）程序自己合成输入的窗口内。
+
+        供「删除键打断录音」判定自打断用：钩子与 `GetAsyncKeyState` 都分不出
+        合成键与真键，只能靠发键方主动声明。见 SYNTHETIC_INPUT_GUARD_S。
+        """
+        if self._job_running:
+            return True
+        ts = self._last_synthetic_at
+        return ts > 0.0 and (time.monotonic() - ts) < SYNTHETIC_INPUT_GUARD_S
 
     def _submit(self, job: Callable[[], None]) -> None:
         self._jobs.put(job)
@@ -387,9 +401,8 @@ class TextInjector:
                done_callback: Optional[Callable[[], None]] = None) -> None:
         """注入文本（提交到注入线程，立即返回）。
 
-        - is_final=True：注入最终结果，之后不再删除。
-        - is_final=False：注入中间结果，记录长度，下次注入会先删除。
-        - done_callback：注入完成后在注入线程回调（如记录上屏时前台窗口）。
+        is_final=True 注入最终结果、之后不再删除；False 注入中间结果并记长度，下次先删除。
+        done_callback 在注入线程完成后回调（如记录上屏时前台窗口）。
         """
         if not text:
             return
@@ -402,7 +415,7 @@ class TextInjector:
             if not is_final and prev_text == text:
                 self._run_done_callback(done_callback)
                 return
-            # 增量追加：新中间结果是旧中间结果的前缀扩展时，只追加新增字符，
+            # 增量追加：新中间结果是旧中间结果的前缀扩展时，只追加新增字符
             # 不整段退格重打——退格+重写是逐字同步上屏闪烁/卡顿的主要来源。
             # 前缀不匹配（ASR 回头修正了前面字）才回退到整段替换。
             incremental = (
@@ -466,16 +479,10 @@ class TextInjector:
         self,
         done_callback: Optional[Callable[[Optional[str]], None]] = None,
     ) -> None:
-        """读取前台窗口当前选中的文字，经 done_callback(sel) 回传。
+        """读取前台窗口当前选中的文字，经 done_callback(sel) 回传（无选中返回 None）。
 
-        排队到注入线程串行执行（与注入互不插队）。无选中/不支持返回
-        None。哨兵法防"复制失败读到旧剪贴板"：先写唯一随机串再 Ctrl+C，
-        读回仍是哨兵 = 复制没发生（无选中或目标不支持），此时恢复用户
-        原剪贴板内容，不留垃圾哨兵串。有选中则不恢复（AI 链路随后要
-        写处理结果进剪贴板，中间恢复无意义）。
-
-        终端类前台进程直接放弃（Ctrl+C 是中断信号，见
-        _TERMINAL_PROCESS_HINTS），不碰剪贴板。
+        排队到注入线程串行执行。哨兵法防"复制失败读到旧剪贴板"：先写唯一随机串再 Ctrl+C，读回
+        仍是哨兵 = 复制没发生，此时恢复原剪贴板。终端类前台直接放弃（Ctrl+C 是中断信号）。
         """
         def _job():
             sel: Optional[str] = None
@@ -525,11 +532,8 @@ class TextInjector:
     def _clipboard_restorable() -> bool:
         """剪贴板当前内容是否可以安全保存并还原。
 
-        仅含纯文本格式（CF_TEXT/CF_OEMTEXT/CF_UNICODETEXT/CF_LOCALE）时可用
-        剪贴板注入：粘贴后能用 pyperclip 完整还原原内容。
-        含图片（CF_DIB）、文件（CF_HDROP）、富文本（RTF/HTML 等注册格式）
-        时 pyperclip 无法还原，返回 False——此时不动剪贴板，降级逐字输入，
-        避免覆盖用户复制的图片/文件。
+        仅含纯文本格式时可安全还原；含图片/文件/富文本（RTF/HTML 等注册格式）时返回 False，
+        此时不动剪贴板、降级逐字输入，避免覆盖用户复制的图片/文件。
         """
         import ctypes
 
@@ -556,9 +560,8 @@ class TextInjector:
     def _clipboard_has_text() -> bool:
         """剪贴板是否含文本格式（CF_TEXT/CF_OEMTEXT/CF_UNICODETEXT）。
 
-        keep_clipboard 写结果的判定：只要剪贴板里有文本（含浏览器复制
-        的富文本——HTML Format 只是附带格式，本质仍是文本）就允许覆盖；
-        仅图片/文件（无任何文本格式）时不覆盖，保护用户复制的内容。
+        keep_clipboard 写结果的判定：有文本（含浏览器富文本，HTML Format 只是附带格式）就
+        允许覆盖；仅图片/文件时不覆盖，保护用户复制的内容。
         """
         import ctypes
 
@@ -594,20 +597,16 @@ class TextInjector:
                 logger.exception("游戏模式写入剪贴板失败")
                 return
             time.sleep(self.paste_delay)
-            # 发送时刻再记一次前台：Ctrl+V 比「注入开始」晚 paste_delay 才发，
+            # 发送时刻再记一次前台：Ctrl+V 比「注入开始」晚 paste_delay 才发
             # 这期间焦点可能已变（如点了悬浮条），粘错窗口时日志才能看出来。
-            # 权限差同刻取证：UIPI 丢弃合成输入是无痕迹的（日志只有「注入完成」），
-            # True=目标高权限必被丢、None=查不到令牌同样可疑（2026-09-10 星际战甲
-            # 实测前台正确却不出字，当时无此字段无法定因）
+            # 权限差同刻取证：UIPI 丢弃合成输入是无痕迹的（日志只有「注入完成」）
+            # True=目标高权限必被丢、None=查不到令牌同样可疑
             logger.info(
                 "游戏模式发送 Ctrl+V %d字 前台=%s 权限差=%s", len(text),
                 _foreground_window_desc(), self.foreground_elevation_gap(),
             )
-            # 模拟手动按键：游戏常按帧轮询键状态（GetAsyncKeyState），零时长
-            # 的 down+up 会在两帧轮询之间被漏掉；IDE 等事件驱动程序收
-            # WM_KEYDOWN 不受影响——同为前台正确、Qoder 出字而星际战甲
-            # 不出字的差异解释（2026-09-10 实测）。改为按下-保持-释放的
-            # 真实按键节奏，轮询型输入管道才能捕到
+            # 模拟手动按键：游戏常按帧轮询键状态（GetAsyncKeyState），零时长的 down+up
+            # 会在两帧轮询之间被漏掉；改为按下-保持-释放的真实节奏，轮询型管道才能捕到。
             keyboard.press("ctrl")
             time.sleep(0.05)
             keyboard.press("v")
@@ -621,7 +620,7 @@ class TextInjector:
                 time.sleep(max(self.paste_delay, 0.25))
             return
         # 「剪贴板能否安全还原」只在保留剪贴=关（粘贴后需恢复原内容）时
-        # 才参与路由：保留剪贴=开本来就是直接覆盖写入、无需还原，
+        # 才参与路由：保留剪贴=开本来就是直接覆盖写入、无需还原
         # 不该因为剪贴板里有富文本/图片/文件而降级成逐字输入
         # （修复：默认配置下复制过浏览器文字后全部注入被静默降级）。
         restorable = (
@@ -647,11 +646,8 @@ class TextInjector:
                 if len(text) > 1:
                     _send_unicode_text(text[1:], delay=0.005)
                 logger.info("注入完成[simulate_keys] %d字", len(text))
-            # keep_clipboard：逐字输入（含剪贴板粘贴模式降级逐字的路径）
-            # 时结果也放进剪贴板（只写不粘），保证"说过的话可随时 Ctrl+V"。
-            # 含文本格式即可写（富文本也算文本）；仅图片/文件时不覆盖，
-            # 保护用户已复制的内容。增量注入时 clipboard_text 传完整累积
-            # 文本，避免剪贴板只留下最后一段增量片段（BUG 修复）
+            # keep_clipboard：逐字输入时结果也放进剪贴板（只写不粘）。只需含文本格式即可写，
+            # 仅图片/文件时不覆盖；增量注入须传完整累积文本，避免剪贴板只剩最后一段增量。
             if self.keep_clipboard and self._clipboard_has_text():
                 try:
                     pyperclip.copy(clipboard_text or text)
@@ -681,7 +677,7 @@ class TextInjector:
             if self._jobs.qsize() > 0:
                 time.sleep(max(self.paste_delay, 0.25))
         else:
-            # 保存剪贴板原内容：粘贴完成后恢复，不占用用户剪贴板，
+            # 保存剪贴板原内容：粘贴完成后恢复，不占用用户剪贴板
             # 避免每次听写都覆盖用户已复制的内容
             logger.info(
                 "注入开始[clipboard_paste] %d字 目标=%s", len(text),
@@ -701,8 +697,8 @@ class TextInjector:
             keyboard.send("ctrl+v")
             logger.info("注入完成[clipboard_paste] %d字", len(text))
             if prev is not None:
-                # 粘贴后至少等 250ms 再恢复剪贴板：ctrl+v 是异步消息，
-                # 慢程序（Word/浏览器/远程桌面）50ms 内可能尚未读取剪贴板，
+                # 粘贴后至少等 250ms 再恢复剪贴板：ctrl+v 是异步消息
+                # 慢程序（Word/浏览器/远程桌面）50ms 内可能尚未读取剪贴板
                 # 提前恢复会粘出旧内容或空文本（吞字）；多句连续注入时
                 # 下一句的写入也会与本句的读取竞态
                 time.sleep(max(self.paste_delay, 0.25))
@@ -722,9 +718,8 @@ class TextInjector:
     def foreground_elevation_gap(self) -> Optional[bool]:
         """前台窗口进程是否以更高完整性级别运行（管理员权限差检测）。
 
-        True=目标高权限（如管理员运行的游戏），本进程的 SendInput 合成输入
-        会被 Windows UIPI 静默丢弃；False=无权限差；None=无法判定
-        （无前台窗口 / 受保护进程查不到令牌等）。
+        True=目标高权限（如管理员运行的游戏），本进程的合成输入会被 Windows UIPI 静默丢弃；
+        False=无权限差；None=无法判定（无前台窗口 / 受保护进程查不到令牌等）。
         """
         try:
             hwnd = self.current_window_hwnd()

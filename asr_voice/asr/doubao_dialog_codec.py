@@ -1,22 +1,12 @@
 """豆包端到端实时语音大模型（S2S RealtimeAPI）—— 帧编解码层。
 
-接口文档：火山引擎《豆包端到端实时语音大模型 API》（修订记录最新 26.04.29）。
+纯编解码（唯一例外是 DialogFrame dataclass）：build_event_frame / build_audio_frame / parse_frame /
+build_auth_headers / build_start_session_payload，可拿文档十进制字节示例逐字节断言。
+DoubaoDialogClient（线程 + asyncio 收发循环）在 doubao_dialog.py，import 本模块。
 
-本模块只含编解码（纯函数、零 IO、零线程，唯一例外是 DialogFrame dataclass）：
-build_event_frame / build_audio_frame / parse_frame / build_auth_headers /
-build_start_session_payload，可拿文档给出的十进制字节示例逐字节断言。
-
-DoubaoDialogClient（独立线程 + asyncio loop + 收发循环）在 Plan 2 的
-doubao_dialog.py 里，会 import 本模块。
-
-与现有 volcengine_realtime.py（ASR 流式识别）的协议差异（不可复用其打包/解析）：
-- **不用 sequence**：ASR 音频包必须带严格连续序号（负包 -(seq+1)），S2S 完全不用。
-  文档 StartConnection 示例 byte1=0x14 → flags=0b0100，低 2 bit 为 0 = 无 sequence
-- **客户端生成 session id**：uuid4()，StartSession 及之后所有 Session 级事件都要带
-- **不压缩**：文档明确推荐 0b0000（ASR 首包必须 gzip）
-- **音频响应 msg_type=0b1011**：ASR 只有 0b1001
-- **旧版鉴权头布局不同**：S2S 用 X-Api-App-ID 装 App ID，X-Api-App-Key 是固定值；
-  ASR 用 X-Api-App-Key 装 App ID
+与 volcengine_realtime.py（ASR）协议差异，不可复用其打包/解析：
+- **不用 sequence**（flags 低 2 bit 恒 0）、**不压缩**（ASR 首包必须 gzip）、**音频响应 msg_type=0b1011**（ASR 为 0b1001）。
+- **客户端生成 session id**（uuid4，Session 级事件必带）；**旧版鉴权头布局不同**：S2S 用 X-Api-App-ID 装 App ID、X-Api-App-Key 是固定值，ASR 反之。
 """
 
 from __future__ import annotations
@@ -75,14 +65,10 @@ OUTPUT_SAMPLE_RATE = 24000          # 下行：指定 pcm_s16le 后的采样率
 OUTPUT_FORMAT = "pcm_s16le"         # 关键：改掉默认 OGG/Opus，零新依赖
 DIALOG_BLOCK_FRAMES = 320           # 20ms@16kHz（文档 1.2 强烈推荐，= 640 字节/包）
 
-# ---- P0 联调定案（2026-09-03，诊断脚本实测，结论见设计文档「联调待验证清单」）----
-# #4 speech_rate / loudness_rate 归属层级：文档 tts 层级字段说明与 tts.audio_config
-# 示例自相矛盾；两处服务端均接受，但语速对比（--speech-rate 40 ± --rate-in-tts）
-# 仅 audio_config 层听感更快，故固定写 audio_config（ 原 RATE_IN_AUDIO_CONFIG=True，
-# 临时开关已随定案删除，不再留可翻转的全局态）。
-# #7 asr.audio_info：实测不声明也正常识别（PCM 16k 是默认格式），固定不声明
-#（ 原 DECLARE_ASR_AUDIO_INFO=False，同样删除）。
-# #2 音频帧 session id：必需，见 build_audio_frame。
+# ---- 联调定案 ----
+# speech_rate / loudness_rate 固定写 audio_config 层（tts 层虽被接受但无听感差异）。
+# asr.audio_info 固定不声明（PCM 16k 是默认格式，不声明也正常识别）。
+# 音频帧 session id 必需，见 build_audio_frame。
 
 # ---- JSON 序列化：必须紧凑 + 不转义中文 ----
 # 文档 StartSession 示例 payload 为 60 字节且无空格；json.dumps 默认分隔符
@@ -105,13 +91,8 @@ def build_event_frame(event_id: int, payload: dict | None = None,
                       session_id: str | None = None) -> bytes:
     """构造 JSON 类客户端事件帧（无 sequence、无压缩）。
 
-    布局：header(4) + event(4) + [sid_size(4) + sid] + payload_size(4) + payload
-
-    session_id 传 None 或空串 "" 均等价于不带 id 字段，用于 Connect 类事件
-    （1 StartConnection / 2 FinishConnection）—— 文档 StartConnection 示例共
-    14 字节，确实不带任何 id 字段；Session 级事件（100/102/201/515 等）
-    **必须传非空 session id**，否则服务端会报错。
-    payload 为 None 时发 "{}"（文档示例即如此）。
+    布局：header(4) + event(4) + [sid_size(4) + sid] + payload_size(4) + payload。
+    session_id 传 None/"" 即不带 id 字段（Connect 类事件用）；Session 级事件 **必须传非空 session id**（否则报错），payload=None 发 "{}"。
     """
     body = (b"{}" if payload is None
             else json.dumps(payload, **_JSON_KWARGS).encode("utf-8"))
@@ -128,13 +109,8 @@ def build_audio_frame(audio: bytes, session_id: str,
                       include_session_id: bool = True) -> bytes:
     """构造 TaskRequest(200) 音频帧。
 
-    布局：header(4) + event(4) + [sid_size(4) + sid] + payload_size(4) + 裸 PCM
-
-    序列化用 Raw（0b0000）、不压缩：payload 就是 int16 小端单声道 16kHz PCM 字节。
-    include_session_id 默认 True，且已由 P0 联调定案（#2）：session id 必需——
-    实测不带 sid 时服务端把 payload 首 4 字节误读为 id_size，6 包后回 45000000
-    解码错误并 1006 断连（"parse payload size failed: body too short"）。
-    每包多 40 字节是必要开销；False 分支仅供诊断脚本对照，正式客户端不要用。
+    布局：header(4) + event(4) + [sid_size(4) + sid] + payload_size(4) + 裸 PCM（Raw、不压缩）。
+    session id 必需：不带 sid 时服务端把 payload 首 4 字节误读为 id_size 导致解码错误并 1006 断连；include_session_id=False 仅诊断用。
     """
     out = _build_header(MSG_AUDIO_ONLY_REQUEST, FLAG_EVENT, SERIAL_RAW)
     out += struct.pack(">I", EV_TASK_REQUEST)
@@ -149,9 +125,8 @@ def build_audio_frame(audio: bytes, session_id: str,
 class DialogFrame:
     """解析后的服务端帧。
 
-    event_id 为 0 表示该帧未携带事件 ID；error_code 为 0 表示非错误帧；
-    session_id 为 "" 表示未携带 id 字段。payload 保留原始字节
-    （音频帧是 PCM/OGG，文本帧是 UTF-8 JSON），按需调 json()。
+    event_id=0 表示未携带事件 ID；error_code=0 表示非错误帧；session_id="" 表示未携带 id 字段。
+    payload 保留原始字节（音频帧是 PCM/OGG，文本帧是 UTF-8 JSON），按需调 json()。
     """
 
     message_type: int
@@ -183,13 +158,8 @@ class DialogFrame:
 def _read_payload_and_id(data: bytes, offset: int) -> tuple[bytes, str, bool]:
     """从 offset 起解析「可选 id 字段 + payload size + payload」。
 
-    文档没给「是否携带 id」的显式标志（只说 Connect 类事件带 connect id、
-    Session 类带 session id，但 StartConnection 示例里其实没带 connect id），
-    所以用长度自洽校验：解析完必须正好用完整个帧。
-
-    解释 A（优先，Session 级是常态）：id_size(4) + id + payload_size(4) + payload
-    解释 B（回退）：payload_size(4) + payload
-    返回 (payload, id_str, ok)；ok=False 表示两种解释都不自洽。
+    文档没给「是否携带 id」的显式标志，故用长度自洽校验：解析完必须正好用完整个帧。解释 A（优先，Session 级常态）：
+    id_size(4)+id+payload_size(4)+payload；解释 B（回退）：payload_size(4)+payload。返回 (payload, id_str, ok)；ok=False=两种都不自洽。
     """
     total = len(data)
     if offset + 4 > total:
@@ -216,13 +186,8 @@ def _read_payload_and_id(data: bytes, offset: int) -> tuple[bytes, str, bool]:
 def parse_frame(data: bytes) -> Optional[DialogFrame]:
     """解析服务端二进制帧。无法自洽解析时返回 None（不抛异常）。
 
-    字段顺序严格按文档 2.2 的 flags 表：
-    code（仅 msg_type=0b1111）→ sequence（flags 低 2 bit 非 0）→
-    event（flags & 0b0100）→ connect/session id → payload size → payload
-
-    注意：不校验 byte0 的 version/header_size nibble —— 当前硬编码 4 字节头；
-    若服务端未来发异常头长（如 header_size=2 → 8 字节头），长度自洽校验会兜底
-    返回 None 并记 hex 前缀日志，失败模式是安全的。
+    字段顺序按文档 2.2 flags 表：code（仅 msg_type=0b1111）→ sequence（flags 低 2 bit 非 0）→ event（flags & 0b0100）
+    → connect/session id → payload size → payload。不校验 byte0 的 version/header_size nibble（硬编码 4 字节头），异常头长由长度校验兜底返回 None。
     """
     if len(data) < 4:
         logger.warning("帧过短（%d 字节），丢弃：%s", len(data), data[:64].hex())
@@ -262,7 +227,7 @@ def parse_frame(data: bytes) -> Optional[DialogFrame]:
     if compression == COMPRESS_GZIP and payload:
         try:
             payload = gzip.decompress(payload)
-        # gzip 的异常家族跨三个基类：只有 BadGzipFile 是 OSError 子类（magic 非法），
+        # gzip 的异常家族跨三个基类：只有 BadGzipFile 是 OSError 子类（magic 非法）
         # 截断但 magic 合法抛 EOFError、deflate 体损坏抛 zlib.error —— 后两者若不
         # 列出会逃逸出 parse_frame，把接收循环连同整个对话会话一起带崩。
         except (OSError, EOFError, zlib.error) as exc:
@@ -280,22 +245,8 @@ def build_auth_headers(api_key: str = "", app_id: str = "", access_token: str = 
                        connect_id: str | None = None) -> dict:
     """构造 WebSocket 握手鉴权头，两套布局自动选择。
 
-    旧版双密钥（文档 2.1 表格，全部必须）：
-        X-Api-App-ID      = 控制台 App ID
-        X-Api-Access-Key  = 控制台 Access Token
-        X-Api-Resource-Id = volc.speech.dialog
-        X-Api-App-Key     = PlgvMymc7f3tQnJ6（文档给的固定值，不是密钥）
-        X-Api-Connect-Id  = UUID（建议传，便于排查连接）
-    新版单密钥：
-        X-Api-Key + X-Api-Resource-Id + X-Api-Connect-Id
-
-    判定与现有 volcengine_realtime._build_headers 一致：access_token 与 app_id
-    均非空走旧版，否则走新版。
-
-    注意：S2S 的旧版布局与 ASR 的不同 —— ASR 用 X-Api-App-Key 装 App ID，
-    S2S 用 X-Api-App-ID 装 App ID 而 X-Api-App-Key 是固定值，不可互相套用。
-    新版 X-Api-Key 是否被 /api/v3/realtime/dialogue 接受是联调待验证项 #1，
-    文档只写了旧版四个头。
+    access_token 与 app_id 均非空走旧版（X-Api-App-ID + X-Api-Access-Key + X-Api-Resource-Id + X-Api-App-Key=固定值 +
+    X-Api-Connect-Id=UUID），否则走新版（X-Api-Key + X-Api-Resource-Id + Connect-Id）；S2S 旧版布局与 ASR 不同，不可互相套用。
     """
     cid = connect_id or str(uuid.uuid4())
     if access_token and app_id:
@@ -333,18 +284,8 @@ def build_start_session_payload(
 ) -> dict:
     """构造 StartSession(100) 的 payload。
 
-    三条硬约束（错误码 42000020 明文）：
-    - `dialog.extra.model` **必传**，取值 "1.2.1.1"(O2.0) / "2.2.0.0"(SC2.0)
-    - `asr.extra` **不能为 null**，至少是 {}
-    - `tts.extra` **不能为 null**，至少是 {}
-
-    版本相关字段按 model 过滤：bot_name/system_role/speaking_style 只对 O 版本生效，
-    character_manifest 只对 SC 版本生效（文档 1.1 产品约束表）；填了不匹配版本的
-    字段直接不发，避免用户误以为生效。空字符串的可选字段一律不发（省字节，
-    也避免服务端把空串当成有效配置）；dialog_id 总是发（空串 = 不续接上下文）。
-
-    end_smooth_window_ms 默认 800（文档默认 1500）：判停快 700ms，对话更跟手。
-    enable_asr_twopass 默认关：二遍识别更准但增加延迟，与对话场景的跟手诉求冲突。
+    三条硬约束（错误码 42000020）：dialog.extra.model **必传**（"1.2.1.1"=O2.0 / "2.2.0.0"=SC2.0）；asr.extra 与 tts.extra **不能为 null**（至少 {}）。
+    字段按 model 过滤：bot_name/system_role/speaking_style 只对 O 版本、character_manifest 只对 SC 版本生效；空串字段不发，dialog_id 总是发；end_smooth_window_ms 默认 800、twopass 默认关。
     """
     is_sc = model == DEFAULT_MODEL_SC2
 
@@ -352,7 +293,7 @@ def build_start_session_payload(
     if enable_asr_twopass:
         asr_extra["enable_asr_twopass"] = True
     asr: dict = {"extra": asr_extra}
-    # 定案 #7：不声明 asr.audio_info（PCM 16k 是默认格式，实测识别正常）。
+    # 定案 #7：不声明 asr.audio_info（PCM 16k 是默认格式，识别正常）。
 
     dialog: dict = {
         "dialog_id": dialog_id,
@@ -379,7 +320,7 @@ def build_start_session_payload(
     tts_extra: dict = {}
     if explicit_dialect:
         tts_extra["explicit_dialect"] = explicit_dialect
-    # 定案 #4：speech_rate / loudness_rate 写 audio_config 层（实测该层生效，
+    # 定案 #4：speech_rate / loudness_rate 写 audio_config 层（该层生效
     # tts 层级虽被接受但无听感差异）。
     audio_config["speech_rate"] = int(speech_rate)
     audio_config["loudness_rate"] = int(loudness_rate)

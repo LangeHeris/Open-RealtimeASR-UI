@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 # 事件类型
 EVENT_LEVEL = "level"              # 当前块能量，用于 UI 显示
+# 本块达到语音阈值（逐块判定，与状态机无关）。单独有它是因为 START/END 一段话只发一次，
+# 「无语音自动停止」若只看它们 + ASR 吐字，遇到"说了一长句、引擎迟迟不吐字"会掐掉正在说的会话。
+# 必须逐块判定而非读 state==SPEAKING：状态粘性，底噪贴阈值卡 SPEAKING 会让静音时长永远凑不齐。
+EVENT_VOICE_ACTIVITY = "voice_activity"
 EVENT_SPEECH_START = "speech_start"  # 语音开始（值为 None）
 EVENT_SPEECH_END = "speech_end"    # 语音结束（值为 np.ndarray 整段音频）
 EVENT_SPEECH_TOO_SHORT = "speech_too_short"  # 语音过短被丢弃
@@ -83,6 +87,11 @@ class VAD:
         events.append((EVENT_LEVEL, energy))
 
         is_speech = energy >= self.energy_threshold
+        if is_speech:
+            # 逐块上报"此刻有声音"（见 EVENT_VOICE_ACTIVITY 的说明）。
+            # 必须发在状态机之前且在两种状态下都发：连续说话时状态一直是
+            # SPEAKING，若只在状态切换处分发，中间块就全丢了。
+            events.append((EVENT_VOICE_ACTIVITY, energy))
 
         if self._state == STATE_IDLE:
             self._pre_buffer.append(block)

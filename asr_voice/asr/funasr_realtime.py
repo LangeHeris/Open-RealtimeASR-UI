@@ -1,19 +1,12 @@
 """FunASR 本地流式语音识别封装（paraformer-zh-streaming）。
 
-接口与 tencent_realtime.TencentRealtimeASR 完全一致，便于在 VoiceApp 中互换：
-- start() 准备会话（重置缓存）
-- send_audio(block) 推送音频块（numpy int16 数组）
-- stop() 结束会话（喂入 is_final 收尾）
-- is_connected() 模型是否就绪
-- 回调：on_result(text, slice_type, index) / on_error(code, message) / on_state(state)
+接口与 tencent_realtime.TencentRealtimeASR 一致（start / send_audio / stop /
+is_connected + on_result / on_error / on_state），便于在 VoiceApp 中互换。
 
-设计要点：
-1. funasr/torch 延迟导入：未安装时不影响程序启动，仅在真正使用时报清晰错误。
-2. 流式 chunk：chunk_size 取预设档位（CHUNK_PRESETS，默认 [0,10,5] 即 600ms 窗），
-   stride=中值*960 样本。本项目 block_size=1600(100ms)，按样本缓冲累积到一个窗口喂一次。
-3. 模型预热：load_model() 可在后台线程提前调用，避免首次录音卡顿。
-4. 工作线程：model.generate() 耗时较长（50-200ms），放在独立线程执行，
-   避免 sounddevice 音频回调线程被阻塞导致丢帧/VAD 失效。
+- funasr/torch 延迟导入：未安装不影响启动，仅在真正使用时报清晰错误。
+- 流式 chunk：chunk_size 取预设档位（默认 [0,10,5] 即 600ms 窗），
+  stride=中值*960 样本，缓冲累积到一个窗口喂一次。
+- model.generate() 耗时长（50-200ms），放大线程避免阻塞音频回调丢帧；可后台预热。
 """
 
 from __future__ import annotations
@@ -50,7 +43,7 @@ ProgressCallback = Callable[[int, str], None]  # (percent, message)
 
 # paraformer-zh-streaming 流式参数：chunk_size 单位 60ms 帧，[左, 中, 右]；
 # stride = 中 * 960 样本。官方示例：[0,10,5](600ms) 与 [0,8,4](480ms)；
-# 中值越大上下文越多、识别越稳，但逐字上屏延迟越高（实测组合见 CHUNK_PRESETS）
+# 中值越大上下文越多、识别越稳，但逐字上屏延迟越高（组合见 CHUNK_PRESETS）
 _CHUNK_SIZE = [0, 10, 5]          # 600ms 检测窗（默认档）
 _CHUNK_STRIDE = _CHUNK_SIZE[1] * 960  # 9600 样本 = 600ms
 _ENCODER_LOOK_BACK = 4
@@ -60,7 +53,7 @@ _DECODER_LOOK_BACK = 1
 CHUNK_PRESETS = {
     "低延迟": [0, 8, 4],    # 480ms 窗 + 240ms 前瞻，出字更快（官方示例）
     "默认": [0, 10, 5],     # 600ms 窗 + 300ms 前瞻
-    "高准确": [0, 12, 6],   # 720ms 窗 + 360ms 前瞻，上下文更多（本机实测可用）
+    "高准确": [0, 12, 6],   # 720ms 窗 + 360ms 前瞻，上下文更多（本机可用）
 }
 
 # 切句哨兵：本地 VAD 检测到说话停顿时，通知工作线程把当前片段 flush 成 final
@@ -68,22 +61,14 @@ _SEGMENT_END = object()
 
 
 def _bundled_model_dir(model: str) -> Path | None:
-    """随发行分发的模型目录（平台 depot 的 models/<model>；GitHub 版不随包）。
+    """随发行分发的模型目录（平台 depot 的 `models/<model>`；源码构建不随包）。
 
-    候选安装根按序命中即止：
-    - frozen（PyInstaller）：exe 同目录 models/<model>
-    - 便携运行时（渠道版）：paths.install_dir() 命中的安装根——env/Scripts/
-      python.exe（venv）与 runtime/python.exe 两种进程布局都识别
-    - 兜底 cwd（launcher 未必以安装根为工作目录）
-
-    model 取自配置，只接受单一目录名（含路径分隔符、绝对路径或 "." / ".."
-    一律视为不命中），避免拼出安装根之外的路径。命中返回绝对目录，未命中
-    返回 None（走现有 local_dir / 在线下载链路，行为与现状一致）。
-
-    发行层门控：随包模型是发行 depot 的一部分，GitHub 发行物不含 models/。
-    非商店版一律不探测磁盘——否则用户工作目录下恰好放了同名目录就会被
-    抢先命中（优先级高于用户自己配置的 local_dir），悄悄改掉既有行为。
+    只接受单一目录名（含分隔符/绝对路径/`.`/`..` 一律不命中）；源码构建不探测磁盘，
+    否则用户工作目录下同名目录会抢先命中。顺序：先查创意工坊再查随包 depot。
     """
+    workshop_dir = _workshop_model_dir(model)
+    if workshop_dir is not None:
+        return workshop_dir
     try:
         from ..steam_integration import is_steam_build
         if not is_steam_build():
@@ -96,8 +81,8 @@ def _bundled_model_dir(model: str) -> Path | None:
             or "/" in name or "\\" in name or os.path.isabs(name)):
         return None
     if getattr(sys, "frozen", False):
-        # 商店版将来若改用 PyInstaller 打包（当前走便携运行时 + launcher，
-        # 非 frozen），模型随 exe 同目录投放；与下面同样受发行层门控
+        # 发行构建将来若改用 PyInstaller 打包（当前走便携运行时 + launcher
+        # 非 frozen），模型随 exe 同目录投放；与下面同样只在发行构建生效
         roots = [Path(sys.executable).parent]
     else:
         # install_dir() 自身已吞异常并可能返回 None（布局未识别）
@@ -122,12 +107,31 @@ def _bundled_model_dir(model: str) -> Path | None:
     return None
 
 
+def _workshop_model_dir(model: str) -> Path | None:
+    """在已安装的创意工坊物品里找同名模型目录。
+
+    名称校验（分隔符/`..`）已由 `workshop._safe_name` 挡掉，这里只按同名匹配；
+    多个同名物品排序取第一个，保证稳定（同刻订阅两份同名内容本身即冲突）。
+    """
+    name = (model or "").strip()
+    if (not name or name in (".", "..")
+            or "/" in name or "\\" in name or os.path.isabs(name)):
+        return None
+    try:
+        from ..workshop import model_dirs
+        for directory in sorted(model_dirs()):
+            if directory.name == name:
+                return directory
+    except Exception:
+        logger.debug("查询工坊模型失败", exc_info=True)
+    return None
+
+
 def _model_cache_root() -> Path:
     """modelscope 缓存根目录。
 
-    新版布局 ~/.cache/modelscope/models/{org}--{model}/snapshots/...，
-    旧版 ~/.cache/modelscope/hub/models/{org}/{model}——两种布局的
-    模型目录名都含 "paraformer"，按目录名匹配即可。
+    新旧两种布局（models/{org}--{model}/snapshots 与 hub/models/{org}/{model}）
+    的模型目录名都含 "paraformer"，按目录名匹配即可。
     """
     return Path.home() / ".cache" / "modelscope"
 
@@ -135,10 +139,8 @@ def _model_cache_root() -> Path:
 def _model_cache_dirs() -> list[Path]:
     """所有 paraformer 模型缓存目录（限深 4 层，仅目录名匹配）。
 
-    旧实现 rglob("*.pt") 全递归 ~/.cache/modelscope：装过多个模型后目录内
-    数万小文件，扫描可卡数分钟——加载线程长时间无任何进展、UI 一直停在
-    "模型加载中"的直接原因。os.walk 只遍历目录树（不 stat 文件），
-    毫秒级完成。
+    只用 os.walk 遍历目录树、不 stat 文件：目录内数万小文件时全递归 rglob
+    可卡数分钟。
     """
     root = _model_cache_root()
     dirs: list[Path] = []
@@ -281,7 +283,7 @@ class FunASRRealtime:
             self._loading = True
             self._load_error = None
 
-        # 提前初始化：异常发生在 stop_poll 赋值前时（依赖缺失/目录不存在），
+        # 提前初始化：异常发生在 stop_poll 赋值前时（依赖缺失/目录不存在）
         # except 分支的 stop_poll.set() 仍可安全执行
         stop_poll = threading.Event()
         try:
@@ -315,7 +317,7 @@ class FunASRRealtime:
 
             # 模型引用与下载渠道解析，优先级：随发行分发的模型 > 用户配置的
             # local_dir > 按 model_hub（ms/hf）在线下载。随包模型由发行包投放
-            # models/<model>，命中即离线加载（商店版零联网、无需任何配置）。
+            # models/<model>，命中即离线加载（发行构建零联网、无需任何配置）。
             bundled = _bundled_model_dir(str(self.model_name))
             if bundled is not None:
                 model_ref: str = str(bundled.resolve())
@@ -349,8 +351,8 @@ class FunASRRealtime:
                     self.on_progress(100, "模型加载中...")
                 else:
                     # 首次下载：按 paraformer 目录子树大小估算下载进度
-                    # （旧实现每秒 rglob 全递归整个 ~/.cache/modelscope，
-                    #   多模型环境下轮询本身就把 IO 打满）
+                    # （旧实现每秒 rglob 全递归整个 ~/.cache/modelscope
+                    # 多模型环境下轮询本身就把 IO 打满）
                     def _poll():
                         expected_mb = 900
                         last_pct = -1
@@ -455,10 +457,8 @@ class FunASRRealtime:
     def end_segment(self) -> None:
         """切句：通知工作线程把当前已识别片段 flush 成 final（非阻塞、线程安全）。
 
-        供音频回调线程在本地 VAD 检测到说话停顿时调用，等效云端引擎的
-        服务端 max_sentence_silence 断句，实现"边录边逐句上屏"而非只在
-        录音结束后一次性上屏。哨兵与音频块由同一线程（音频回调）入队，
-        顺序天然正确。
+        由音频回调线程在本地 VAD 停顿时调用，等效云端 max_sentence_silence 断句，
+        实现边录边逐句上屏。哨兵与音频块由同一线程入队，顺序天然正确。
         """
         if self._state != STATE_CONNECTED:
             return
@@ -475,12 +475,8 @@ class FunASRRealtime:
     def stop(self) -> None:
         """结束会话：等待工作线程收尾后返回（final 已发出）。
 
-        与云端引擎行为对齐——"停止即上屏"：sentinel 入队后 join worker，
-        worker 处理剩余音频、喂 is_final、发出 SLICE_FINAL 回调后才退出，
-        join 返回即 final 已在注入链路上。
-
-        join 从 toggle/删除键/超时检测线程调用（均为后台线程），不冻结 UI。
-        worker 卡死时放弃等待（final 延迟到达仍会注入，只是晚一点）。
+        与云端引擎对齐——「停止即上屏」：sentinel 入队后 join worker，worker 处理
+        剩余音频、喂 is_final、发出 SLICE_FINAL 后才退出（调用方为后台线程，卡死则放弃等待）。
         """
         if not self.is_ready():
             self._state = STATE_DISCONNECTED
@@ -529,9 +525,8 @@ class FunASRRealtime:
     def _flush_final(self, session_id: int) -> None:
         """把当前缓冲 flush 成 final（切句/停止收尾）。
 
-        若本段既无识别文本、缓冲又是纯静音（VAD 误判停顿，或超时/手动
-        停止时只剩静音残段），则跳过 flush——避免 paraformer 对静音/底噪
-        残段 flush 出"嗯/啊"等语气词幻觉，被误注入输入框。
+        无识别文本且缓冲为纯静音时跳过 flush：避免 paraformer 对静音/底噪残段
+        flush 出"嗯/啊"等语气词幻觉，被误注入输入框。
         """
         if self._accumulated_text == "" and self._is_silence(self._buffer):
             self._buffer = np.zeros(0, dtype=np.float32)
@@ -574,7 +569,7 @@ class FunASRRealtime:
                 return
 
             if block is _SEGMENT_END:
-                # 切句：flush 当前片段为 final（等效云端服务端断句），
+                # 切句：flush 当前片段为 final（等效云端服务端断句）
                 # 重置流式 cache 与累积文本后继续识别下一句
                 self._flush_final(my_session_id)
                 self._cache = {}
@@ -652,9 +647,8 @@ class FunASRRealtime:
                     self.on_result(final_text, SLICE_FINAL, self._index)
         else:
             # 中间结果：仅当本 chunk 有新增文本时才发送（paraformer-streaming
-            # 增量模式下静音 chunk 无新文本）。原先"累积文本非空就重发"会让
-            # 静音期每 600ms 重复发旧文本，进而不断刷新超时计时导致本地模型
-            # 永不超时，同时高频重绘悬浮条
+            # 增量模式下静音 chunk 无新文本）。重发旧文本会不断刷新超时计时
+            # 导致本地模型永不超时，还高频重绘悬浮条
             if text:
                 self._index += 1
                 if self.on_result:

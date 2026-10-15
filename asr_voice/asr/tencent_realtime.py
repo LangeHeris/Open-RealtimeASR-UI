@@ -43,17 +43,15 @@ STATE_ERROR = "error"
 # voice_format 编码
 VOICE_FORMAT_PCM = 1
 
-# preview 客户端切句参数：切句请求后尾部稳定此时长即提交一句；
+# preview 客户端切句参数：尾部自最近变化起稳定此时长即提交一句；
 # 尾部持续变化（停顿后又开口）则到上限强制提交
 CUT_STABLE_MS = 500
 CUT_MAX_WAIT_MS = 2000
 
-# 引擎协议分支（返回 JSON 结构与握手参数集不同）：
-# - v1：result.slice_type 0/1/2 + voice_text_str（16k_zh、16k_zh_en 等经典引擎）
-# - v2：sentences{sentence, sentence_type 0/1, sentence_id, speaker_id}
-#       （16k_zh_en_2.0 / 16k_zh_en_speaker_2.0，大模型2.0 正式版）
-# - preview：Hy-ASR-3.0-preview 内测版，不支持 VAD/热词/过滤等参数，
-#   握手只发基础参数，final 仅在 end 冲刷时返回
+# 引擎协议分支（JSON 结构与握手参数集不同）：v1 用 result.slice_type +
+# voice_text_str；v2 用 sentences{sentence, sentence_type, sentence_id}；
+# preview（Hy-ASR-3.0-preview）不支持 VAD/热词/过滤，握手只发基础参数、
+# final 仅在 end 冲刷时返回。
 V2_ENGINES = {"16k_zh_en_2.0", "16k_zh_en_speaker_2.0"}
 PREVIEW_ENGINES = {"Hy-ASR-3.0-preview"}
 
@@ -74,15 +72,8 @@ StateCallback = Callable[[str], None]
 class TencentRealtimeASR:
     """腾讯云实时语音识别客户端。
 
-    在独立线程运行 asyncio 事件循环，对外提供同步接口：
-    - start() 建立连接并完成握手
-    - send_audio(block) 推送音频块（numpy int16 数组）
-    - stop() 发送结束信号并关闭连接
-
-    通过回调返回结果：
-    - on_result(text, slice_type, index)
-    - on_error(code, message)
-    - on_state(state)
+    独立线程跑 asyncio 事件循环，对外提供同步接口 start / send_audio / stop，
+    结果经 on_result(text, slice_type, index) / on_error / on_state 回调返回。
     """
 
     WS_HOST = "asr.cloud.tencent.com"
@@ -136,7 +127,7 @@ class TencentRealtimeASR:
         self._sentence_seq = 0          # 已提交句序号（从 0 递增）
         self._cut_requested = False     # 是否有待处理的切句请求
         self._cut_deadline = 0.0        # 切句强制提交时刻（loop.time 基准）
-        self._last_tail = None          # 切句等待中的尾部（None=请求后尚无帧）
+        self._last_tail = None          # 最近一帧的尾部（None=尚无帧）
         self._last_change_at = 0.0      # 尾部最近变化时刻（loop.time 基准）
         self._cut_task: Optional[asyncio.Task] = None
 
@@ -151,10 +142,8 @@ class TencentRealtimeASR:
     def flush_tail_on_stop(self) -> bool:
         """停止时是否把未提交的尾部文字冲刷为上屏文本。
 
-        仅 preview 分支为 True：服务端无断句，final 只在 end 冲刷时返回，
-        最后一句（短句可能整句都在尾部）全靠停止冲刷交付；停止会话应
-        参照 FunASR 的 sync_stop_flush 语义放行该 final 上屏（"停止即上屏"）。
-        其余分支服务端会中断句，停止冲刷只是重复帧，无需放行。
+        仅 preview 分支为 True：服务端无断句，final 只在 end 冲刷时返回，最后一句
+        全靠停止冲刷交付（语义同 FunASR 的 sync_stop_flush，「停止即上屏」）。
         """
         return self._engine_branch() == "preview"
 
@@ -175,7 +164,7 @@ class TencentRealtimeASR:
 
         # 三分支参数集按各自接口文档设计（发不支持的参数可能被拒或忽略）：
         # - v1：完整参数（filter_punc / vad_silence_time 系引擎仅 v1 文档列出）
-        # - v2：无 filter_punc（V2 文档未列），其余过滤/热词参数同 v1
+        # - v2：无 filter_punc（v2 文档未列），其余过滤/热词参数同 v1
         # - preview：仅基础参数（官方声明不支持 vad/热词/词汇替换/噪音阈值）
         branch = self._engine_branch()
         params = {
@@ -260,7 +249,7 @@ class TencentRealtimeASR:
 
     # ---- Hy-ASR preview 客户端切句 ----
     # preview 分支服务端无断句：会中只吐累积全文中间帧，final 仅在 end 冲刷。
-    # 这里按本地 VAD 停顿（end_segment）把累积全文切成逐句 FINAL，
+    # 这里按本地 VAD 停顿（end_segment）把累积全文切成逐句 FINAL
     # 对齐其他引擎的逐句行为。游标跟踪累积全文，游标之后的尾部即"当前句"。
 
     def end_segment(self) -> None:
@@ -280,26 +269,22 @@ class TencentRealtimeASR:
             logger.warning("事件循环已关闭，忽略切句请求")
 
     def _request_cut(self) -> None:
-        """登记切句请求（事件循环线程内执行）。已有等待中的请求则不重复登记。"""
+        """登记切句请求（事件循环线程内执行）。已有等待中的请求则不重复登记。
+
+        稳定计时以 _last_change_at（尾部最近变化时刻）为基准；请求前
+        已安静满 CUT_STABLE_MS 的尾部由 _cut_watch 首轮立即提交。
+        """
         if self._cut_task is not None and not self._cut_task.done():
             return
         self._cut_requested = True
-        tail = self._preview_tail(self._last_full)
-        self._last_tail = tail if tail else None
-        self._last_change_at = self._loop.time()
         self._cut_deadline = self._loop.time() + CUT_MAX_WAIT_MS / 1000.0
         self._cut_task = asyncio.create_task(self._cut_watch())
 
     def _preview_tail(self, full: str) -> str:
         """累积全文 → 游标之后的尾部（当前句）。
 
-        服务端（大模型）在静音期会回头重写已提交内容（实测频繁），前缀
-        关系随之破坏。定位策略（按优先级）：
-        1. 前缀完好：尾部 = 游标之后的新增文本；
-        2. 已提交区的长后缀仍保留在 full 中（重写通常只改句首/中段）：
-           以该后缀最后一次出现为锚点重定位游标，尾部 = 锚点之后的新内容；
-        3. 兜底：退回到共同前缀，游标随之回退/前移——关键是不吞后续
-           句子（旧实现按长度硬切，服务端文本变短时尾部恒空，"卡住"）。
+        服务端会在静音期回头重写已提交内容，破坏前缀关系。定位：前缀完好取游标之后
+        的新增文本；否则用长后缀锚点重定位；再兜底退回共同前缀，关键是不吞后续句子。
         """
         c = self._committed_text
         if full.startswith(c):
@@ -308,7 +293,7 @@ class TencentRealtimeASR:
         limit = min(len(full), len(c))
         while lcp < limit and full[lcp] == c[lcp]:
             lcp += 1
-        for n in range(min(len(c), 24), 3, -1):
+        for n in range(min(len(c), 48), 3, -1):
             pos = full.rfind(c[-n:], lcp)
             if pos >= lcp:
                 logger.warning(
@@ -325,6 +310,7 @@ class TencentRealtimeASR:
 
     def _commit_cut(self, reason: str) -> None:
         """把当前尾部提交为 FINAL 并前移游标；尾部为空只清切句状态。"""
+        self._cut_task = None
         self._cut_requested = False
         self._last_tail = None
         self._last_change_at = 0.0
@@ -338,7 +324,7 @@ class TencentRealtimeASR:
         self._notify_result(tail, SLICE_FINAL, idx)
 
     async def _cut_watch(self) -> None:
-        """切句请求后等尾部稳定：CUT_STABLE_MS 无变化提交；一直变则到 deadline 强制。"""
+        """等尾部自最近变化起稳定 CUT_STABLE_MS 即提交；一直变则到 deadline 强制。"""
         while True:
             now = self._loop.time()
             if now >= self._cut_deadline:
@@ -375,7 +361,7 @@ class TencentRealtimeASR:
         tail = self._preview_tail(full)
         if not tail:
             return
-        if self._cut_requested and tail != self._last_tail:
+        if tail != self._last_tail:
             self._last_tail = tail
             self._last_change_at = (
                 self._loop.time() if self._loop is not None else 0.0
@@ -453,12 +439,9 @@ class TencentRealtimeASR:
                     continue
 
                 if data.get("final") == 1:
-                    # preview 分支：final=1 帧携带 end 冲刷的最终结果
-                    # （会话中只有中间帧，短句可能整句都等在这帧）。
-                    # 先按 SLICE_FINAL 冲刷尾部再退出，保证"停止即上屏"；
-                    # 服务端已单独投递过 final 帧时，游标使本次冲刷为空
-                    # no-op，不会重复。其余分支该帧只是已投递 final 的
-                    # 重复，直接退出。
+                    # preview：final=1 帧携带 end 冲刷结果（会话中只有中间帧，
+                    # 短句可能整句等在这帧），先按 SLICE_FINAL 冲刷尾部再退出，
+                    # 保证「停止即上屏」；游标使重复冲刷为空 no-op。
                     if self._engine_branch() == "preview":
                         result = data.get("result")
                         text = ""
@@ -520,11 +503,22 @@ class TencentRealtimeASR:
             self._set_state(STATE_DISCONNECTED)
 
     async def _shutdown(self) -> None:
-        """发送 end 信号，等接收循环收完剩余结果后关闭连接。
+        """排空音频后发 end，等接收循环收完剩余结果再关闭连接。
 
         不直接调 ws.recv()（会和 _recv_loop 冲突导致 ConcurrencyError），
         而是等 _recv_task 自然结束（收到 final=1 后 break）。
         """
+        # 0. 哨兵让发送循环排空队列：end 必须落在最后一块音频之后
+        if self._audio_queue is not None:
+            await self._audio_queue.put(None)
+        if self._send_task is not None and not self._send_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(self._send_task), timeout=1.0)
+            except asyncio.TimeoutError:
+                logger.info("等待音频排空超时，按上限继续结束流程")
+            except Exception:
+                logger.debug("等待发送循环结束异常，忽略", exc_info=True)
+
         # 1. 发送结束信号
         if self._ws is not None:
             try:
@@ -549,7 +543,7 @@ class TencentRealtimeASR:
             except Exception:
                 logger.debug("等待接收循环结束异常，忽略", exc_info=True)
 
-        # 2.5 preview 兜底冲刷：服务端未在超时前回 final（最终结果帧未到），
+        # 2.5 preview 兜底冲刷：服务端未在超时前回 final（最终结果帧未到）
         # 用最后累积全文冲刷尾部。尾句文字会中已在悬浮条显示过，不会凭空
         # 多出内容；服务端已冲刷过时游标使本次为空 no-op。保证短句
         # （如两个字）停止后不会"等到超时还不发送"
@@ -594,11 +588,9 @@ class TencentRealtimeASR:
             try:
                 self._loop.run_forever()
             finally:
-                # run_forever 停止时可能仍有 pending 任务（如连接卡住时
-                # _connect 挂在 websockets.connect 上）：必须取消并等其
-                # 收尾，否则 loop 销毁时报 "Task was destroyed but it is
-                # pending"。在 run_until_complete 内部才有 running loop，
-                # asyncio.all_tasks() 无参版可用且无废弃警告
+                # run_forever 停止时可能仍有 pending 任务（如 _connect 挂在
+                # websockets.connect 上）：必须取消并等其收尾，否则 loop 销毁
+                # 时报 "Task was destroyed but it is pending"。
                 async def _cancel_all():
                     tasks = [
                         t for t in asyncio.all_tasks()
@@ -653,12 +645,11 @@ class TencentRealtimeASR:
         if self._loop is None or self._stop_event is None:
             return
         # 不在这里 set _stop_event，让 _shutdown 统一控制时序
-        if self._audio_queue and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._audio_queue.put(None), self._loop)
         if self._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop)
             try:
-                future.result(timeout=5)
+                # 排空 1s + 等 final 3s + 关闭余量
+                future.result(timeout=7)
             except Exception:
                 logger.exception("关闭超时")
         self._cleanup_loop()

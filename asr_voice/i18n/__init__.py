@@ -1,24 +1,12 @@
 """轻量键值表 i18n：zh/en 双语。
 
-- UI 处统一 t("key")；键名分层：menu.* / hint.* / set.* / theme.* /
-  engine.* / welcome.* / err.* / hist.* / bubble.* / dlg.*
-- 语言由配置 ui.language 决定；空 = 首次运行按系统语言自动检测。
-- 无热切换：切换语言后重启生效（spec §8）。t() 必须在字符串构建时
-  调用（勿在模块导入期调用）。
+UI 处统一 `t("key")`；语言由 ui.language 定，空 = 首次运行按系统语言探测；
+无热切换，改语言后重启生效。**导入期求值禁令**：模块级常量、类属性、函数
+默认参数都在 import 那一刻求值，此时 `_lang` 仍是默认值，`t()` 结果会被
+**冻结**，之后切语言不再变；这类位置**只存 i18n 键**，文案一律在**调用点**取。
 
-**导入期求值禁令（A6 的地基约定，各调用点不再重复解释）**：模块级常量、
-类属性、函数默认参数都在 import 那一刻求值，而界面语言要等 main 起来调
-`apply_configured_language` 才定 —— 此时 `_lang` 还是默认值，`t()` 的结果
-会被**冻结**成那一刻的语言，之后切语言再也不变。因此这类位置**只存 i18n
-键**（如 `THINKING_TEXT_KEY = "bubble.thinking"`），文案一律在**调用点**
-`t(...)` 取。守住这条的是 `tests/test_i18n.py::NoImportTimeTranslationTest`。
-
-框架与词条同包：字典是包内子模块（zh.py / en.py）。若把框架写成同名的
-i18n.py，包目录会在导入时遮蔽它（FileFinder 先认包），两者只能存一。
-
-平台 seam：`_windows_ui_lang()` / `_locale_name()` 单独抽出，是为了让探测逻辑
-可在非 Windows 上测试——直接打桩 `ctypes.windll.kernel32.*` 的话，patch 在解析
-目标阶段就要 getattr `ctypes.windll`，Linux/macOS 上没有该属性会直接 error。
+词条表是包内子模块（zh.py / en.py）；框架若写成同名的 i18n.py，包目录会在导入时
+遮蔽它。`_windows_ui_lang()` / `_locale_name()` 抽出便于在非 Windows 上打桩测试。
 """
 from __future__ import annotations
 
@@ -113,11 +101,8 @@ def apply_configured_language(configured: str) -> str:
 def t(key: str, default: str | None = None, **params) -> str:
     """取词条；当前语言缺 key 回退 zh，再缺返回 default（无 default 则回 key）。
 
-    default 是给"键由运行时拼出来"的场景兜底的（A6 起大量 `t(f"theme.{key}")`，
-    外部主题包未必有对应词条），别拿它遮盖词条表本身缺失。
-
-    params 走 str.format：词条里的字面花括号要写成 {{ }}。格式化失败（参数对不上）
-    返回带占位符的原文而非 key——用户宁可看到花括号，也不要看到键名丢失全部语义。
+    params 走 str.format：词条里的字面花括号要写成 {{ }}。格式化失败返回带占位符
+    的原文而非 key——用户宁可看到花括号，也不要看到键名丢失全部语义。
     """
     text = _table.get(key)
     if text is None:
@@ -137,9 +122,7 @@ def t(key: str, default: str | None = None, **params) -> str:
 def t_or_none(key: str) -> str | None:
     """取词条；**没有**该词条时返回 None（用来判定"这个词条存在吗"）。
 
-    与 `t()` 的区别：`t()` 有"回退 zh → 回退 default → 回退键名"三层兜底，
-    所以拿它的返回值去判存在性需要绕（比如哨兵对象 + `type: ignore`，或者
-    依赖"值不等于键名"这种巧合）。需要判存在性时用这个，语义直接。
+    与 `t()` 不同：`t()` 有三层兜底（zh → default → 键名），返回值不便判存在性。
     """
     text = _table.get(key)
     if text is None:

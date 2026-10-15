@@ -370,8 +370,8 @@ The settings dialog has 8 pages:
 
 | Page | Contents |
 | --- | --- |
-| General | Hotkeys, output (paste delay), interface (auto-hide delay, opacity, settings theme), shared AI endpoint (API address, key, model, connectivity test), engine order |
-| Engine Keys | Collapsible key cards for each cloud engine (Tencent / Alibaba / iFLYTEK LLM & Standard editions / Volcengine new & legacy); the current engine is expanded by default; local FunASR has no key and no card |
+| General | Hotkeys, output (paste delay), interface (auto-hide delay, opacity, settings theme), engine order |
+| Engine Keys | Collapsible key cards for each cloud engine (Tencent / Alibaba / iFLYTEK LLM & Standard editions / Volcengine new & legacy) plus a shared AI endpoint card (API address, key, model, connectivity test); the current engine is expanded by default; local FunASR has no key and no card |
 | Engine Parameters | Collapsible recognition-parameter cards per engine (Tencent tier models & filtering, Alibaba segmentation & filler words, iFLYTEK parameters for both editions, Volcengine billing & smoothing, FunASR model & device) |
 | AI Correction | Enable switch, type after correction, include history context, request timeout, disable thinking mode, batch correction, custom prompt |
 | Voice Commands | Trigger word, command hotkey, AI command prefix, AI command thinking mode, AI command prompt, custom phrase list, standby timeout, command reference |
@@ -663,7 +663,7 @@ How to enable:
 1. Right-click menu → Injection method → check "AI correction"
 2. Or Settings → AI Correction → Enable AI Correction → Save
 
-Endpoint configuration (Settings → General → Shared AI Endpoint, or `config.yaml` → `llm`):
+Endpoint configuration (Settings → Engine Keys → Shared AI Endpoint, or `config.yaml` → `llm`):
 
 | Field | Default | Description |
 | --- | --- | --- |
@@ -988,9 +988,9 @@ All three providers share the `dialog.enable` master switch; Doubao and Qwen sha
 1. Deploy hermes-agent on your server and start the API server (see its official documentation)
 2. Switch to "Hermes Agent (self-hosted)" under Settings → Voice Mode → Dialog provider (`dialog.provider: "hermes"`)
 3. Fill in the configuration (`dialog.hermes`, Settings → Voice Mode → Hermes connection):
-   - `base_url`: the server address, e.g. `http://192.168.0.242:8642` (without `/v1`; a mistakenly included suffix is stripped automatically)
+   - `base_url`: the server address, e.g. `http://192.168.1.10:8642` (without `/v1`; a mistakenly included suffix is stripped automatically)
    - `api_key`: the `API_SERVER_KEY` in `~/.hermes/.env` on the server (can be left empty for a self-hosted service without authentication)
-4. "Test connection" does not apply to Hermes (the button only shows a neutral notice): use the diagnostic script `tests/diag_hermes_dialog.py` or simply press the dialog hotkey for a real connection
+4. "Test connection" does not apply to Hermes (the button only shows a neutral notice): verify by pressing the dialog hotkey for a real connection
 
 **Dialog-specific recognition**
 
@@ -1028,8 +1028,6 @@ Typical usage: dictation with a Chinese engine, conversation with a mixed Chines
 | Interface | Auto-hide delay | 0–3600 seconds, 0 = never hide |
 | Interface | Floating bar opacity | 0–100%, 0 = follow the theme default, previewed live |
 | Interface | Settings theme | Card selection: Minimal Dark / Fluent Light, previewed instantly on selection |
-| Shared AI Endpoint | API address / API Key / Model | Shared by all voice AI features (both the "帮我" voice command and AI correction read from here) |
-| Shared AI Endpoint | Test connectivity | Sends a minimal request with the address/key/model currently entered and immediately reports success or the failure reason |
 | Engine order | Visibility switches + ↑↓ reordering | 5 groups (Tencent Cloud / Alibaba Cloud Model Studio / iFLYTEK / Volcengine / FunASR local); each group expands to per-model switches (hide a whole vendor group or individual models). Controls the group order and visibility in the right-click Recognition Engine menu |
 
 ### 10.2 Engine Keys
@@ -1040,6 +1038,7 @@ Accordion card layout; the card of the current engine is expanded by default, an
 - **Alibaba Cloud Model Studio**: API Key (starts with sk-)
 - **iFLYTEK** (two subsections: LLM version / standard version): LLM version AppID / APIKey / APISecret; standard version AppID / APIKey
 - **Volcengine** (two subsections: new / legacy authentication): new authentication API Key; legacy authentication App ID / Access Token
+- **Shared AI Endpoint** (placed after the vendor cards): API address / API Key / model, shared by all voice AI features (both the "帮我" voice command and AI correction read from here); "Test connectivity" sends a minimal request with the address/key/model currently entered and immediately reports success or the failure reason
 
 ### 10.3 Engine Parameters
 
@@ -1066,7 +1065,7 @@ Accordion card layout; the order follows the engine order setting:
 | Batch idle trigger | 500–10000 ms, default 1000 |
 | Custom prompt | Version dropdown + multi-line editor + New/Save/Delete versions; built-in versions cannot be modified |
 
-The API address / key / model and the connectivity test are configured under "General → Shared AI Endpoint" (shared with the "帮我" voice command); this page only covers correction behavior.
+The API address / key / model and the connectivity test are configured under "Engine Keys → Shared AI Endpoint" (shared with the "帮我" voice command); this page only covers correction behavior.
 
 ### 10.5 Voice Commands
 
@@ -1255,7 +1254,7 @@ For the complete field list and comments see [config/config.example.yaml](../con
 | `dialog.qwen.model` | `qwen-audio-3.0-realtime-plus` | Qwen dialog model: `plus` (stronger) / `flash` (faster) |
 | `dialog.qwen.turn_detection` | `server_vad` | Qwen turn detection: `server_vad` (tunable threshold / silence) / `smart_turn` (automatic model-based turn detection) |
 | `dialog.qwen.enable_search` | `false` | Qwen web search (plus/flash models only) |
-| `dialog.hermes.base_url` | empty | Address of the self-hosted Hermes API server (e.g. http://192.168.0.242:8642, without /v1) |
+| `dialog.hermes.base_url` | empty | Address of the self-hosted Hermes API server (e.g. http://192.168.1.10:8642, without /v1) |
 | `dialog.hermes.api_key` | empty | This is the `API_SERVER_KEY` in `~/.hermes/.env` on the server |
 | `dialog.asr.engine` | empty | Dialog-specific recognition engine: empty = follow the top-level `engine`; `tencent` / `aliyun` are available (consumed only by the Hermes dialog path) |
 | `ui.engine_show_*` | `true` | Shows or hides a whole vendor group in the right-click Recognition Engine menu (e.g. `engine_show_tencent: false` hides the entire Tencent Cloud group) |

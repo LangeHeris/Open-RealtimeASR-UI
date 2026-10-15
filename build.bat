@@ -3,10 +3,9 @@ cd /d "%~dp0"
 setlocal
 
 REM Build script for Open-RealtimeASR-UI.
-REM Usage: build.bat           full build (ships DLC theme packs in dist\ORI\themes)
-REM        build.bat lite      minimal build (no DLC theme content at all)
-REM NOTE: keep this file pure ASCII - non-ASCII text makes cmd mis-parse
-REM       lines when combined with chcp 65001 (known cmd bug).
+REM Usage: build.bat [lite]   full = ships DLC theme packs; lite = no theme content.
+REM NOTE: keep this file pure ASCII - non-ASCII text makes cmd mis-parse lines
+REM       when combined with chcp 65001 (known cmd bug).
 
 set "BUILD_MODE=%~1"
 
@@ -46,11 +45,9 @@ if errorlevel 1 (
     exit /b 1
 )
 set "ORI_BUILD_MODE=%BUILD_MODE%"
-REM onedir (2026-09-26): onefile's TEMP-dir extraction is blocked machine-wide
-REM by AV heuristics (bootloader: Could not create temporary directory, measured
-REM on this box); onedir never extracts. Output: dist\ORI\ (ORI.exe + _internal\);
-REM the Release asset is a zip, see release.yml. KEEP THIS FILE PURE ASCII:
-REM cmd parses .bat as ANSI/CP936 - UTF-8 Chinese here corrupts parsing.
+REM onedir: onefile's TEMP-dir extraction is blocked by AV heuristics
+REM (bootloader: Could not create temporary directory); onedir never extracts.
+REM Output: dist\ORI\ (ORI.exe + _internal\); the Release asset is a zip.
 set "ORI_PACKAGE=onedir"
 %PYTHON% -m PyInstaller --noconfirm openrealtimeasr-ui.spec
 if errorlevel 1 (
@@ -95,6 +92,6 @@ echo     (funasr + torch is too large). Run from source for that.
 echo   - Font: edit ui.font_file / ui.font_family in config.yaml,
 echo     or right-click - Font - choose a .ttf/.otf file at runtime.
 echo.
-REM pause busy-loops (burns CPU) in background/CI runs: no console + stdin nul
-REM (measured 2026-09-26: 30-min hang). Only interactive runs need the stop.
+REM pause busy-loops (burns CPU) in background/CI runs: no console + stdin nul.
+REM Only interactive runs need the stop.
 if not defined CI pause

@@ -10,7 +10,7 @@
 
 <div align="center">
 
-![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg)![GUI](https://img.shields.io/badge/GUI-PySide6-41CD52.svg)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg) ![GUI](https://img.shields.io/badge/GUI-PySide6-41CD52.svg)
 
 </div>
 

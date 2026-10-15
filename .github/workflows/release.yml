@@ -1,13 +1,7 @@
 # Tag 触发的 GitHub 渠道发布：版本校验 + onedir zip 资产 + Release 正文。
-#
-# 版本号只有一个来源 asr_voice/version.py，本流水线的第一件事就是校 tag 与它一致；
-# 完整人工流程见内部维护的 RELEASING 发布手册（不随公开仓分发）。
-#
-# 发行渠道**不在本流水线内**：发行渠道的打包与上传资产（发行包/构建模板与
-# 上传脚本、便携运行时构建脚本、发行包组装与模型下载脚本）属 渠道独占内容，
-# 不随公开仓分发，故 渠道侧的构建与上传一律在本地按内部 RELEASING 手册手动执行
-# （发行渠道的后续更新无需审核，本地跑通常也更快）。
-# 这条边界由 tests/test_release_workflow.py 静态守卫，别把 渠道 job 加回来。
+# 版本号唯一来源 asr_voice/version.py，第一件事就是校 tag 与它一致。
+# 发行渠道的打包与上传资产不随公开仓分发，一律在本地按内部发布手册手动执行；
+# 这条边界由静态测试守卫，别把发行渠道 job 加回来。
 
 name: Release
 
@@ -61,30 +55,22 @@ jobs:
         run: python -m PyInstaller --noconfirm openrealtimeasr-ui.spec
         env:
           ORI_BUILD_MODE: full
-          # onefile 的 %TEMP% 解包被杀软启发式整机拦截（2026-09-26 实测：
-          # bootloader 报 Could not create temporary directory）；onedir 不解包、
-          # 启发式面更小、启动更快。产物 dist\ORI\（ORI.exe + _internal\）。
+          # onefile 的 %TEMP% 解包被杀软启发式整机拦截（bootloader 报
+          # Could not create temporary directory）；onedir 不解包、启发式面更小、
+          # 启动更快。产物 dist\ORI\（ORI.exe + _internal\）。
           ORI_PACKAGE: onedir
-      # 像素主题是 商店版独占（spec §3.2）。GitHub 版在三处物理排除它：spec 的
-      # datas/hiddenimports/excludes、FusionPixel 字体、以及这一步。dist/ORI/themes 只是
-      # 本地「外部主题包投放位」，两个包已经随 onedir 打进 _internal/themes，故不上传。
+      # 像素主题为渠道独占。GitHub 版在三处物理排除它：spec 的 datas/
+      # hiddenimports/excludes、FusionPixel 字体、以及这一步。dist/ORI/themes 只是
+      # 本地「外部主题包投放位」，两个包已随 onedir 打进 _internal/themes，故不上传。
       - name: Deploy theme packs (pixel excluded)
         run: python scripts/copy_github_themes.py dist/ORI/themes
       # Release 正文只取 CHANGELOG 顶部那一段，不是整个文件（历史版本不该跟着走）。
       - name: Extract release notes
         run: python scripts/changelog_top.py --out dist/RELEASE_NOTES.md
-      # 签名走 SignPath（开源代码签名，已取代废弃的 Azure Trusted Signing）。
-      # SignPath 的可信构建校验要求被签对象先以 workflow artifact 形式存在
-      # （origin 元数据由 GitHub 提供、构建脚本伪造不了），故先上传 dist\ORI
-      # 整个 bundle，提交签名请求后把签好的产物写回 dist\ORI，再走 zip →
-      # 校验和 → Release——签的是 bundle 内的 exe/dll，发的是 zip，顺序反了
-      # 会把未签名的包发出去。SignPath 侧的 Artifact Configuration 按
-      # <zip-file> 根**只配 ORI.exe**（配置存在 SignPath 项目里）：
-      # `_internal\` 下的 dll 全部是 PySide6/Qt/运行时的上游第三方二进制，
-      # SignPath 条款允许随包分发，但**禁止**用项目证书签它们——只签自己
-      # 构建的二进制。
-      # 仓库没配 SignPath secrets/vars 时（fork/PR）两个 step 由 env 开关跳过，
-      # 不阻塞构建，照发未签名包。
+      # 签名走 SignPath（替代已废弃的 Azure Trusted Signing）：被签对象须先以
+      # workflow artifact 存在（可信构建校验：origin 由 GitHub 提供、脚本伪造不了），
+      # 顺序 = 上传 → 签 → 写回 → zip/校验和 → Release，反了会发未签名包。只配
+      # ORI.exe；_internal 的上游 dll 允许分发、禁止用项目证书签；无 secrets 时跳过。
       - name: Upload unsigned bundle for signing
         id: upload-unsigned-artifact
         if: env.SIGNPATH_ENABLED == 'true'

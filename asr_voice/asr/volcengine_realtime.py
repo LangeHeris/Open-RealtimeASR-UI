@@ -1,34 +1,12 @@
 """火山引擎豆包大模型流式语音识别（sauc bigmodel）封装。
 
-接口与 tencent_realtime.TencentRealtimeASR 完全一致，便于在 VoiceApp 中互换：
-- start() 建立 WebSocket 连接（握手失败抛 ASRError）
-- send_audio(block) 推送音频块（numpy int16 数组，以 audio only 包发送）
-- stop() 发送负包（结束信号）并等待最终结果后关闭连接
-- is_connected() 连接是否可用
-- 回调：on_result(text, slice_type, index) / on_error(code, message) / on_state(state)
-
-协议要点（docs.volcengine.com/docs/6561/2630027，2026-08 版）：
-- 接口：wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async
-  （双向流式优化版：结果有变化才返回，首字/尾字时延更优，官方推荐）
-- 鉴权（WebSocket 握手 HTTP 头，二选一）：
-  新版控制台单密钥：X-Api-Key（API Key）+ X-Api-Resource-Id
-    + X-Api-Request-Id（UUID）+ X-Api-Sequence: -1
-  旧版控制台双密钥：X-Api-App-Key（App ID）+ X-Api-Access-Key（Access Token）
-    + X-Api-Resource-Id + X-Api-Connect-Id（UUID）
-  判定：access_token 与 app_id 均非空 -> 旧版；否则用 api_key -> 新版
-- payload：audio + request（model_name 目前仅支持 "bigmodel"，
-  2.0 资源 volc.seedasr.sauc.* 同样填 bigmodel）
-- 二进制协议：4 字节头 + payload size（4B 大端）+ payload
-  - 头：version=1 | header_size=1(即 4 字节) | 消息类型 | flags | 序列化 | 压缩 | 保留
-  - 消息类型：0x1 full client request / 0x2 audio only / 0x9 full server
-    response / 0xF 服务端错误
-  - audio only 包：flags=0x1（payload 前 4 字节为大端 sequence，正数自增）；
-    负包（结束）：flags=0x3，sequence=-1
-  - full client request：JSON + Gzip 压缩；服务器按相同序列化/压缩方式返回
-- 结果：result.utterances[]（需 show_utterances=true），每句含 definite 标志；
-  开启二遍识别（enable_nonstream，仅 async 端点支持）后静音 800ms 判停，
-  该句 definite=true 即二遍（非流式重识别）高准确率 final
-- 建连后需持续发包，静音期由发送循环周期性喂静音帧保活
+接口与 tencent_realtime.TencentRealtimeASR 一致（start/send_audio/stop/is_connected
++ 回调），便于在 VoiceApp 中互换。协议要点见 docs.volcengine.com/docs/6561/2630027；
+端点 wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async，握手头鉴权二选一——
+app_id 与 access_token 均非空走旧版（X-Api-App-Key/X-Api-Access-Key/X-Api-Connect-Id），
+否则走新版单密钥（X-Api-Key/X-Api-Request-Id/X-Api-Sequence:-1），均带 X-Api-Resource-Id。
+二进制 = 4 字节头 + payload size(4B 大端) + payload；音频包 flags=0x1、负包 flags=0x3
+sequence=-1、错误包 0xF，首包 JSON+Gzip；建连后须持续发包，静音期喂静音帧保活。
 """
 
 from __future__ import annotations
@@ -102,7 +80,7 @@ def build_full_client_request(payload: dict) -> bytes:
 def build_audio_request(audio: bytes, sequence: int) -> bytes:
     """构造音频包（新协议：Header + Sequence(4B) + Size(4B) + 音频字节）。
 
-    注意：sequence 位于 Size 之前（2026-08 文档 2630027 版协议，
+    注意：sequence 位于 Size 之前（文档 2630027 版协议，
     与响应包布局对称；旧文档 1354869 的"序号嵌在 payload 开头"已过时）。
     """
     header = _build_header(
@@ -127,10 +105,8 @@ def build_last_request(sequence: int) -> bytes:
 def parse_response(message: bytes) -> tuple[int, dict]:
     """解析服务端二进制响应（官方布局：Header + [Sequence] + Size + Payload）。
 
-    注意：响应包的 sequence 位于 Size 之前（与请求包的"sequence 嵌在 payload
-    开头"不同）；错误包（0xF）此处为 4 字节错误码。
-    返回 (sequence, payload_dict)。payload_dict 在无法解析为 JSON 时为 {}。
-    sequence 为 -1 表示负包响应（识别全部结束）。
+    响应包 sequence 位于 Size 之前；错误包（0xF）此处为 4 字节错误码。返回
+    (sequence, payload_dict)；无法解析为 JSON 时 payload_dict={}；sequence<0 表示负包响应。
     """
     if len(message) < 8:
         logger.warning("响应过短：%s", message.hex())
@@ -197,8 +173,8 @@ class VolcengineRealtimeASR:
     回调在 asyncio 线程触发，UI 层需经信号槽切回主线程。
     """
 
-    # 停止后服务端会回吐尾句 final（实测：stop 发负包后约 1s 内收到最后一句
-    # 的 FINAL，见 2026-09-09 日志「丢弃结果帧」）——按腾讯 preview 同语义
+    # 停止后服务端会回吐尾句 final（：stop 发负包后约 1s 内收到最后一句
+    # 的 FINAL，见 日志「丢弃结果帧」）——按腾讯 preview 同语义
     # 放行「停止即上屏」。不声明的话，逐字同步下正常停止会先退格擦掉已上屏
     # 文字、又把来补的 final 丢弃，整句凭空消失
     flush_tail_on_stop = True
@@ -253,14 +229,9 @@ class VolcengineRealtimeASR:
     # ---- 鉴权头 ----
 
     def _build_headers(self) -> dict:
-        """按 2026-08 官方文档（docs/6561/2630027）构造握手头。
-
-        新版控制台鉴权：X-Api-Key + X-Api-Resource-Id
-                        + X-Api-Request-Id（UUID）+ X-Api-Sequence: -1
-        旧版控制台鉴权（docs/6561/2534847）：
-                        X-Api-App-Key + X-Api-Access-Key + X-Api-Connect-Id
-
-        判定：access_token 与 app_id 均非空 -> 旧版；否则用 api_key -> 新版。
+        """按官方文档（docs/6561/2630027）构造握手头；app_id 与 access_token 均非空 -> 旧版
+        （X-Api-App-Key + X-Api-Access-Key + X-Api-Resource-Id + X-Api-Connect-Id），否则新版单密钥
+        （X-Api-Key + X-Api-Resource-Id + X-Api-Request-Id + X-Api-Sequence:-1）。
         """
         if self.access_token and self.app_id:
             # 旧版双密钥：App ID + Access Token
@@ -454,8 +425,8 @@ class VolcengineRealtimeASR:
         self._recv_task = asyncio.create_task(self._recv_loop())
 
     def _next_sequence(self) -> int:
-        # 序号从 2 开始：首包 full client request 占用序号 1，
-        # 音频包序号必须与服务端的包计数严格一致（实测：首音频包=2）
+        # 序号从 2 开始：首包 full client request 占用序号 1
+        # 音频包序号必须与服务端的包计数严格一致（：首音频包=2）
         self._sequence += 1
         return self._sequence
 
@@ -520,7 +491,7 @@ class VolcengineRealtimeASR:
         if self._ws is not None:
             try:
                 # 负包序号 = -(下一个正序号)：与服务端包计数严格一致
-                # （实测：音频包到 16 时负包须为 -17，否则报序号不匹配）
+                # （：音频包到 16 时负包须为 -17，否则报序号不匹配）
                 await self._ws.send(build_last_request(-(self._sequence + 1)))
                 logger.info("已发送负包（结束信号）sequence=%s", -(self._sequence + 1))
             except websockets.ConnectionClosed:

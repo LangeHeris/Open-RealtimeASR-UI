@@ -1,39 +1,26 @@
-"""长按说话的状态机（纯逻辑，无 Qt、无 ctypes、不读系统时钟）。
+"""长按说话的状态机（纯逻辑，无 Qt、无 ctypes、不读系统时钟；时间由调用方传入，可完整单测）。
 
-为什么单独一个模块：录音热键与对话热键共用同一套「按住」语义，但两条路径
-的副作用完全不同（一个启停录音、一个开合上行闸门）。把「按下/计时/松手」
-这段判断抽成纯函数式状态机，两边的差异就只剩「收到 ACTIVATE/END 之后做什么」，
-副作用不再混进计时逻辑，也让假时钟单测能覆盖全部迁移。
+录音热键与对话热键共用「按住」语义，但副作用不同（一个启停录音、一个开合上行闸门）；
+把「按下/计时/松手」抽成纯函数式状态机，两侧差异只剩「收到 ACTIVATE/END 之后做什么」，
+副作用不再混进计时逻辑，也让假时钟单测覆盖全部迁移。
 
-本模块同时放两条长按路径共用的开关判定 `hold_flag_enabled`：**两条路径读的是
-同一个开关** `hotkey.hold_to_talk`（`dialog` 节没有这个键——照 `cfg.dialog` 读会
-`getattr` 兜底恒得 False，让整条对话长按永远不生效且不报错）。放在这里，两边
-import 同一份实现，不会各自演化出略微不同的版本。
-
-时间由调用方传入（now 秒），因此本模块可被完整单测，见
-tests/test_hold_tracker.py。
+`hold_flag_enabled` 也放这里：**两条路径读同一开关** `hotkey.hold_to_talk`——`dialog` 节没有
+此键，照 `cfg.dialog` 读会 getattr 兜底恒 False，让对话长按永远不生效且不报错。
 """
 
 from __future__ import annotations
 
-# 开关值的白名单真值。配置加载器（loader._coerce_value）只把**字符串**归一化成
+# 开关值的白名单真值。配置加载器（loader._coerce_value）只把字符串归一化成
 # bool，既非 true 也非 false 的字符串原样保留，于是 `hold_to_talk: "meby"`（拼写
-# 错误）会以 truthy 字符串走到判定处——naive bool() 会把它当成开启，用户以为关着、
+# 错误）会以 truthy 字符串走到判定处——naive bool() 会把它当成开启，用户以为关着
 # 功能却开着，且完全看不出来。因此只认明确的真值，其余一律按关闭处理（fail closed）。
 HOLD_TRUE_VALUES = frozenset(("true", "1", "yes", "on"))
 
 
 def hold_flag_enabled(value) -> bool:
     """把长按开关的配置值归一化成布尔：只认 True 与白名单字符串。
-
-    为什么不能直接 bool()：拼错的字符串（`hold_to_talk: "meby"`）是 truthy 的，
-    bool() 会让它静默开启功能。这里改成「认不出就是关」——失效方向偏向用户可见
-    （功能没生效）而不是静默生效。
-
-    非 True 的非字符串值一律按关闭处理，包括 YAML 里手写的裸 `1`/`0`：加载器只
-    归一化字符串，裸数字原样到达这里。裸 `1` 与字符串 `"1"` 语义相同、拒掉它确实
-    偏保守，但开关这类取值上 fail-closed 是唯一可接受的失效方向；要开启请写 true
-    （或带引号的 "1"，它会被加载器归一化成 True）。
+    不能直接 bool()：拼错的字符串（`hold_to_talk: "meby"`）是 truthy，会静默开启功能；
+    这里「认不出就是关」，失效偏向用户可见。非 True 的非字符串（含 YAML 裸 `1`/`0`）一律当关闭。
     """
     if value is True:
         return True
@@ -84,8 +71,7 @@ class HoldTracker:
     def poll(self, held: bool, now: float) -> str:
         """采样一次按键状态。
 
-        held: 此刻按键是否仍按下（探针调用失败时调用方传 False——宁可提前结束，
-              不可永久按住，fail-safe 方向见 spec §7）
+        held: 此刻按键是否仍按下（探针失败时调用方传 False——宁可提前结束，不可永久按住）
         now:  单调时钟秒数
         """
         if self._phase == HoldPhase.IDLE:
@@ -114,9 +100,8 @@ class HoldTracker:
     def reset(self) -> None:
         """强制回到空闲（会话被外部中断、配置热改等场景）。
 
-        注意：reset() **不产出任何动作**，包括 END。若调用方已按 ACTIVATE 开始了
-        某事（例如开始录音），必须自己负责收尾——不要指望 reset() 之后会收到 END，
-        否则会留下一个已开始却永不结束的会话。
+        注意：**不产出任何动作**，包括 END——调用方若已按 ACTIVATE 开始了某事（如录音），
+        必须自己收尾，否则会留下已开始却永不结束的会话。
         """
         self._phase = HoldPhase.IDLE
         self._pressed_at = None

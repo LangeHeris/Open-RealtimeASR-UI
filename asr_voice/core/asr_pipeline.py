@@ -41,7 +41,7 @@ def _is_transient_connect_error(exc: Exception) -> bool:
     if getattr(exc, "code", None) == "connect_timeout":
         return True
     msg = str(exc).lower()
-    return "timed out" in msg or "timeout" in msg or "超时" in msg  # noqa: i18n  异常信息匹配目标
+    return "timed out" in msg or "timeout" in msg or "超时" in msg  # noqa: i18n 异常信息匹配目标
 
 
 def _volc_resource_id(volc_cfg) -> str:
@@ -55,30 +55,6 @@ def _volc_resource_id(volc_cfg) -> str:
     return f"volc.{family}.sauc.{billing}"
 
 
-def _guide_no_key_once(app) -> bool:
-    """商店版「未配置密钥首次拒绝录音」的一次性引导，返回是否发了引导。
-
-    只弹一次（标记落 steam_state.json 的 no_key_guided）：反复弹同一句
-    说明会变成噪音，用户第一次没去设置，第二次多半也不会。
-    开源版不走这条——它的用户是自己 clone 来跑的，本来就该去看 README。
-    """
-    from ..steam_integration import is_steam_build
-
-    if not is_steam_build():
-        return False
-    from ..ui.welcome_dialog import (
-        NO_KEY_GUIDE_KEY,
-        is_guided,
-        mark_guided,
-    )
-
-    if is_guided(NO_KEY_GUIDE_KEY):
-        return False
-    mark_guided(NO_KEY_GUIDE_KEY)
-    app.bar.signals.error_occurred.emit(t("welcome.no_key_hint"))
-    return True
-
-
 def start_session(app) -> None:
     # 管线常量延迟导入：顶层导入会与 app 成环
     from .app import APP_STATE_IDLE, APP_STATE_LISTENING
@@ -88,18 +64,17 @@ def start_session(app) -> None:
     standby_start = bool(getattr(app, "_standby_start", False))
     app._standby_start = False
 
-    if not is_configured(app.cfg):
-        # 商店版首次被拒时给一次完整引导（说明本地引擎只能中文、云端要自带
-        # 密钥），之后仍走下面的单行短提示——两条连着闪会互相顶掉，首次用
-        # 长文案（语义已覆盖短提示）比叠两条更清楚。
-        if _guide_no_key_once(app):
-            return
+    # 引擎校正：外部服务不可用时配置里留云端引擎，下面 is_configured 为假
+    # 会弹「请填写 XX 密钥」指向不存在的界面。放在这里是覆盖"运行中卸载
+    # 扩展包"（可用性从开变关）；可用时是 no-op。
+    from ..config.loader import enforce_offline_engine
+    enforce_offline_engine(app.cfg)
 
-        # 与引擎切换提示同规则：悬浮条单行右截断，只留「哪家 + 去哪填」，
+    if not is_configured(app.cfg):
+        # 与引擎切换提示同规则：悬浮条单行右截断，只留「哪家 + 去哪填」
         # 具体字段与服务页指引由设置界面的字段标签说明
         engine = getattr(app.cfg, "engine", "tencent")
-        if engine == "funasr":
-            # funasr 无密钥概念：未就绪只能是依赖不可用（打包版/未安装）
+        if engine == "funasr":            # funasr 无密钥概念：未就绪只能是依赖不可用（打包版/未安装）
             app.bar.signals.error_occurred.emit(
                 t("hint.funasr_dep_missing")
             )
@@ -126,7 +101,7 @@ def start_session(app) -> None:
 
     cfg = app.cfg
 
-    # FunASR：模型未就绪时拒绝录音（不阻塞主线程等待加载），
+    # FunASR：模型未就绪时拒绝录音（不阻塞主线程等待加载）
     # 加载完成后悬浮条会提示"已就绪"，用户再按热键开始
     is_funasr = getattr(cfg, "engine", "tencent") == "funasr"
     if is_funasr:
@@ -141,7 +116,7 @@ def start_session(app) -> None:
             )
             logger.info("FunASR 模型未就绪，本次录音请求已拒绝")
             app.state = APP_STATE_IDLE
-            # 界面必须一起回待机：长按路径在调用本函数**之前**就发了 UI_LISTENING
+            # 界面必须一起回待机：长按路径在调用本函数之前就发了 UI_LISTENING
             #（越过阈值即显示"聆听中"），这里只改 app.state 的话悬浮条会一直停在
             # 录音外观，而实际什么都没录。点按路径本来就待机，本 emit 是幂等空转
             app.bar.signals.state_changed.emit(UI_IDLE)
@@ -185,7 +160,7 @@ def start_session(app) -> None:
         stop_session(app)
         return
 
-    # 暂停播放/全局静音：所有早退路径之后、采集流建立成功才生效，
+    # 暂停播放/全局静音：所有早退路径之后、采集流建立成功才生效
     # 拒绝录音的场景不误中断后台音频；做什么由配置开关决定（含「仅游戏模式下静音」）
     do_pause, do_mute = decide_media_actions(cfg)
     if do_pause or do_mute:
@@ -264,9 +239,8 @@ def ensure_capture(app) -> None:
 def connect_asr_worker(app) -> None:
     """后台建连线程，握手期间录音已在进行、音频进缓冲。
 
-    不在本线程补发音频：send_audio 统一由音频回调线程调用（连上后先补缓冲
-    再发当前块），保证各引擎客户端无并发调用。瞬时超时自动重试
-    （最多 3 次、间隔 2s），配置类错误不重试，直接报错停会话。
+    不在本线程补发音频：send_audio 统一由音频回调线程调用（连上后先补缓冲再发当前块），
+    保证各引擎客户端无并发调用。瞬时超时自动重试（3 次、间隔 2s），配置类错误不重试直接停会话。
     """
     from .app import (
         APP_STATE_LISTENING,
@@ -278,7 +252,7 @@ def connect_asr_worker(app) -> None:
     if asr is None:
         return
     for attempt in range(1, ASR_CONNECT_RETRY_MAX + 1):
-        # 快速连点时旧实例会延迟十几秒才抛错，校验 app.asr is asr，
+        # 快速连点时旧实例会延迟十几秒才抛错，校验 app.asr is asr
         # 防旧实例失败误伤新会话
         if app.asr is not asr or app.state != APP_STATE_LISTENING:
             return
@@ -338,19 +312,17 @@ def stop_session(app) -> None:
     from .app import APP_STATE_IDLE, APP_STATE_STOPPING
 
     logger.info("停止语音会话")
-    # 打断路径（"删除那句"/点击打断）在调用前已预置 _discard_results=True，
+    # 打断路径（"删除那句"/点击打断）在调用前已预置 _discard_results=True
     # 正常停止（热键再按 / 静音自动停 / 超时）进来时仍是 False
     interrupted = app._discard_results
     # 自动停止（静音超时/时长上限）放行冲刷 final：停止时在途的尾句 final
     #（各引擎停止冲刷的残留句）放行上屏。手动打断维持硬切断（防"点了停止还在出字"）
     auto_stop = getattr(app, "_auto_stop_pending", False)
     app._auto_stop_pending = False
-    # 本地引擎（FunASR）没有服务端断句，stop() 同步冲刷的 FINAL 就是用户
-    # 最后说的那句话——正常停止必须放行上屏（"停止即上屏"），否则表现
-    # "悬浮条有字但输入框没进去"。云端引擎与打断停止维持硬切断：
-    # 停止后引擎冲刷的中间帧/尾句 FINAL/排队注入一律不上屏，
-    # 否则表现"点了停止还在出字"
-    # 腾讯 preview 分支现在也有 end_segment（客户端切句），判别改用显式标记
+    # 本地引擎（FunASR）无服务端断句，stop() 同步冲刷的 FINAL 就是用户最后那句——正常停止必须
+    # 放行上屏（否则"悬浮条有字但输入框没进去"）；云端引擎与打断停止维持硬切断，冲刷的中间帧/
+    # 尾句 FINAL/排队注入一律不上屏（否则"点了停止还在出字"）。判别改用显式标记
+    #（腾讯 preview 分支现也有 end_segment 客户端切句）。
     is_funasr = app.asr is not None and bool(getattr(app.asr, "sync_stop_flush", False))
     # 腾讯 Hy-ASR preview 分支：服务端无断句，end 冲刷的 final 才携带最后一
     # 句文本——短句（如两个字）整句都在尾部，正常停止不放行的话整句永远
@@ -392,7 +364,7 @@ def stop_session(app) -> None:
             logger.exception("ASR 停止异常")
         app.asr = None
 
-    # 停止完成后再清一次悬浮条：停止期间放行的冲刷 final（自动停止尾句、
+    # 停止完成后再清一次悬浮条：停止期间放行的冲刷 final（自动停止尾句
     # FunASR 同步冲刷、腾讯 preview end 冲刷）会把文字写回顶部已清过的
     # 悬浮条，不补清会残留"按钮已回待机、文字停在最后一句"。仅放行冲刷
     # 的路径需要补清：其他引擎手动停止走硬切断（冲刷帧被丢弃），不触碰
@@ -405,13 +377,9 @@ def stop_session(app) -> None:
     if flush_on_stop and not interrupted:
         app.bar.signals.state_changed.emit(UI_IDLE)
 
-    # 退格掉未断句的中间文本：仅当「有 final 会来替换它」（冲刷上屏）。
-    # 打断路径（左键/删除键）保留已上屏文字——用户看到的即所得，
-    # 与「丢弃未上屏文字」日志承诺一致（cancel_pending 已丢弃队列中
-    # 未执行的任务）。FunASR 等引擎中间结果是会话累积全文，打断时
-    # 退格 _last_len 会删掉整个会话已上屏的字（2026-09-09 用户报障）。
-    # 无冲刷能力的引擎正常停止时同样保留——没有 final 会来补，
-    # 退格删掉就等于整句凭空消失
+    # 退格掉未断句的中间文本：仅当「有 final 会来替换它」（冲刷上屏）；打断路径与无冲刷能力的
+    # 正常停止都保留已上屏文字——前者用户看到即所得，后者没有 final 来补、退格就等于整句凭空
+    # 消失。FunASR 等引擎中间结果是会话累积全文，退格 _last_len 会删掉整个会话已上屏的字。
     if flush_on_stop and not interrupted:
         try:
             app.injector.cancel_intermediate()
@@ -464,7 +432,7 @@ def create_asr(app, cfg):
             model=cfg.funasr.model,
             device=cfg.funasr.device,
             hotword=cfg.funasr.hotword,
-            chunk_preset=getattr(cfg.funasr, "chunk_preset", "默认"),  # noqa: i18n  chunk_preset 持久化默认值
+            chunk_preset=getattr(cfg.funasr, "chunk_preset", "默认"),  # noqa: i18n chunk_preset 持久化默认值
             local_dir=getattr(cfg.funasr, "local_dir", ""),
             model_hub=getattr(cfg.funasr, "model_hub", "ms"),
             model_revision=getattr(cfg.funasr, "model_revision", ""),
@@ -590,7 +558,7 @@ def preheat_funasr(app) -> None:
                 model=app.cfg.funasr.model,
                 device=app.cfg.funasr.device,
                 hotword=app.cfg.funasr.hotword,
-                chunk_preset=getattr(app.cfg.funasr, "chunk_preset", "默认"),  # noqa: i18n  chunk_preset 持久化默认值
+                chunk_preset=getattr(app.cfg.funasr, "chunk_preset", "默认"),  # noqa: i18n chunk_preset 持久化默认值
                 local_dir=getattr(app.cfg.funasr, "local_dir", ""),
                 model_hub=getattr(app.cfg.funasr, "model_hub", "ms"),
                 model_revision=getattr(app.cfg.funasr, "model_revision", ""),
@@ -694,12 +662,18 @@ def on_audio_block(app, block) -> None:
             EVENT_SPEECH_END,
             EVENT_SPEECH_START,
             EVENT_SPEECH_TOO_SHORT,
+            EVENT_VOICE_ACTIVITY,
         )
         for event_type, value in app.vad.feed(block):
             if event_type == EVENT_LEVEL:
                 app.bar.signals.level_changed.emit(
                     min(1.0, float(value) / LEVEL_NORMALIZE)
                 )
+            elif event_type == EVENT_VOICE_ACTIVITY:
+                # 逐块的语音证据：连续说话期间只有它能证明"用户还在说"。
+                # START/END 一段话各只发一次，光靠它们 + ASR 吐字会让
+                # "长句 + 引擎迟吐"被误判成静音超时。
+                has_voice_activity = True
             elif event_type == EVENT_SPEECH_START:
                 has_voice_activity = True
                 app.bar.signals.state_changed.emit(UI_RECOGNIZING)
@@ -711,14 +685,16 @@ def on_audio_block(app, block) -> None:
             elif event_type == EVENT_SPEECH_TOO_SHORT:
                 has_voice_activity = True
 
-    # 超时计时只认语音事件和 ASR 吐字两类硬证据。VAD 的 SPEAKING 状态不算：
-    # 底噪贴阈值时"连续静音 600ms"永远凑不齐，VAD 会永久卡在 SPEAKING 永不超时
+    # 超时计时认三类硬证据：① 逐块语音活动（连续说话期间唯一有效的一类）② 语音起止/过短事件
+    #（一段各一次，只覆盖首尾）③ ASR 吐字。唯独不认 `vad.state == SPEAKING`：状态粘性，底噪贴
+    # 阈值时"连续静音 600ms"永远凑不齐，自动停止永不触发；逐块判定只有"当下真有声音"才推迟
+    # 超时，最坏由 max_session_seconds 兜底。
     if has_voice_activity:
         app._last_voice_time = now
 
     # 自动停止检测（停止同样放独立线程，理由同硬超时）。
-    # 长按模式下豁免：用户一直按着 = 他明确在说，中间的停顿不该被打断
-    # （spec §3.2）；60 秒硬上限不豁免，仍在上面生效，防跑飞。
+    # 长按模式下豁免：用户一直按着 = 他明确在说，中间的停顿不该被打断；
+    # 60 秒硬上限不豁免，仍在上面生效，防跑飞。
     if (
         app.auto_stop_seconds > 0
         and not bool(getattr(app, "_hold_active", False))
