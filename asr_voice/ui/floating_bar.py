@@ -14,7 +14,8 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QMenu, QPushButton, QWidget
 
 from .bar_widgets import (ConfirmButtons, SpeechBubble, draw_caret_marker,
-                          elide_left, elide_right, reassert_topmost)
+                          elide_left, elide_right, reassert_topmost,
+                          set_window_topmost)
 from .icons import (
     close_icon,
     play_icon,
@@ -67,7 +68,7 @@ def _save_window_state(x: int, y: int, w: int, h: int) -> None:
 
 # 状态
 UI_IDLE = "idle"
-UI_ARMED = "armed"          # 长按已按下、未达阈值：准备中（可能被撤销，见 spec §3.2.1）
+UI_ARMED = "armed"          # 长按已按下、未达阈值：准备中（可能被撤销）
 UI_LISTENING = "listening"
 UI_RECOGNIZING = "recognizing"
 UI_ERROR = "error"
@@ -93,19 +94,19 @@ DOT_COLOR_MAP = {
     DIALOG_UI_CONNECTING: "#5696e8",  # 连接中与思考同为 AI 侧等待色
 }
 
-# 对话四态全集（状态分流/会话文本清零判定用；单一事实源在 core.dialog，
+# 对话四态全集（状态分流/会话文本清零判定用；单一事实源在 core.dialog
 # 变量名沿用历史私有名，模块内外引用点不动）
 _DIALOG_STATES = DIALOG_UI_STATES
 
 # 对话文本刷新间隔（毫秒）：流式回复的 delta 频率远高于显示所需，逐帧直接重排 +
-# 强制重绘会把主线程占满 —— Hermes 长回复实测：气泡几千字时 Windows 直接报
+# 强制重绘会把主线程占满 —— Hermes 长回复：气泡几千字时 Windows 直接报
 # 「Python 未响应」、第二轮对话进不去。33ms ≈ 30fps，观感仍是实时，重排次数被
 # 压到帧率上限（无论 provider 推多密）。
 DIALOG_REFRESH_MS = 33
 
 # ---- 语音模式文本显示 ----
 # 角色色带 / 标签定义在 bar_widgets（见 ROLE_BAND_COLORS）。
-# 内容一律画在气泡里：条内文本区实测约 210px，放不下两条消息 + 角色区分，
+# 内容一律画在气泡里：条内文本区约 210px，放不下两条消息 + 角色区分
 # 条只负责状态与控制（见 _draw_text 的对话态分流）。
 
 # 按钮样式（基础占位，实际由 _apply_theme 按主题动态生成）
@@ -131,10 +132,8 @@ DEFAULT_BAR_W = 326
 DEFAULT_BAR_H = 78
 VOICE_SIDE = 83                # 声纹主题正方形默认边长
 VOICE_MIN_SIDE = 56            # 声纹主题最小边长（波形 + ✕ 仍清晰可辨）
-# 像素主题专属默认边长：取用户实际使用并确认的 70×70（persist 在
-# state.json 里的 window_width/height）。像素主题不跟随 VOICE_SIDE——用户
-# 的需求是「把我现在这个窗口大小设为默认」，即 70 而非通用的 83。
-# 不改 VOICE_SIDE 本身，避免波及极简等其它方窗主题。
+# 像素主题专属默认边长 70：取用户实际使用并确认的尺寸（persist 在 state.json）。
+# 不跟随 VOICE_SIDE，也不改它本身，避免波及极简等其它方窗主题。
 PIXEL_DEFAULT_SIDE = 70
 
 
@@ -185,7 +184,7 @@ class BarSignals(QObject):
     pause_bg_audio_toggled = Signal(bool)   # 暂停播放开关（录音时暂停后台媒体；app 持久化）
     hold_to_talk_toggled = Signal(bool)     # 长按录音开关（右键菜单切换，app 持久化）
     elevate_requested = Signal()            # 程序提权（app 拉起管理员实例接管后退出当前实例）
-    # 语音模式入口（spec：只加这 1 个信号）：右键菜单 checkable「语音模式」、
+    # 语音模式入口（spec：只加这 1 个信号）：右键菜单 checkable「语音模式」
     # 对话态下启停按钮/声纹主题整窗点击。checked=当前是否对话中；app 侧等价于按对话热键
     dialog_requested = Signal(bool)
 
@@ -216,7 +215,7 @@ class FloatingBar(QWidget):
         self._saved_y = int(saved.get("window_y", getattr(ui_config, "default_y", 100)))
         self._saved_w = int(saved.get("window_width", getattr(ui_config, "bar_width", DEFAULT_BAR_W)))
         self._saved_h = int(saved.get("window_height", getattr(ui_config, "bar_height", DEFAULT_BAR_H)))
-        # 首次运行（无保存位置且未显式指定坐标）默认放到主屏正中心，
+        # 首次运行（无保存位置且未显式指定坐标）默认放到主屏正中心
         # 比左上角 (100,100) 更易发现；用户移动后写入 state.json 持久化
         if "window_x" not in saved and "window_y" not in saved:
             if self._saved_x < 0 or self._saved_y < 0:
@@ -248,7 +247,7 @@ class FloatingBar(QWidget):
         self._dot_x = PADDING + DOT_OFFSET
         self._flash_msg = ""
         self._flash_until = 0.0
-        # 提示/错误到期要主动重绘：IDLE 下无重绘源（脉冲、电平都停了），
+        # 提示/错误到期要主动重绘：IDLE 下无重绘源（脉冲、电平都停了）
         # 不重绘提示就永远留在屏上
         self._flash_timer = QTimer(self)
         self._flash_timer.setSingleShot(True)
@@ -307,7 +306,7 @@ class FloatingBar(QWidget):
         self._session_text: str = ""
         # 语音模式对话显示（两行字幕式）：上行=上一轮，下行=当前轮。
         # 轮次号变化即新的一轮 —— 上一轮归档到上行，而不是被覆盖掉。
-        # 上一轮**不限角色**（P2）：用户自己的识别文本同样要留在屏上，
+        # 上一轮不限角色：用户自己的识别文本同样要留在屏上
         # 不能被 AI 的回复顶掉。
         self._dialog_turn_id: int = 0
         self._dialog_prev: str = ""           # 上一轮的完整文本（上行）
@@ -317,7 +316,7 @@ class FloatingBar(QWidget):
         self._dialog_cur_role: str = ""
         self._dialog_cur_final: bool = False
         self._dialog_cur_struck: bool = False  # 这条被打断（划线）
-        # H61：默认**自动展开**（按屏高反算），点击变成"收起"（3 行紧凑视图）。
+        # 默认自动展开（按屏高反算），点击变成"收起"（3 行紧凑视图）。
         # 用户诉求是"超长自动弹开、不用手点"，所以默认值从 False 翻成 True。
         self._dialog_expanded: bool = True     # 卡片处于自动展开态（点击收起/再展开）
         # 流式刷新帧合并（见 _schedule_dialog_refresh）：脏标记 + 单次定时器
@@ -331,19 +330,19 @@ class FloatingBar(QWidget):
         self._knot_rotate_timer: QTimer | None = None
         # 设置对话框打开期间禁用右键菜单（app._open_settings 维护）
         self._settings_dlg_open = False
-        # 本地模型加载中：状态点位置显示旋转 spinner（IDLE 无重绘源，
+        # 本地模型加载中：状态点位置显示旋转 spinner（IDLE 无重绘源
         # spinner 必须自驱动 QTimer 每 tick 触发重绘）
         self._loading = False
         self._spinner_angle = 0
         self._spinner_timer = QTimer(self)
         self._spinner_timer.setInterval(50)
         self._spinner_timer.timeout.connect(self._on_spinner_tick)
-        # 置顶保活：Windows 置顶组内"后弹出者居上"，任务管理器/贴图/游戏浮层
-        # 等置顶窗口后出现会压住本窗（标志仍在，视觉上"置顶失效"）。定时
-        # 重设 HWND_TOPMOST 提回置顶组顶部（_assert_topmost 只在 show 时跑一次，
-        # 覆盖不了别人后弹出的场景）。
+        # 置顶保活：Windows 置顶组内"后弹出者居上"，后出现的置顶窗会压住本窗（标志仍在，视觉上"置顶失效"）。
+        # 定时重设 HWND_TOPMOST 提回顶部（_assert_topmost 只在 show 时跑一次，覆盖不了此后弹出的场景）。
+        # 间隔 500ms：本窗只用 2s 心跳会被中频抢顶者压住近 2 秒。SetWindowPos 带 NOSIZE|NOMOVE|NOACTIVATE，
+        # 只重排 z-order 不触发重绘，每秒两次的代价可忽略。
         self._topmost_timer = QTimer(self)
-        self._topmost_timer.setInterval(2000)
+        self._topmost_timer.setInterval(500)
         self._topmost_timer.timeout.connect(self._assert_topmost)
 
         self._init_window()
@@ -429,31 +428,18 @@ class FloatingBar(QWidget):
         self._sync_bubble()
 
     def _assert_topmost(self) -> None:
-        """Windows：重新断言 WS_EX_TOPMOST（SWP_NOACTIVATE 不抢焦点）。
+        """Windows：重新断言 WS_EX_TOPMOST，提回置顶组顶部（SWP_NOACTIVATE 不抢焦点）。
 
-        Qt 只在建窗时设一次 TOPMOST；这种窗口隐藏后重新 show，Windows 会把它插到
-        置顶组底部，有别的置顶窗口时就被压住，表现为"置顶失效"。显式
-        SetWindowPos(HWND_TOPMOST) 提回顶部。
+        Qt 只在建窗时设一次 TOPMOST，隐藏后 show 会被 Windows 插到置顶组底部、被别的置顶窗压住；须走 set_window_topmost
+        而非裸调 ctypes（64 位未声明 argtypes 时 HWND_TOPMOST(-1) 截成 0xFFFFFFFF 报 ERROR_INVALID_WINDOW_HANDLE、保活空转）。菜单/对话框开着不抢顶。
         """
         if sys.platform != "win32":
             return
         if not (self.windowFlags() & Qt.WindowStaysOnTopHint):
             return
-        try:
-            import ctypes
-            hwnd = int(self.winId())
-            HWND_TOPMOST = -1
-            SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
-            ctypes.windll.user32.SetWindowPos(
-                hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE,
-            )
-        except Exception:
-            logger.debug("重新断言 TOPMOST 失败，忽略", exc_info=True)
-        # 附属顶层小窗（气泡 / 确认按钮条）同样在置顶组里，压住了也得提回来：
-        # 它们只在 show 和内容更新时 reassert，静止期间（识别已定稿、等修正返回、
-        # 思考中）被别的置顶窗口压住就再也回不来。极简主题下内容**只**画在气泡里，
-        # 气泡被压住等于什么都看不见。
+        set_window_topmost(int(self.winId()))
+        # 附属顶层小窗（气泡 / 确认按钮条）同样在置顶组里，压住了也得提回来：它们只在 show 和内容更新时
+        # reassert，静止期间被别的置顶窗口压住就再也回不来（极简主题内容只画在气泡里，压住=什么都看不见）。
         # 顺序固定「先本窗、后附属」：后提的在上，保证气泡始终盖在条之上。
         for child in (getattr(self, "_bubble", None),
                       getattr(self, "_confirm_btns", None)):
@@ -520,14 +506,9 @@ class FloatingBar(QWidget):
     def _layout_buttons(self) -> None:
         h = self.height()
         if self._voice_mode:
-            # 声纹主题：整窗点击切换录音，启停按钮隐藏，✕ 放右上角。
-            # 边距按主题区分（两者视觉基准不同）：
-            #   · 像素主题 6px —— 4px 阶梯边框内侧留 2px 呼吸（原 2px 压边框）
-            #   · 极简主题 3px —— 中央声纹是占 72% 边长的**圆**，✕ 越靠角越远离
-            #     圆弧；6px 时按钮矩形与圆弧相交、看着"叠在一起"（用户反馈
-            #     「退出键跟图标还是有点重叠，把退出键放到更右上角一点」）。
-            #     3px 是兼顾"避开圆弧"与"不被窗口圆角切掉"的落点（✕ 图标本身
-            #     比 20px 按钮小且居中，不会撞上圆角）。
+            # 声纹主题：整窗点击切换录音，启停按钮隐藏，✕ 放右上角。边距按主题区分：
+            # 像素主题 6px（4px 阶梯边框内侧留 2px 呼吸）；极简主题 3px（中央声纹是占 72% 边长的圆，
+            # 6px 会与圆弧叠在一起，3px 兼顾避开圆弧与窗口圆角）。
             pad = 6 if self._pixel_mode else 3
             self._btn_toggle.hide()
             self._btn_exit.move(self.width() - EXIT_BTN_W - pad, pad)
@@ -624,12 +605,10 @@ class FloatingBar(QWidget):
         self, text: str, kind: str = "llm_wait",
         yes_text: str | None = None, no_text: str | None = None,
     ) -> None:
-        """内嵌询问（提示文字条内渲染，极简主题走气泡；按钮在条外）：
-        kind 标识询问类型（llm_wait / live_sync / conflict_llm / conflict_paste /
-        conflict_commands / conflict_game_mode / conflict_method_game /
-        conflict_live / game_mode_elevate），
-        回答时随 bar_confirm 信号带回；yes_text/no_text 可自定义按钮文字
-        （冲突更换类用"确认/取消"）。15 秒无操作自动收起。"""
+        """内嵌询问（文字条内渲染，极简主题走气泡；按钮在条外），15 秒无操作自动收起。
+
+        kind 标识询问类型、回答时随 bar_confirm 信号带回；yes_text/no_text 可自定义按钮文字。
+        """
         self._llm_wait_text = text
         self._llm_wait_active = True
         self._confirm_kind = kind
@@ -839,7 +818,7 @@ class FloatingBar(QWidget):
     def apply_theme_name(self, theme_name: str) -> None:
         """按主题预设名应用整套配色（含可选 border / top_line / knot_icon / voice_print）。"""
         # 局部名不要用 t：本模块 import 了 i18n 的 t()，函数内绑定 t 会
-        # 把整个函数作用域里的 t 变成局部名（Python 作用域是函数级的），
+        # 把整个函数作用域里的 t 变成局部名（Python 作用域是函数级的）
         # 导致同函数内的 t("key") 抛 UnboundLocalError。
         theme = available_themes().get(theme_name)
         if not theme:
@@ -875,12 +854,9 @@ class FloatingBar(QWidget):
         # 自动抬升到主题最小高度，保证按钮完整落在链带内侧
         if self._knot_icon_mode and self.height() < self._knot_min_height():
             self.resize(self.width(), self._knot_min_height())
-        # 像素主题：切换进入（含启动）时方窗回到**像素主题自己的默认边长**
-        # PIXEL_DEFAULT_SIDE = 70（用户实际使用并确认的尺寸）——不从当前窗口
-        # 尺寸继承，因为旧逻辑 max(VOICE_SIDE, min(w,h)) 会把拖大的尺寸带进来、
-        # 越滚越大回不去。仅在主题名变化时触发：配置重载等对当前主题的重放
-        # （app.py:2510）不动用户正在使用的尺寸；用户在主题内临时拖到别的
-        # 尺寸也只在该次会话内有效，切主题/重启回到 70。
+        # 像素主题：切换进入（含启动）时方窗回到 PIXEL_DEFAULT_SIDE = 70。不从当前窗口尺寸继承
+        # （旧逻辑 max(VOICE_SIDE, min(w,h)) 会把拖大的尺寸带进来、越滚越大回不去）。仅在主题名变化时触发：
+        # 配置重载等对当前主题的重放不动用户当前尺寸；主题内临时拖动只在该次会话有效，切主题/重启回到 70。
         if self._pixel_mode and prev_theme != theme_name:
             self.resize(PIXEL_DEFAULT_SIDE, PIXEL_DEFAULT_SIDE)
         # 按钮位置在 apply_colors 末尾重排：那里才刷新 _top_line_color 等主题标记
@@ -925,9 +901,8 @@ class FloatingBar(QWidget):
     def _apply_theme(self) -> None:
         """根据当前背景明暗，统一适配图标色、按钮样式与菜单样式。
 
-        不用 QGraphicsDropShadowEffect：WA_TranslucentBackground 分层窗口下阴影画在
-        窗口边界外会触发 UpdateLayeredWindowIndirect failed，画面冻结、提示无法刷新。
-        层次感靠 paintEvent 内描边。
+        不用 QGraphicsDropShadowEffect：分层窗口下窗口外阴影会触发 UpdateLayeredWindowIndirect failed、
+        画面冻结；层次感靠 paintEvent 内描边。
         """
         light = self._is_light(self._bg_color.name())
         # 图标色：浅底深图标、深底浅图标；主题专属图标委托特性模块
@@ -937,7 +912,7 @@ class FloatingBar(QWidget):
         if feat is not None:
             feat.apply_icons(self)
         else:
-            # 图标 18→20：按钮加 1px 描边后内容区 34×28，20px 仍安全，
+            # 图标 18→20：按钮加 1px 描边后内容区 34×28，20px 仍安全
             # 三角形有效面积增 ~11%，浅色下更醒目
             self._btn_toggle.setIconSize(QSize(20, 20))
             icon_color = "#1d1d1f" if light else "#e8e8e8"
@@ -1006,10 +981,10 @@ class FloatingBar(QWidget):
         self._btn_toggle.clearMask()
         recording = self._state in (UI_LISTENING, UI_RECOGNIZING)
         light = self._is_light(self._bg_color.name())
-        # 中性灰阶，不用 accent 蓝（深浅主题都违和）；录音态同色系加压，
+        # 中性灰阶，不用 accent 蓝（深浅主题都违和）；录音态同色系加压
         # 红只留给小停止图标和状态点
         if light:
-            # 浅色主题：Fluent 软边灰阶（白底+浅灰描边，越深越"激活"），
+            # 浅色主题：Fluent 软边灰阶（白底+浅灰描边，越深越"激活"）
             # 黑系硬边在近白底上太跳
             if recording:
                 base = "#e4e4ea"
@@ -1046,9 +1021,7 @@ class FloatingBar(QWidget):
     def _sync_armed_icon(self) -> None:
         """「准备中」时按主题换启停按钮图标：只有凯尔特结图需要换色（暗红、不旋转）。
 
-        其余主题的 ARMED 表达在各自的绘制里：内置三套是状态点暗红（极简另有
-        中央声纹取色）、像素是均衡器/状态块、赛博朋克是切角边框。按钮图标一律
-        保持待机样子——换成红色停止图标就"看着像录音"，正是 spec §3.2.1 要避免的。
+        其余主题的 ARMED 表达在各自绘制里，按钮图标一律保持待机样子——换成红色停止图标就"看着像录音"。
         非凯尔特主题是 no-op（特性模块可能被 lite 构建裁掉）。
         """
         if self._state != UI_ARMED:
@@ -1121,12 +1094,12 @@ class FloatingBar(QWidget):
         prev_state, self._state = self._state, state
         if state == UI_LISTENING and prev_state in (UI_IDLE, UI_ARMED):
             # 仅新会话（待机/长按准备→聆听）清累积，会话内回切聆听不清已确认文本。
-            # ARMED 必须一并算作"新会话起点"：长按路径是 IDLE→ARMED→LISTENING，
+            # ARMED 必须一并算作"新会话起点"：长按路径是 IDLE→ARMED→LISTENING
             # 只认 IDLE 会让 prev_state=ARMED 绕过清理，上一轮的 _session_text
             # 被 _set_text 的累积拼接带进本轮气泡 —— 表现为"长按录音气泡文字残留"
             self._session_text = ""
         if state in _DIALOG_STATES and prev_state not in _DIALOG_STATES:
-            # 进入对话：清掉上一段录音/对话的气泡累积（现状只 idle→listening 清，
+            # 进入对话：清掉上一段录音/对话的气泡累积（现状只 idle→listening 清
             # 旧文本会漏进对话气泡）；文本与阅读保持/打断标记一并复位
             self._session_text = ""
             self._text = ""
@@ -1172,7 +1145,7 @@ class FloatingBar(QWidget):
             if self._auto_hide_ms > 0:
                 self._auto_hide_timer.stop()
         elif state == UI_ARMED:
-            # 长按准备中（spec §3.2.1）：纯提示态，刻意**不**设 _hint、不换停止
+            # 长按准备中：纯提示态，刻意不设 _hint、不换停止
             # 图标、不起脉冲光晕——那些都是录音态的样子，而准备中可能被撤销
             # （轻点丢弃），像录音就会"红一下又消失像出错"。各主题的 ARMED 表达
             # 在自身绘制里（状态点/声纹取色/均衡器/边框），只有凯尔特结图要换图标
@@ -1222,7 +1195,7 @@ class FloatingBar(QWidget):
         if is_final and text and self._state not in _DIALOG_STATES:
             # 气泡显示会话累积全文：final 逐句拼接；引擎发全量累积（腾讯）时
             # 以累积开头则直接替换，避免重复。
-            # 语音模式除外：对话内容走 dialog_turn 结构化通道（两行字幕式，
+            # 语音模式除外：对话内容走 dialog_turn 结构化通道（两行字幕式
             # 整场累积没有意义），与这里的录音文本累积互不干扰
             acc = self._session_text
             self._session_text = text if (acc and text.startswith(acc)) else acc + text
@@ -1239,24 +1212,22 @@ class FloatingBar(QWidget):
                        is_final: bool, interrupted: bool) -> None:
         """一轮对话文本（结构化信号）：维护「上一轮 + 当前轮」两行。
 
-        轮次号变化 = 新的一轮：把刚结束的那一轮归档到上行（**不限角色**，
-        上一轮是谁说的就带谁的角色），当前行另起。
-        同一轮内会反复推（豆包按句、Qwen 按 delta），此时只更新当前行。
+        轮次号变化 = 新的一轮，把刚结束那轮归档到上行（**不限角色**），当前行另起。
+        同一轮内反复推（豆包按句、Qwen 按 delta）时只更新当前行。
         """
         if self._state not in _DIALOG_STATES:
             return                          # 已退出对话（信号在路上），丢弃
         if turn_id != self._dialog_turn_id:
             self._dialog_turn_id = turn_id
             if self._dialog_cur:
-                # 归档上一轮：不限角色。原先只归档 AI，用户问完话、AI 一
-                # 开口，用户那句就被覆盖 —— 正是 P2 要修的痛点
+                # 归档上一轮：不限角色，否则用户那句会被 AI 的下一轮覆盖
                 self._dialog_prev = self._dialog_cur
                 self._dialog_prev_role = self._dialog_cur_role or ROLE_USER
                 self._dialog_prev_struck = self._dialog_cur_struck
             self._dialog_cur = ""
             self._dialog_cur_struck = False
-            self._dialog_expanded = True    # 新一轮回到自动展开（H61）
-            # 滚动位置一并归零：不归零的话，用户在上一轮回复里翻到中段后，
+            self._dialog_expanded = True    # 新一轮回到自动展开
+            # 滚动位置一并归零：不归零的话，用户在上一轮回复里翻到中段后
             # 新一轮的第一句会"显示在旧文本中间"
             if getattr(self, "_bubble", None) is not None:
                 self._bubble._scroll_skip = 0
@@ -1758,8 +1729,8 @@ class FloatingBar(QWidget):
         if art < 16:
             art = side - 8
         # 长按准备中：声纹布局（极简）整窗即按钮、条上不画状态点，中央声纹是唯一
-        # 能表达状态的部位。保持待机**空心**轮廓（实心=录音，借用了就成了"红一下
-        # 又消失像出错"），只把取色换成与状态点同源的暗红（spec §3.2.1）
+        # 能表达状态的部位。保持待机空心轮廓（实心=录音，借用了就成了"红一下
+        # 又消失像出错"），只把取色换成与状态点同源的暗红
         armed = self._state == UI_ARMED
         pix = voice_icon(recording, art,
                          DOT_COLOR_MAP[UI_ARMED] if armed else "#eeeeee")
@@ -1796,11 +1767,11 @@ class FloatingBar(QWidget):
             bubble.show_message(self._error_msg, QColor("#e8a83c"))
             return
         # 语音模式：两行字幕式卡片（上=上一轮，角色不限；下=当前轮）。
-        # 刻意排在临时提示**之前**：对话内容不该被一条瞬时提示清屏
+        # 刻意排在临时提示之前：对话内容不该被一条瞬时提示清屏
         # （"已复制本轮"/"外放可能有回声"这类），提示改画成卡片底部一行小字。
         if self._state in _DIALOG_STATES:
-            # H71-W2：只有**极简主题**把「思考中…」画进气泡。极简悬浮条是一整块
-            # 声纹按钮（paintEvent 在 _voice_mode 下直接 return，条上不画状态文字），
+            # ：只有极简主题把「思考中…」画进气泡。极简悬浮条是一整块
+            # 声纹按钮（paintEvent 在 _voice_mode 下直接 return，条上不画状态文字）
             # 用户看不见思考态；其它主题条内 _hint 照旧显示「思考中...」，行为不变。
             thinking = bool(self._voice_mode) and self._state == DIALOG_UI_THINKING
             rows = self._dialog_rows()
@@ -1844,22 +1815,15 @@ class FloatingBar(QWidget):
             if self._text:
                 if self._text_is_final:
                     # 会话累积全文（多句 final 滚动拼接，不逐段跳变）。
-                    # elide="left" 与中间结果同向（保留尾部）：定稿翻回头部会让
-                    # 用户正读的尾部字当场消失、画面钉在开头"不会往后挪"
-                    # （用户反馈「还是显示三个点儿，然后不会往后挪」）——与多行
-                    # 卡片 H61-B「定稿不翻面」同一语义，省略号在头部表示旧文省略。
+                    # elide="left" 与中间结果同向（保留尾部）：定稿翻回头部
+                    # 会让正读的字当场消失——与多行卡片"定稿不翻面"同一语义，
+                    # 省略号在头部表示旧文省略。
                     bubble.show_message(self._session_text, self._text_color,
                                         elide="left")
                 else:
-                    # 中间结果 = 累积 + 当前句（引擎发全量则以累积开头直接用），
-                    # 半透明表示未定稿。
-                    # elide="left"：文字超出气泡宽度时**保留尾部**——用户说话时
-                    # 最关心"我刚说的字有没有被识别对"，保留头部（旧内容）会让
-                    # 新说的字直接看不见（用户反馈「后面说的文字它就不显示了，
-                    # 应该以最新显示的为主，把前面旧的省略掉」）。
-                    # 尾部**不再加文字 "..."**：未定稿统一由绘制层的光标表达
-                    # ——像素主题=金色 ▼（DQ 式），其他主题=竖线光标（| 闪烁），
-                    # 见 bar_widgets 的单行绘制分支。两个标记叠在一起语义重复。
+                    # 中间结果 = 累积 + 当前句（引擎发全量则以累积开头直接用），半透明表示未定稿。
+                    # elide="left"：超宽时保留尾部——用户说话时最关心"刚说的字有没有识别对"。
+                    # 尾部不加文字 "..."：未定稿统一由绘制层光标表达（像素=金色 ▼，其他=竖线光标），语义重复。
                     interim = QColor(self._text_color)
                     interim.setAlpha(160)
                     # 局部名不用 `t`：本模块顶部 import 了 i18n 的 t()，凡是在本函数里
@@ -1910,11 +1874,9 @@ class FloatingBar(QWidget):
         cx = self._dot_x + DOT_D / 2
         cy = self.height() / 2
 
-        # 模型加载中（且待机）：状态点位置改画旋转 spinner。守卫带 UI_IDLE：
-        # 预热未完成用户就开始录音时，红点/光晕正常显示，加载指示不吞录音指示。
-        # 画布放大至状态点 2 倍（20px）以状态点中心为圆心居中：常规主题下距启停
-        # 按钮与文字各留 ~7px，不越界不重叠（offscreen 截图验证）。不透明强调色，
-        # 比 IDLE 态半透明状态点更醒目；加载态不画光晕。
+        # 模型加载中（且待机）：状态点位置改画旋转 spinner。守卫带 UI_IDLE：预热未完成就录音时
+        # 红点/光晕正常显示，加载指示不吞录音指示。画布放大至状态点 2 倍（20px）并居中，
+        # 距启停按钮与文字各留 ~7px 不越界。加载态不画光晕。
         if self._loading and self._state == UI_IDLE:
             d = DOT_D * 2
             pix = spinner_pixmap(d, self._accent_color.name(), self._spinner_angle)
@@ -1981,7 +1943,7 @@ class FloatingBar(QWidget):
         metrics = QFontMetrics(font)
 
         # 语音模式：内容（含错误与临时提示）全部交给上方气泡，条内只留状态提示。
-        # 条内文本区实测只有约 210px（左侧状态点 82px + 右侧退出按钮 34px），
+        # 条内文本区只有约 210px（左侧状态点 82px + 右侧退出按钮 34px）
         # 一行仅容 ~16 个汉字 —— 放不下"两条消息 + 角色区分"。条的角色是
         # 状态与控制，内容交给能容纳它的容器（气泡对任何主题都可用）。
         if self._state in _DIALOG_STATES:
@@ -2035,9 +1997,8 @@ class FloatingBar(QWidget):
             elided = elide_left(metrics, text, max_width)
         else:
             # 中间结果：半透明，ElideLeft 显示最新字词。
-            # 尾部**不再加 "..."**——改用竖线光标表达未定稿（与气泡里的
-            # 竖线光标一致，像素主题的气泡则用金色 ▼）。用户反馈
-            # 「其他主题尾部可以改成竖线光标闪烁的那种」。
+            # 尾部不加 "..."——未定稿改用竖线光标表达（与气泡里的竖线光标
+            # 一致，像素主题的气泡则用金色 ▼）。
             interim_color = QColor(self._text_color)
             interim_color.setAlpha(160)
             painter.setPen(interim_color)

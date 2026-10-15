@@ -14,20 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class HotkeyListener:
-    """全局热键监听器。
-
-    - start() 注册热键，触发时调用 on_trigger；stop() 注销
-    - 含修饰键的组合（ctrl/alt/shift/win + 主键）走 Windows 原生 RegisterHotKey：
-      不挂钩子、不读写修饰键状态，因此不会出现"修饰键滞留"——历史上用 keyboard
-      库注册 ctrl+shift+h 时，空按一次 Shift 再敲任意键就会让系统认为 Shift 一直
-      按着（复现脚本 tests/diag_hotkey_modifier_sticky.py）。原生方式的代价：命中时
-      该组合被系统吃掉、不再传给前台程序；组合已被其他程序占用时注册失败并抛异常
-    - 只有单个普通键的组合（backspace/delete 这类"只监听不拦截"的键）仍用 keyboard
-      钩子：RegisterHotKey 会把该键从系统里吃掉，普通键不能这么干。此时库内没有
-      任何 blocking 热键，修饰键状态机不会被启用，也不会滞留修饰键
-    - suppress=True 在原生路径下只能做到"组合里的主键不传给前台程序"；修饰键本身
-      系统不区分。普通键路径固定按"不拦截"注册（否则会把该键从系统里吞掉）
-    - 环境变量 ASR_HOTKEY_BACKEND=legacy 可把全部热键退回旧的钩子实现（回滚用）
+    """全局热键监听器：start() 注册、stop() 注销，触发调 on_trigger。含修饰键的组合走原生
+    RegisterHotKey（不挂钩子、不读修饰键状态，故无"修饰键滞留"；代价是组合被系统吃掉不外传、
+    被占用则注册失败抛异常）；单个普通键（backspace 等）仍用 keyboard 钩子，否则该键会被系统
+    吞掉。ASR_HOTKEY_BACKEND=legacy 可退回旧钩子实现（回滚用）。
     """
 
     def __init__(self, hotkey: str, on_trigger: Callable[[], None],
@@ -35,7 +25,7 @@ class HotkeyListener:
                  on_press: Optional[Callable[[], None]] = None):
         self.hotkey = hotkey
         self.on_trigger = on_trigger
-        # 长按模式：命中瞬间的回调。提供时**取代** on_trigger（开/停分流由
+        # 长按模式：命中瞬间的回调。提供时取代 on_trigger（开/停分流由
         # app 侧的 HoldTracker 负责，本类只负责「按下了」这一件事）。
         # 为 None 时行为与改动前逐字一致。
         self.on_press = on_press

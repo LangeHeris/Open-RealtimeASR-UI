@@ -1,21 +1,12 @@
 """阿里云百炼 Qwen3-ASR-Flash-Realtime 实时语音识别（Realtime 协议）封装。
 
-与 run-task 协议（paraformer / qwen-audio / fun-asr，见 aliyun_realtime.py）
-不同，qwen3-asr-flash-realtime 走 OpenAI Realtime 风格协议：
-- URL: wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=<model>
-  （子域为百炼业务空间 ID，需在设置页阿里云「业务空间 ID」中配置）
-- 鉴权: 请求头 Authorization: Bearer <百炼 API Key> + OpenAI-Beta: realtime=v1
-- 会话: WebSocket 连接后服务端发 session.created；客户端发 session.update
-  （VAD 断句配置）后开始推音频
-- 音频: input_audio_buffer.append 事件，audio 字段为 PCM 16k 单声道的 Base64
-- 结束: 发送 session.finish，收到 session.finished 后关闭
-- 结果: conversation.item.input_audio_transcription.text（中间结果，text 字段）/
-        conversation.item.input_audio_transcription.completed（最终结果，transcript
-        字段），映射到统一的 SLICE_INTERMEDIATE / SLICE_FINAL 回调
-  注意：该模型不返回时间戳（index 恒为 0）；情感识别固定开启（emotion
-  字段，本应用不消费）。
-
-文档: https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process
+与 run-task 协议（见 aliyun_realtime.py）不同，本模型走 OpenAI Realtime 风格协议：
+- URL wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=<model>
+  （子域为百炼业务空间 ID）；鉴权头 Authorization: Bearer <API Key> + OpenAI-Beta: realtime=v1。
+- 连上后服务端发 session.created，客户端发 session.update（VAD 断句）后推音频
+  （input_audio_buffer.append，audio 为 PCM 16k 单声道 Base64）；结束发 session.finish，
+  收到 session.finished 后关闭。结果映射到 SLICE_INTERMEDIATE（.text，中间）/ SLICE_FINAL
+  （.completed，最终）；本模型不返回时间戳（index 恒 0）。
 """
 
 from __future__ import annotations
@@ -65,12 +56,8 @@ StateCallback = Callable[[str], None]
 class Qwen3RealtimeASR:
     """阿里云百炼 Qwen3-ASR-Flash-Realtime 客户端（Realtime 协议）。
 
-    对外接口与 AliyunRealtimeASR / TencentRealtimeASR 相同：
-    - start() 建立连接并完成 session.update 握手
-    - send_audio(block) 推送音频块（numpy int16 数组，16k 采集）
-    - stop() 发送 session.finish 并关闭连接
-    回调：on_result(text, slice_type, index) / on_error(code, message) /
-    on_state(state)。
+    对外接口与 AliyunRealtimeASR / TencentRealtimeASR 相同：start() 建连并完成 session.update
+    握手，send_audio 推 16k int16 音频，stop() 发 session.finish 并关闭。
     """
 
     def __init__(

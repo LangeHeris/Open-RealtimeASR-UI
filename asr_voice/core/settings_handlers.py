@@ -50,9 +50,8 @@ def engine_menu_id(cfg) -> str:
 def follow_slot_rebinding(app, old_active: str, new_cfg) -> None:
     """分类「调用」绑定被改且当前生效引擎正是旧绑定时，生效模型字段跟随新绑定。
 
-    绑定（menu_model_<slot>）与生效模型字段（tencent.engine_model_type /
-    aliyun.model）分开存储：右键菜单点击路径两者同步写，设置页/手改
-    yaml 只改绑定，此处补齐另一路径，否则保存后录音仍用旧模型。
+    绑定（menu_model_<slot>）与生效模型字段（tencent.engine_model_type / aliyun.model）分开
+    存储：设置页/手改 yaml 只改绑定，此处补齐另一路径，否则保存后录音仍用旧模型。
     """
     from ..config.loader import update_config_field
 

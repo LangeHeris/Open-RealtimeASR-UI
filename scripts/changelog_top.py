@@ -1,21 +1,12 @@
-"""提取 CHANGELOG.md 最新版本段，作为 GitHub Release 说明（Plan B spec §5）。
+"""提取 CHANGELOG.md 最新版本段，作为 GitHub Release 说明。
+Release 正文只该含本次版本：整个文件当 body（`body_path: CHANGELOG.md`）会把历史
+版本一路带上。`--check` 把顶部段与 asr_voice/version.py 对齐——check_version.py
+只比 tag、从不看 changelog，「忘了写 CHANGELOG 段」会一路过 CI 到发布说明空掉。
 
-为什么需要它：CHANGELOG.md 是双渠道公告的唯一来源（spec §5），但 Release 的正文
-只该是「本次版本」那一段。把整个文件当 body（`body_path: CHANGELOG.md`）会把历史
-版本一路带上——首发时看着还行，第二个版本起就是噪音。
+用法：python scripts\\changelog_top.py [--check | --out dist\\notes.md]（缺省写 stdout）
 
-顺带做一件 check_version.py 做不到的事：它只比 tag 与代码版本，从不看 changelog。
-「忘了写 CHANGELOG 段」于是能一路过 CI，直到发布说明空掉才被发现。`--check` 把顶部
-段与 asr_voice/version.py 对齐，把这个检查提前到 CI。
-
-用法：
-    python scripts\\changelog_top.py --check               # 顶部段 == 代码版本 → exit 0
-    python scripts\\changelog_top.py --out dist\\notes.md  # 写该段落到文件（UTF-8 + LF）
-    python scripts\\changelog_top.py                       # 写 stdout
-
-编码：CI 的 stdout 在 Windows runner 上是 cp1252（与 check_version 同因），而
-CHANGELOG 正文是中文。所以「写 stdout」走 sys.stdout.buffer 直接落 UTF-8 字节，
-绕开文本层编解码器；打印给人看的只有 ASCII 的 [ok]/[FAIL] 行，插值一律过 _a()。
+编码：CI 的 stdout 在 Windows runner 上是 cp1252，正文是中文 → 写 stdout 走
+sys.stdout.buffer 落 UTF-8 字节；给人看的只有 ASCII 的 [ok]/[FAIL] 行。
 """
 
 from __future__ import annotations
@@ -33,7 +24,7 @@ from asr_voice.version import __version__  # noqa: E402
 
 DEFAULT_CHANGELOG = _ROOT / "CHANGELOG.md"
 
-# 版本段 = H2 标题（`## 0.1.0 - 2026-09-20` / `## [0.1.0] - date` / `## 0.1.0`）。
+# 版本段 = H2 标题（`## 0.1.0 - YYYY-MM-DD` / `## [0.1.0] - YYYY-MM-DD` / `## 0.1.0`）。
 # 刻意只认 H2：H1 是文件标题，H3 是版本段内部的「新增 / 变更」分类，两者都不是段边界。
 _HEADING = re.compile(
     r"^##[ \t]+\[?(?P<ver>[^\]\s]+)\]?[ \t]*(?:[-–—][ \t]*(?P<date>.*?))?[ \t]*$",
@@ -69,8 +60,7 @@ def _strip_heading(section: str) -> str:
 def section_body(text: str, version: str | None = None) -> str | None:
     """某版本的正文（标题行已去掉）。`version=None` 取最新段；找不到返回 None。
 
-    标题行去掉是因为 Release 自带的 tag 与日期已经把这两条信息显示出来了，
-    正文再抄一遍只会显得重复。
+    去标题：Release 自带的 tag 与日期已经显示这两条信息。
     """
     sections = split_sections(text)
     if version is None:
@@ -87,13 +77,11 @@ def check(text: str, version: str | None = None) -> int:
     top = top_version(text)
     if top is None:
         print("[FAIL] CHANGELOG.md has no '## <version>' section")
-        print(f"       add a '## {_a(ver)} - YYYY-MM-DD' section at the top "
-              f"(see the internal RELEASING runbook).")
+        print(f"       add a '## {_a(ver)} - YYYY-MM-DD' section at the top.")
         return 1
     if top != ver:
         print(f"[FAIL] CHANGELOG top section {_a(top)!r} != __version__ {_a(ver)!r}")
-        print(f"       add a '## {_a(ver)} - YYYY-MM-DD' section at the top "
-              f"(see the internal RELEASING runbook).")
+        print(f"       add a '## {_a(ver)} - YYYY-MM-DD' section at the top.")
         return 1
     print(f"[ok] CHANGELOG top section {_a(top)} matches __version__")
     return 0

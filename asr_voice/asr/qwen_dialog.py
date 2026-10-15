@@ -1,25 +1,11 @@
 """阿里云百炼 Qwen-Audio Realtime —— 对话客户端类。
-
-协议：OpenAI-Realtime 风格的纯 JSON over WebSocket（无豆包那套二进制帧
-codec）。一次实例 = 一条 WebSocket = 一个会话。线程模型照搬豆包客户端
-（独立 dialog-loop 守护线程跑 asyncio loop），但不继承——两家 wire 协议、
-握手时序、错误模型都不同，共享的只有线程编排骨架与 dialog_events 中立词汇。
-
-关键差异（对豆包）：
-- 鉴权：HTTP 头 Authorization: Bearer <api_key>（复用 aliyun.api_key），
-  无 app_id/access_token 三元组、无二进制签名；模型走 URL ?model= 查询参
-- 握手：单段——connect → 收 session.created（仅日志）→ 发 session.update →
-  收 session.updated = 就绪（无 StartConnection/StartSession 两段）
-- 音频：上行 input_audio_buffer.append {audio: base64(pcm16k)}，
-  下行 response.audio.delta {delta: base64(pcm24k)}——PCM 参数与豆包一致
-- 收尾：无 FinishSession/FinishConnection 握手，stop() 直接 cancel tasks +
-  close ws（response.cancel 预留给打断，MVP 不调用）
-- 错误：error 事件的 code 是字符串（如 invalid_value），按 error.type 分
-  invalid_request_error（不可重连）/ server_error（可重连）
-- session.id 仅本次连接标识，重连即新会话（不跨进程续接上下文）
-
-事件翻译（wire JSON type → 中立词汇）见 _handle_event；中立词汇定义在
-dialog_events.py。设计文档：docs/superpowers/specs/2026-09-11-qwen-audio-realtime-provider-design.md。
+协议：OpenAI-Realtime 风格纯 JSON over WebSocket（无豆包二进制帧 codec）；一次实例 = 一条
+WebSocket = 一个会话。照搬豆包的线程骨架但**不继承**（wire 协议/握手时序/错误模型都不同）。
+关键差异：鉴权 `Authorization: Bearer <api_key>`（复用 aliyun.api_key），无三元组、无二进制签名，
+模型走 URL ?model=；握手单段（connect → session.created → session.update → session.updated=就绪）；
+上行 append{audio: base64(pcm16k)}、下行 response.audio.delta{delta: base64(pcm24k)}；收尾无握手，
+stop() 直接 cancel tasks + close ws；error.code 是字符串，按 error.type 分 invalid_request_error
+（不可重连）/ server_error（可重连）；session.id 仅本次连接标识，重连即新会话。翻译见 _handle_event。
 """
 
 from __future__ import annotations
@@ -84,13 +70,8 @@ def _qwen_error_hint(etype: str, message: str) -> str:
 
 class QwenDialogClient:
     """Qwen-Audio Realtime 对话客户端（一次实例 = 一条 WebSocket = 一个会话）。
-
-    超时类常量做类属性，便于测试按实例覆盖加速：
-        CONNECT_TIMEOUT   建 ws + 等 session.created
-        SESSION_TIMEOUT   发 session.update + 等 session.updated
-        SHUTDOWN_TIMEOUT  stop() 整体上限（无收尾握手，比豆包短）
-        START_MARGIN      start() 预算在 CONNECT+SESSION 之上的余量
-        AUDIO_QUEUE_MAX   上行音频队列上限（包），满丢最旧
+    超时类常量做类属性，便于测试按实例覆盖加速：CONNECT_TIMEOUT / SESSION_TIMEOUT /
+    SHUTDOWN_TIMEOUT / START_MARGIN / AUDIO_QUEUE_MAX（上行队列上限，满丢最旧）。
     """
 
     CONNECT_TIMEOUT = 10.0
@@ -217,11 +198,9 @@ class QwenDialogClient:
     # ---- 握手 payload / 连接 ----
 
     def _build_session_update(self) -> dict:
-        """构造 session.update 请求体（承载「完整暴露」的全部可调项，spec §5.4）。
-
-        turn_detection：server_vad 带 threshold + silence_duration_ms；smart_turn
-        只带 type（阈值/静音时长由服务端语义模型自管）。input_audio_format/
-        output_audio_format 固定 pcm（不暴露）；instructions 总是下发（空串=无人设）。
+        """构造 session.update 请求体（承载「完整暴露」的全部可调项）。
+        turn_detection：server_vad 带 threshold + silence_duration_ms，smart_turn 只带 type；
+        input/output_audio_format 固定 pcm（不暴露）；instructions 总是下发（空串=无人设）。
         """
         if self.turn_detection == "smart_turn":
             td: dict = {"type": "smart_turn"}
@@ -292,9 +271,8 @@ class QwenDialogClient:
     async def _connect(self) -> None:
         """单段握手：建 ws → 收 session.created → 发 session.update → 收 session.updated。
 
-        任一步失败/超时抛 DialogError（消息含 code）；失败与取消（start 超时
-        会 cancel 本协程）路径统一由 finally 关闭 ws；成功后置 session_ready、
-        发 SESSION_READY 中立事件、启动收发循环。
+        任一步失败/超时抛 DialogError（消息含 code）；失败与取消（start 超时会 cancel 本协程）
+        统一由 finally 关闭 ws；成功后置 session_ready、发 SESSION_READY、启动收发循环。
         """
         self._audio_queue = asyncio.Queue()
         self._stop_event = asyncio.Event()
@@ -481,8 +459,8 @@ class QwenDialogClient:
                 self._notify_event(AI_TRANSCRIPT, {"text": self._ai_transcript_buf})
             return
 
-        # —— 忽略类（不驱动状态机：session.created、ambient_*、conversation.item.*、
-        # input_audio_buffer.committed/cleared、response.audio_transcript.done、
+        # —— 忽略类（不驱动状态机：session.created、ambient_*、conversation.item.*
+        # input_audio_buffer.committed/cleared、response.audio_transcript.done
         # response.audio.done、content_part.*、output_item.*、function_call_*）——
         logger.debug("忽略事件 %s", mtype)
 
@@ -638,9 +616,8 @@ class QwenDialogClient:
     def send_audio(self, pcm: bytes) -> None:
         """上行一包 PCM（int16 小端 16k，20ms=640B）。未就绪时静默丢弃。
 
-        本方法从 PortAudio 采集回调线程调用（20ms 一次），不能抛异常：经
-        call_soon_threadsafe 投递（不建协程，无「检查后 loop 被清理」的
-        TOCTOU 泄漏），入队与背压（超上限丢最旧）都在 loop 线程内做。
+        本方法从 PortAudio 采集回调线程调用（20ms 一次）**不能抛异常**：经 call_soon_threadsafe
+        投递（不建协程，无「检查后 loop 被清理」的 TOCTOU 泄漏），入队与背压（超上限丢最旧）都在 loop 线程内做。
         """
         loop = self._loop
         if not self._session_ready or loop is None or self._audio_queue is None:

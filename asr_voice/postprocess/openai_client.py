@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 # 思考开启时部分本地部署（Ollama / vLLM 等）会把思考过程以
-# <thinking>…</thinking> 块内联进 content 字段，直接粘贴会污染正文，
+# <thinking>…</thinking> 块内联进 content 字段，直接粘贴会污染正文
 # 统一在响应侧剔除（关思考时模型本不产出思考块，剥离同样安全）。
 _THINK_BLOCK = re.compile(
     r"<\s*(?:think|thinking|thought)\b[^>]*>.*?<\s*/\s*(?:think|thinking|thought)\s*>",
@@ -53,11 +53,9 @@ def chat_completion(base_url: str, api_key: str, model: str, content: str,
         "max_tokens": max_tokens,
     }
     if disable_thinking:
-        # 尽力关闭思考/推理（各厂商参数不同，未知字段多数平台忽略）：
-        # - DeepSeek V4（deepseek-v4-flash/pro，思考默认开）：thinking.type=disabled
-        # - vLLM/部分框架：chat_template_kwargs.enable_thinking
-        # - 智谱 GLM-Zero/通义 Qwen3：enable_thinking
-        # - OpenAI o 系：reasoning_effort 最低档
+        # 尽力关闭思考/推理（各厂商参数不同，未知字段多数平台忽略）：DeepSeek V4 用
+        # thinking.type=disabled、vLLM/部分框架用 chat_template_kwargs.enable_thinking、
+        # 智谱 GLM-Zero/通义 Qwen3 用 enable_thinking、OpenAI o 系用 reasoning_effort 最低档
         payload["chat_template_kwargs"] = {"enable_thinking": False}
         payload["enable_thinking"] = False
         payload["thinking"] = {"type": "disabled"}

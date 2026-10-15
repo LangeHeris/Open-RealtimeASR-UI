@@ -12,11 +12,8 @@ from .fonts import get_loaded_family
 
 def _theme_palette(cfg) -> dict:
     """设置弹窗配色：按 `ui.settings_style` 选预设，未知回退默认。
-
-    每套预设是一组 palette 字典，覆盖页面/卡片/输入框/按钮/滑块/下拉/Toggle 等
-    所有控件的色值。显示名走 i18n（见 set.style.*），键则是语言无关内部键
-    （用户偏好四字名在 UI 层展示），新主题只需在 SETTINGS_STYLES 加一个键，
-    _settings_qss 不需改动。
+    每套预设覆盖全部控件的色值，显示名走 i18n（set.style.*）、键为语言无关内部键；
+    新主题只需在 SETTINGS_STYLES 加键，_settings_qss 不需改动。
     """
     style_name = ""
     if cfg is not None:
@@ -29,14 +26,10 @@ def _theme_palette(cfg) -> dict:
     return dict(SETTINGS_STYLES[style_name])
 
 
-# 主题键采用语言无关内部键（沿用 A4 ui.theme_name 的约定）：
-# 键要写进 config.yaml、又要过 i18n，不能存中文显示名——英文用户的配置文件里
-# 躺着"极简暗色"既看不懂也不可脚本化处理。显示名走 set.style.* 词条。
-#   极简暗色 minimal_dark（默认）：参考图同款中性灰调——页面/面板纯灰阶，选中态白描边
-#   流畅浅色 fluent_light：Win11 浅色，实底不透明观感
-# 旧配置里的中文取值由 config/loader.py 一次性迁移（_migrate_legacy_settings_style）。
-# accent 系列（主按钮/滑块已填段/开关开/焦点描边）统一中性灰而非蓝：
-#   用户反馈蓝色太突兀，交互强调改为亮灰（深色主题）/深灰（浅色主题）
+# 主题键用语言无关内部键（键要进 config.yaml 又要过 i18n，不能存中文显示名；显示名走 set.style.*）。
+# minimal_dark（默认，中性灰调）/ fluent_light（Win11 浅色）；旧配置的中文取值由 loader 一次性迁移。
+# accent 系列（主按钮/滑块已填段/开关开/焦点描边）统一中性灰而非蓝——蓝色太突兀，
+# 交互强调用亮灰（深色）/深灰（浅色）。
 SETTINGS_STYLES: dict[str, dict] = {
     "minimal_dark": {
         "accent":          "#d6d6dc",
@@ -48,7 +41,7 @@ SETTINGS_STYLES: dict[str, dict] = {
         # 纯色实底：无渐变无反光
         "panel":           "#242428",
         "input_bg":        "#2b2b31",
-        # 输入框常态描边：比通用 border 亮一档——填充底色与卡片底几乎同色，
+        # 输入框常态描边：比通用 border 亮一档——填充底色与卡片底几乎同色
         # 无边框时输入框整个"消失"在背景里
         "input_border":    "#494952",
         "btn_bg":          "#2b2b31",
@@ -86,7 +79,7 @@ SETTINGS_STYLES: dict[str, dict] = {
         "toggle_knob_on":   "#16161a",
         "theme_card_sel_border": "#e6e6ea",
         "root_border":     "rgba(255, 255, 255, 0.10)",
-        # 「永久为管理员启动」全宽按钮：未开启蓝 / 已开启绿（功能态色，
+        # 「永久为管理员启动」全宽按钮：未开启蓝 / 已开启绿（功能态色
         # 独立于中性灰 accent）；按钮上文字用深色保对比
         "admin_blue":        "#4cc2ff",
         "admin_blue_hover":  "#6fcdff",
@@ -142,7 +135,7 @@ SETTINGS_STYLES: dict[str, dict] = {
         "card_bg":         "#ffffff",
         "card_border":     "#e3e3e9",
         "root_border":     "rgba(0, 0, 0, 0.14)",
-        # 「永久为管理员启动」全宽按钮：未开启蓝 / 已开启绿（功能态色，
+        # 「永久为管理员启动」全宽按钮：未开启蓝 / 已开启绿（功能态色
         # 独立于中性灰 accent）；按钮上文字用白色保对比
         "admin_blue":        "#0067c0",
         "admin_blue_hover":  "#1975c5",
@@ -160,18 +153,8 @@ _DEFAULT_STYLE = "minimal_dark"
 def _settings_qss(p: dict) -> str:
     """生成设置弹窗 QSS：所有硬编码色改读 palette，支持两套预设换肤。
 
-    设计要点：
-    - 窗口不透明（透明表面会禁用 ClearType 致文字发糊），根背景用 page 实底；
-      圆角 8px 与 Win11 DWM 自动裁切对齐，Win10 无系统圆角、呈方角。
-    - **字号一律用 pt 不用 px**：QSS 的 px 字号是物理像素，不随 Windows
-      显示缩放（125%/150%）放大，缩放屏上会小到看不清；pt（1/72 英寸）
-      随系统 DPI 等比放大，与其他软件观感一致。几何尺寸（padding/border）
-      仍用 px。基准：正文/标签 10.5pt，说明/副标题 10pt，页标题 15pt。
-    - **设置界面字体栈**：普惠体优先（栈首；多字重已随 fonts/ 全量注册，
-      400/500/700 各命中 55 Regular / 65 Medium / 85 Bold），与悬浮条/菜单统一；
-      普惠体文件缺失（构建未投放 fonts/）时 Qt 自动落栈内系统回退位，不崩不空白。
-    - **字重层级**：正文/描述/表单标签 400；分组标题、导航项、卡片标题 500；
-      对话框大标题、主按钮 700。
+    窗口不透明（透明表面禁 ClearType 致文字发糊），根背景用 page 实底、圆角 8px。**字号一律用 pt 不用 px**
+    （px 不随 DPI 缩放放大、缩放屏看不清），几何尺寸仍用 px；字体栈普惠体优先（缺失时 Qt 落系统回退位），字重层级 400/500/700。
     """
     r = p["radius"]
     # 控件内圆角：参考图（DSH 设置）输入框/按钮/卡片统一 ~8-10px 圆角
@@ -180,13 +163,10 @@ def _settings_qss(p: dict) -> str:
     root_bg = page
     root_border = p.get("root_border") or p["border"]
     root_top = root_border
-    # 普惠体优先 + 系统回退：生效 family 为普惠体（内置默认/用户所选，
-    # fonts/ 多字重已全量注册）时用它真实注册的 family 名置于栈首，
-    # 400/500/700 各命中 55 Regular / 65 Medium / 85 Bold，与应用其他部分统一；
-    # 普惠体文件缺失时 Qt 自动落栈内系统回退位，不崩不空白。
-    # bold_stack 同栈，靠 font-weight 700 取 Bold 字重。
-    # 字重层级：正文/描述/表单标签 400；分组标题/导航项/卡片标题 500；
-    # 对话框大标题/主按钮 700（普惠体命中真实字面，系统回退位走各自近似匹配）
+    # 普惠体优先 + 系统回退：生效 family 为普惠体（内置默认/用户所选，fonts/ 多字重已全量注册）时
+    # 用它真实注册的 family 名置栈首；普惠体文件缺失时 Qt 自动落栈内系统回退位，不崩不空白。
+    # bold_stack 同栈，靠 font-weight 700 取 Bold 字重。字重层级：正文/描述/表单标签 400，
+    # 分组标题/导航项/卡片标题 500，对话框大标题/主按钮 700。
     fam = get_loaded_family()
     puhuiti_head = f"'{fam}', " if "puhuiti" in fam.lower() else "'Alibaba PuHuiTi 3.0', "
     font_stack = (puhuiti_head
@@ -476,19 +456,67 @@ def _settings_qss(p: dict) -> str:
         border: 1px solid {p['border']}; padding: 6px 10px; border-radius: 6px;
         font-family: {font_stack}; font-size: 10pt;
     }}
+    /* ---- 创意工坊卡片 ----
+       选择器一律带 workshop 前缀，**只作用于这一张卡**：改共享选择器会
+       连带改坏其他页。*/
+    QListWidget#workshopList {{
+        background: {p['input_bg']};
+        border: 1px solid {p['card_border']};
+        border-radius: 10px;
+        padding: 3px;
+        outline: none;
+    }}
+    /* 行控件自己撑高度（item 的 sizeHint 见 _fill_workshop_list_*），
+       这里只管行间留白与圆角高亮 */
+    QListWidget#workshopList::item {{
+        border-radius: 8px;
+        margin: 2px 3px;
+    }}
+    QListWidget#workshopList::item:hover {{ background: {p['nav_hover']}; }}
+    QListWidget#workshopList::item:selected {{ background: {p['nav_sel']}; }}
+    QLabel#workshopRowTitle {{
+        color: {p['text']}; font-size: 10pt; background: transparent;
+    }}
+    QLabel#workshopRowSub {{
+        color: {p['secondary']}; font-size: 9pt; background: transparent;
+    }}
+    /* 状态徽标：四态只在"填充/描边/字色"上区分，都取自中性灰调色板
+       —— 这套界面整体不引入色相（见 _theme_palette 的说明）。
+       选择器**必须一个一行**：Qt 的 QSS 解析器不接受跨行的逗号选择器列表，
+       写成多行会把从这里往后的整段样式一起丢掉，且不报任何错。 */
+    QLabel#workshopChipDone {{ font-size: 9pt; border-radius: 9px; padding: 2px 9px;
+        background: {p['accent']}; color: {p['on_accent']}; border: none; }}
+    QLabel#workshopChipBusy {{ font-size: 9pt; border-radius: 9px; padding: 2px 9px;
+        background: transparent; color: {p['accent']}; border: 1px solid {p['accent']}; }}
+    QLabel#workshopChipTodo {{ font-size: 9pt; border-radius: 9px; padding: 2px 9px;
+        background: transparent; color: {p['text']}; border: 1px solid {p['border']}; }}
+    QLabel#workshopChipIdle {{ font-size: 9pt; border-radius: 9px; padding: 2px 9px;
+        background: transparent; color: {p['secondary']}; border: 1px solid {p['border']}; }}
+    QProgressBar#workshopProgress {{
+        background: {p['input_border']}; border: none; border-radius: 2px;
+    }}
+    QProgressBar#workshopProgress::chunk {{
+        background: {p['accent']}; border-radius: 2px;
+    }}
+    /* 本卡的主按钮：几何与 btnGhost 完全一致，只换成主按钮色族，
+       让「浏览社区创意工坊」在三个按钮里有唯一的视觉重心 */
+    QPushButton#workshopPrimary {{
+        background: {p['save_bg']}; color: {p['save_text']}; border: none;
+        border-radius: 14px; padding: 6px 15px; font-size: 9.5pt;
+        font-weight: 600;
+    }}
+    QPushButton#workshopPrimary:hover {{
+        background: {p['save_hover']}; color: {p['save_hover_text']};
+    }}
+    QPushButton#workshopPrimary:pressed {{ background: {p['btn_pressed']}; }}
     """
 
 
 def _welcome_qss(p: dict) -> str:
-    """首启欢迎框 QSS：与 _settings_qss 同 palette、同字号/字重约定。
-
-    结构对应 welcome_dialog.WelcomeDialog 的 objectName：
-    welcomeRoot（圆角根面板）/ titleBar+btnClose（自绘标题栏）/
-    heroTitle+heroSub（主副标题）/ card+tile+tileKey+cardTitle+cardDesc
-    （三张引导卡，tileKey 是热键 keycap）/ privacyLink（次级色纯文本按钮）/
-    btnGhost+btnPrimary（次/主按钮，主按钮沿用设置页保存钮的 save_* 色）。
-
-    字号一律 pt（随系统 DPI 缩放），几何尺寸用 px——约定同 _settings_qss。
+    """首启欢迎框 QSS：与 _settings_qss 同 palette、同字号（pt）/字重约定。
+    结构对应 welcome_dialog.WelcomeDialog 的 objectName 清单：
+    welcomeRoot / titleBar+btnClose / heroTitle+heroSub / card+tile+tileKey+cardTitle+cardDesc /
+    privacyLink / btnGhost+btnPrimary（tileKey 是热键 keycap）。
     """
     r = p["radius"]
     fam = get_loaded_family()

@@ -1,12 +1,8 @@
-"""商店版首次运行欢迎对话框（--hidden 静默启动不弹）。
+"""发行构建首次运行欢迎对话框（--hidden 静默启动不弹）。
 
-首启标记与「一次性引导」标记共用 `state_dir()/steam_state.json`：
-- `welcome_shown`：欢迎框只弹一次
-- `no_key_guided`：未配置密钥首次拒绝录音时的一次性引导
-
-标记走独立文件而非 config.yaml：config.yaml 是用户会手改、会随版本迁移的
-东西，往里塞程序内部状态容易在升级时丢失或被误删；而这里的状态丢了最多
-只是"再弹一次"，不该有别的副作用。读取失败一律按「没看过」处理——
+首启标记与各类「一次性引导」标记共用 `state_dir()/steam_state.json` 里的键
+（`welcome_shown` 等）。走独立文件而非 config.yaml：后者用户会手改、会随
+版本迁移，塞程序内部状态易丢失或被误删。读取失败一律按「没看过」处理——
 宁可多弹一次，也不能把用户永久卡在"已看过"的状态里。
 """
 from __future__ import annotations
@@ -37,21 +33,17 @@ from PySide6.QtWidgets import (
 from ..config.loader import _atomic_write
 from ..i18n import t
 from ..paths import state_dir
+from ..steam_integration import external_services_allowed
 from .icons import app_icon, close_icon, globe_icon, key_icon
 from .settings_styles import _theme_palette, _welcome_qss
 
 logger = logging.getLogger(__name__)
 
 # 隐私政策链接：仓库内 docs/PRIVACY_POLICY.md。
-# 上架前替换为商店页链接。
 PRIVACY_URL = (
     "https://github.com/Open-RealtimeASR-UI/Open-RealtimeASR-UI/"
     "blob/main/docs/PRIVACY_POLICY.md"
 )
-
-# 无密钥引导的标记键（与 welcome_shown 同文件、互不影响）
-NO_KEY_GUIDE_KEY = "no_key_guided"
-
 
 def _flag_file() -> Path:
     """标记文件路径。做成函数而非模块常量：state_dir() 依赖安装方式
@@ -72,11 +64,8 @@ def _read_state() -> dict:
 
 
 def _mark(key: str) -> None:
-    """写入一个标记。**必须走 loader 的原子写**：这个文件里有多把钥匙
-    （welcome_shown / no_key_guided），裸 write_text 一旦被并发读者顶掉
-    或写半截，_read_state 会退回 {}，下一次 _mark 就把另一把钥匙冲掉了。
-    loader._atomic_write 是 tmp + os.replace，且已经带 Windows 上
-    FILE_SHARE_DELETE 缺失导致的 WinError 5 重试（见 e529089）。"""
+    """写入一个标记。**必须走 loader 的原子写**：本文件含多把钥匙，裸 write_text
+    写半截或并发顶掉会使 _read_state 退回 {}，下次 _mark 就冲掉别的钥匙。"""
     try:
         p = _flag_file()
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -89,11 +78,9 @@ def _mark(key: str) -> None:
 
 
 def should_show_welcome(steam: bool, hidden: bool) -> bool:
-    """欢迎框该不该弹：仅 商店版，且非 --hidden 静默启动。
+    """欢迎框该不该弹：仅发行构建，且非 --hidden 静默启动。
 
-    抽成纯函数是因为这两条门禁写在 run() 里就完全不可测（要造整个
-    VoiceApp），而「开机自启时不弹」恰恰是最容易被改坏的一条：自启
-    路径和主路径共用 run()，改错就会让用户每次开机都弹一次。
+    自启路径与主路径共用 run()，门禁改错会让用户每次开机都弹一次。
     """
     return bool(steam) and not bool(hidden)
 
@@ -137,15 +124,10 @@ def _pretty_hotkey(raw: str) -> str:
 
 
 class WelcomeDialog(QDialog):
-    """首启欢迎框：无边框主题弹窗 + hero + 三张引导卡 + 隐私政策/主次按钮。
+    """首启欢迎框：无边框主题弹窗 + hero + 引导卡 + 隐私政策/主次按钮。
 
-    视觉与设置弹窗同源：_theme_palette 按 ui.settings_style 选配色（默认
-    minimal_dark），_welcome_qss 生成样式表；字体栈与 pt 字号/字重层级约定
-    同 _settings_qss。窗口不透明——透明表面会禁 ClearType 致文字发糊，
-    Win11 圆角由 DWM 裁切、Win10 方角，均与设置弹窗一致。
-
-    标题栏只做拖动区 + 关闭钮（标题文字由 hero 区承担）；隐私政策用次级色
-    纯文本按钮而非富文本链接——链接蓝色 QSS 管不住。
+    视觉同设置弹窗（_theme_palette / _welcome_qss）；窗口须不透明——透明表面会禁
+    ClearType 致文字发糊。标题栏只做拖动区 + 关闭钮；隐私政策用纯文本按钮（链接蓝色 QSS 管不住）。
     """
 
     def __init__(self, parent=None, on_open_settings: Optional[Callable[[], None]] = None,
@@ -156,7 +138,7 @@ class WelcomeDialog(QDialog):
 
         self.setWindowTitle(t("welcome.title"))
         # 必须与悬浮条同级置顶：bar 带 WindowStaysOnTopHint，普通 Dialog 会被它
-        # 盖住（2026-09-26 首启实测：欢迎窗整窗藏在 bar 后面）。同为 topmost 时
+        # 盖住。同为 topmost 时
         # 后 show 者在上——bar 先 show、本窗后 show/exec，稳压器在上一层。
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog
                             | Qt.WindowStaysOnTopHint)
@@ -241,11 +223,19 @@ class WelcomeDialog(QDialog):
         cards = QVBoxLayout()
         cards.setContentsMargins(24, 8, 24, 4)
         cards.setSpacing(10)
-        specs = (
-            ("keycap", "welcome.card_hotkey_title", "welcome.card_hotkey_desc"),
-            ("globe", "welcome.card_lang_title", "welcome.card_lang_desc"),
-            ("key", "welcome.card_key_title", "welcome.card_key_desc"),
-        )
+        if external_services_allowed():
+            specs = (
+                ("keycap", "welcome.card_hotkey_title", "welcome.card_hotkey_desc"),
+                ("globe", "welcome.card_lang_title", "welcome.card_lang_desc"),
+                ("key", "welcome.card_key_title", "welcome.card_key_desc"),
+            )
+        else:
+            # 外部服务不可用时：介绍里不出现「云端引擎 / 填写密钥」，改为两张卡：
+            # 讲清怎么用 + 强调完全本地。
+            specs = (
+                ("keycap", "welcome.card_hotkey_title", "welcome.card_hotkey_desc"),
+                ("globe", "welcome.card_offline_title", "welcome.card_offline_desc"),
+            )
         for kind, title_key, desc_key in specs:
             card = QFrame()
             card.setObjectName("card")

@@ -1,27 +1,12 @@
 """实时语音对话控制器（豆包端到端 S2S）—— 状态机与编排层。
 
-设计文档：docs/superpowers/specs/2026-09-02-realtime-voice-dialog-design.md
-「对话控制器设计」一节。采集 / DoubaoDialogClient / AudioPlayer 三个执行器
-由本控制器自持（spec 方案 1：独立 DialogController，不复用 app.capture ——
-对话要 20ms/包的低延迟上行，不吃输入模式的预滚/校准/本地 VAD 那套逻辑）。
+采集 / DoubaoDialogClient / AudioPlayer 由控制器自持（不复用 app.capture：对话要 20ms/包低延迟上行，
+不吃输入模式的预滚/校准/本地 VAD）。回调线程直接执行逻辑，UI 全经 Qt 信号 queued 到主线程；三处刻意
+不绕主线程（绕主线程排队会积压或丢毫秒级时序）：_handle_audio→player.write、450→player.clear()+闸门
+翻转、_on_mic_block→send_audio。
 
-线程模型（与 asr_pipeline 既有模式一致：回调线程直接执行逻辑，
-UI 全部经 Qt 信号 queued 到主线程）：
-- 主线程：构造、QTimer 排空轮询、toggle 入口（互斥检查后起 worker 线程）
-- client 的 asyncio 线程：_handle_event / _handle_audio / _handle_error /
-  _handle_client_state（client 4 回调直调）
-- PortAudio 采集回调线程：_on_mic_block（算电平 → 半双工闸门 → send_audio）
-- 播放回调线程：player._pull（Plan 1，本模块不接触）
-
-3 处刻意不绕主线程（spec 已确认，见「线程边界」小节）：
-1. _handle_audio → player.write(pcm)：40ms 一包，绕主线程排队会积压
-2. 450 ASRInfo → player.clear() + 闸门翻转：打断时序要求毫秒级
-3. _on_mic_block → client.send_audio()：20ms 一次
-
-音频闸门（barge-in 的第二道防线）：352 TTSResponse 是纯音频帧拿不到
-reply_id，无法按轮次过滤；barge-in 发生时服务端往往还有旧轮尾部音频在途，
-不关闸门就会被继续塞进播放器（表现为「明明打断了，AI 又接着说半句」）。
-闸门只关不开后卡死风险：重开条件是新 350 且 reply_id 与被作废值不同。
+音频闸门（barge-in 第二道防线）：352 是纯音频帧拿不到 reply_id，无法按轮过滤，不关就会被旧轮尾部音频
+继续塞进播放器（「明明打断了，AI 又接着说半句」）；重开条件是新 350 且 reply_id 与被作废值不同。
 """
 
 from __future__ import annotations
@@ -175,27 +160,19 @@ class DialogController(QObject):
     # UI 通知信号（跨线程 emit，Qt 自动 queued 到主线程）
     state_changed = Signal(str)          # dialog_* / idle
     # 一轮对话文本：轮次号 / role(user|ai) / 文本 / 是否定稿 / 是否被打断。
-    # 取代 batch 1 那条「你：/AI：」前缀字符串通道：
-    #   turn  —— 同一轮会推很多次（豆包按句、Qwen 按 delta），UI 靠它判断
-    #            "覆盖当前行"还是"另起一行"（靠前缀猜不出来）
-    #   role  —— 角色成为字段，UI 直接画色带，文本里不再塞前缀
-    #   interrupted —— barge-in 时原样重发一次并置位，UI 据此划线
+    # turn：同一轮会推很多次（豆包按句、Qwen 按 delta），UI 靠它判断覆盖当前行还是另起一行
+    # interrupted：barge-in 时原样重发一次并置位，UI 据此划线
     dialog_turn = Signal(int, str, str, bool, bool)
     level_changed = Signal(float)        # 声纹电平 0~1
     error_occurred = Signal(str)         # 中文错误提示（单行）
     transient_hint = Signal(str, float)  # 一次性提示
     # 内部信号：请求在主线程启停排空轮询。worker 线程直调 QTimer.start()
-    # 会被 Qt 拒绝（见 _apply_drain_poll）；主线程 emit = 直连同步，
+    # 会被 Qt 拒绝（见 _apply_drain_poll）；主线程 emit = 直连同步
     # worker 线程 emit = 排队到主线程执行
     _drain_poll = Signal(bool)
-    # 内部信号：请求在主线程建长按采样表。热键回调跑在 hotkey-native（或
-    # keyboard 钩子）线程上，而 QTimer 的线程亲和性是「创建它的那个线程」——
-    # 就地建表拿到的是 isActive() 恒为假、永不触发的定时器（实测报
-    # QObject: Cannot create children for a parent that is in a different
-    # thread + startTimer: current thread's event dispatcher has already been
-    # destroyed），压着不放也永远越不过阈值、闸门打不开。与 app 侧
-    # hold_press_requested 同一条路数，只是这道门设在控制器内部，app 的
-    # on_press 才可以直接接 hold_press。
+    # 内部信号：请求在主线程建长按采样表。热键回调在工作线程，而 QTimer 的线程亲和性
+    # 是「创建它的那个线程」——就地建表拿到的是 isActive() 恒假、永不触发的定时器，
+    # 压着不放也永远越不过阈值、闸门打不开。与 app 侧 hold_press_requested 同路数。
     _hold_press_queued = Signal()
 
     def __init__(self, app):
@@ -217,16 +194,15 @@ class DialogController(QObject):
         self._invalidated_reply_id = ""      # barge-in 作废的 reply_id
         self._audio_gate_closed = False      # barge-in 音频闸门
         # 长按说话（可选）：上行闸门。与 _audio_gate_closed 分开——那个是
-        # barge-in 后丢弃在途旧轮音频，这个是「用户没按住就不上行」，
+        # barge-in 后丢弃在途旧轮音频，这个是「用户没按住就不上行」
         # 两者语义不同，合并会让 barge-in 的恢复逻辑误开长按闸门。
         self._hold_uplink_open = False
         self._hold_tracker = None            # HoldTracker（主线程持有）
         self._hold_timer = None              # 采样 QTimer（主线程创建）
         self._hold_vk = 0                    # 对话热键主键虚拟键码（hold_enabled 刷新）
-        # 本次按住实际要采样的键码：0 = 自解析对话热键（见 hold_press(vk)）。对话
-        # 进行中按住**录音**热键同样是「按住说话」（spec §3.3），那一下按下的是录音
-        # 热键，而控制器自解析出来的是对话热键——不是同一个键，采错了就是一道永远
-        # 打不开的死闸门。穿透进来的键码只活一次按住，不覆盖 _hold_vk 缓存。
+        # 本次按住实际要采样的键码：0 = 自解析对话热键（见 hold_press(vk)）。按住录音
+        # 热键时按下的与控制器自解析的不是同一个键，采错就是一道永远打不开的死闸门；
+        # 穿透进来的键码只活一次按住，不覆盖 _hold_vk 缓存。
         self._hold_press_vk = 0
         # _on_mic_block 只读这两个缓存位（采集回调线程不得解析配置/热键串）：
         # _hold_gate = 长按模式是否生效（hold_enabled 写入，见其 docstring）；
@@ -235,14 +211,12 @@ class DialogController(QObject):
         self._hold_client_gate = False
         self._tts_ended = False              # 359 已到（排空判定的一半）
         # 本轮 AI 回复是否已开始（AI_TURN_START 置位 / USER_TURN_END 清空）：
-        # THINKING 自动收尾的轮次门槛，挡住上一轮迟到的事件（H36）
+        # THINKING 自动收尾的轮次门槛，挡住上一轮迟到的事件
         self._ai_turn_started = False
-        # D1：本轮 AI 文本门闩。豆包这一版的 AI 正文只在 550（ChatResponse）的
-        # content 里、350 不带 text，而控制器以前对 AI_FULL_TEXT 只写 DEBUG 日志
-        # ⇒ 真机上「有声音没文字」。_ai_text_shown = 本轮有 AI_TRANSCRIPT 文本上过屏；
-        # _ai_full_text_seen = 本轮收到过非空 AI_FULL_TEXT。两者在 USER_TURN_END
-        # （以及换了 reply_id 的 AI_TURN_START）复位，供 AI_TURN_END 判断
-        # 「这一轮到底有没有字上屏」，没有就打 WARNING 方便下次真机排障。
+        # D1：本轮 AI 文本门闩。豆包这一版 AI 正文只在 550（ChatResponse）的 content 里、
+        # 350 不带 text，_ai_text_shown = 本轮有 AI_TRANSCRIPT 上过屏，_ai_full_text_seen =
+        # 本轮收到过非空 AI_FULL_TEXT；两者在 USER_TURN_END / 换 reply_id 的 AI_TURN_START
+        # 复位，供 AI_TURN_END 判断本轮有没有字上屏，没有就打 WARNING。
         self._ai_text_shown = False
         self._ai_full_text_seen = False
         self._reconnect_used = False         # 本轮对话已用过一次自动重连
@@ -277,18 +251,16 @@ class DialogController(QObject):
     def _enter_listening(self) -> None:
         """进入聆听：只发状态，不发文本。
 
-        状态提示（"对话中 · 请说话"）由 UI 侧的 _apply_state 按状态渲染，
-        不占用 dialog_turn —— 那条通道专供对话内容，否则状态会把刚显示的
-        内容顶掉（气泡里一会儿是状态、一会儿是内容地闪）。
+        状态提示由 UI 侧的 _apply_state 按状态渲染，不占用 dialog_turn——那条通道
+        专供对话内容，否则状态会把刚显示的内容顶掉（气泡内容闪烁）。
         """
         self._set_state(DIALOG_STATE_LISTENING)
 
     def _begin_turn(self, role: str) -> int:
         """切换说话人即新的一轮，返回轮次号。
 
-        同一轮内会被反复调用（豆包按句推、Qwen 按 delta 推），只有 role
-        真正变化时才自增。UI 收到"轮次号没变"就是同一轮的增量，直接覆盖
-        当前行；"轮次号变了"则把上一行归档、当前行另起。
+        同一轮内会被反复调用，只有 role 真正变化时才自增；UI 靠轮次号是否变化判断
+        「覆盖当前行」还是「另起一行」。
         """
         if role != self._turn_role:
             self._turn_seq += 1
@@ -309,7 +281,7 @@ class DialogController(QObject):
         """绑定 client 的 4 回调（_create_client 后调用；单测也走这里注入）。"""
         self._client = client
         # 客户端自带上行闸门（Hermes 的 set_uplink_open）：长按闸门关闭时不能
-        # 把帧拦在控制器里，得让它自己去补静音保活（H58），见 _on_mic_block。
+        # 把帧拦在控制器里，得让它自己去补静音保活，见 _on_mic_block。
         # 这里算一次就够：客户端每次重建都必经本方法，采集回调线程只读缓存位。
         self._hold_client_gate = callable(getattr(client, "set_uplink_open", None))
         client.on_state = self._handle_client_state
@@ -341,14 +313,10 @@ class DialogController(QObject):
                 self._begin_turn(ROLE_USER)
                 self._emit_turn(text, bool(payload.get("is_final", False)))
         elif neutral == USER_TURN_END:
-            # 同 _enter_listening：状态只走 state_changed（UI 画成 spinner +
-            # "思考中..."），用户刚才那句话留在屏上不被顶掉
-            # 进入新一轮即复位两个排空判定标志：上一轮的 359 会残留成 True
-            # （DrainTest 已记录该隐患），而 THINKING 现在也是可完结态（无音频
-            # provider 的唯一出口，见 _check_drain），不复位就会被上一轮提前
-            # 收尾。_ai_turn_started 清空后，本轮还得等到**自己的** AI_TURN_START
-            # ——上一轮迟到的事件（取消后服务端终局事件与重说的判停分属两条
-            # 线程，顺序无保证）只能置 _tts_ended，关不掉本轮（H36）。
+            # 同 _enter_listening：状态只走 state_changed（UI 画 spinner +「思考中...」），
+            # 用户刚才那句话留在屏上。进入新一轮即复位两个排空标志：上一轮 359 会残留成
+            # True，而 THINKING 也是可完结态（无音频 provider 的唯一出口，见 _check_drain），
+            # 不复位会被上一轮提前收尾；_ai_turn_started 清空后本轮要等自己的 AI_TURN_START。
             self._tts_ended = False
             self._ai_turn_started = False
             # D1：新一轮 = 重新判定"本轮有没有 AI 文本"
@@ -360,14 +328,14 @@ class DialogController(QObject):
             # 卡 SPEAKING）。这里记 reply_id + 复位排空标志 + 按轮重开音频闸门
             reply_id = str(payload.get("reply_id", ""))
             if reply_id and reply_id != self._current_reply_id:
-                # D1：换 reply_id = 换了一轮 AI 回复（豆包**每个** 350 句子都发
+                # D1：换 reply_id = 换了一轮 AI 回复（豆包每个 350 句子都发
                 # AI_TURN_START，同一 reply_id 的后续句子不算新一轮）⇒ 复位文本
-                # 门闩。这里刻意不能无条件复位：最后一句 350 没带 text 时，
+                # 门闩。这里刻意不能无条件复位：最后一句 350 没带 text 时
                 # 无条件复位会抹掉"前面已经上过屏"的事实，AI_TURN_END 会误报。
                 self._ai_text_shown = False
                 self._ai_full_text_seen = False
             self._current_reply_id = reply_id
-            # 本轮回复已开始：THINKING 的自动收尾以它为轮次门槛（H36）
+            # 本轮回复已开始：THINKING 的自动收尾以它为轮次门槛
             self._ai_turn_started = True
             # 上一轮 359 可能残留 True：不复位的话，本轮句间瞬时空档会被
             # _check_drain 误判「已排空」提前切 LISTENING（半双工下还会
@@ -379,7 +347,7 @@ class DialogController(QObject):
                 logger.info("音频闸门重开（新 reply_id=%s）",
                             self._current_reply_id)
         elif neutral == AI_TRANSCRIPT:
-            # gap 1：文本显示直接由 AI_TRANSCRIPT 驱动（累积责任在客户端），
+            # gap 1：文本显示直接由 AI_TRANSCRIPT 驱动（累积责任在客户端）
             # 不再等首个音频帧。豆包每句 350 刷新一次、Qwen 流式 delta 刷新
             text = str(payload.get("text", ""))
             if text:
@@ -396,14 +364,14 @@ class DialogController(QObject):
             self._tts_ended = True
             logger.info("AI_TURN_END：服务端本轮播报结束，等本地缓冲排空")
             if not self._ai_text_shown and not self._ai_full_text_seen:
-                # D1 可观测：这一轮两条文本通道都没内容 —— 真机上就是「有声音
+                # 可观测性：这一轮两条文本通道都没内容 —— 真机上就是「有声音
                 # 没文字」。留一条 WARNING（用户日志级别是 INFO，DEBUG 看不到）。
                 logger.warning(
                     "本轮 AI 没有任何文本上屏（350 未带 text、550 也未带 content）"
-                    "—— 若用户反馈「有声音没文字」，请查该 provider 的文本事件")
+                    "—— 若出现「有声音没文字」，请查该 provider 的文本事件")
         elif neutral == AI_FULL_TEXT:
             # D1：豆包这一版的 AI 正文在 550（ChatResponse）的 content 里，350 到了
-            # 但没有 text。旧实现这里只写 DEBUG 日志（生产日志级别 INFO ⇒ 看不见），
+            # 但没有 text。旧实现这里只写 DEBUG 日志（生产日志级别 INFO ⇒ 看不见）
             # 文本也永不上屏，用户看到的就是「只有我说的话」。
             text = str(payload.get("text", ""))
             # 可观测：提到 INFO，打出长度 + 前 40 字（下次真机排障靠这行确认）
@@ -412,7 +380,7 @@ class DialogController(QObject):
             if not text:
                 return                       # 空 content 不上屏（简报要求）
             if self._audio_gate_closed:
-                # barge-in 作废轮的迟到 550：闸门只由**新 reply_id** 的 AI_TURN_START
+                # barge-in 作废轮的迟到 550：闸门只由新 reply_id 的 AI_TURN_START
                 # 重开，此刻还关着就说明这条属于被打断的旧轮。上屏会凭空开一个 AI
                 # 轮次，把用户正在说的新一轮顶到上行（旧实现只记日志，无此风险）。
                 logger.info("AI_FULL_TEXT 属 barge-in 作废轮（音频闸门关闭），不上屏")
@@ -429,10 +397,8 @@ class DialogController(QObject):
     def _handle_barge_in(self, payload: dict) -> None:
         """450 ASRInfo：毫秒级联动，刻意不绕主线程（spec 例外 2）。
 
-        1. player.clear() 立即丢弃未播缓冲（最多 20ms 后扬声器静音）
-        2. 关音频闸门（在途旧轮 352 拿不到 reply_id，无法按轮过滤）
-        3. 复位排空判定标志（新一轮 359 未到）
-        4. 状态信号 → 主线程切 LISTENING
+        player.clear() 丢弃未播缓冲 → 关音频闸门（在途旧轮 352 拿不到 reply_id，
+        无法按轮过滤）→ 复位排空标志 → 状态信号切 LISTENING。
         """
         if self._player is not None:
             self._player.clear()
@@ -461,9 +427,8 @@ class DialogController(QObject):
     def _handle_error(self, err: DialogErrorEvent) -> None:
         """会话期错误（client 已过滤握手期与收尾期）：可重连的先重连。
 
-        err 是中立 DialogErrorEvent{code,message,hint,reconnectable}；错误码
-        分类（hint/reconnectable）已下沉到客户端，控制器只保留「是否重连」
-        的决策（auto_reconnect 配置 + 每轮一次限额）。
+        err 是中立 DialogErrorEvent；错误码分类已下沉到客户端，控制器只保留「是否
+        重连」的决策（auto_reconnect + 每轮一次限额）。
         """
         logger.error("对话错误 code=%s：%s（提示：%s）",
                      err.code, err.message, err.hint)
@@ -475,7 +440,7 @@ class DialogController(QObject):
                 name="dialog-reconnect")
             self._reconnect_thread.start()
             return
-        # W3.3：非重连分支下，客户端**还连着**的 THINKING 卡死要收回 LISTENING
+        # W3.3：非重连分支下，客户端还连着的 THINKING 卡死要收回 LISTENING
         #（Hermes 超时/流中断就是这种：连接健康、只是这一轮没了），否则半双工闸门
         # 永远不开、麦克风失聪，用户只能退出去重进。按连通性门控、provider 中立：
         # 客户端已死（豆包/Qwen 的典型不可重连错误）行为不变。
@@ -534,12 +499,8 @@ class DialogController(QObject):
     def _apply_drain_poll(self, active: bool) -> None:
         """启停排空轮询（_drain_poll 的槽，必在主线程执行）。
 
-        QTimer 的线程亲和是主线程（__init__ 里以 self 为父创建），而
-        _start_worker / _stop_worker 跑在 dialog-start / dialog-stop 工作线程。
-        跨线程直调 start()/stop() 会被 Qt 拒绝：isActive 保持 False、只往
-        stderr 打一句 qWarning（不进日志文件），排空判定便永不执行、状态
-        永久卡在 SPEAKING——半双工下上行音频随之被永久拦截，服务端收不到
-        音频会主动关连接（实测 code=1000），表现为「AI 说完一句就接不上话」。
+        QTimer 亲和主线程，而 _start_worker/_stop_worker 跑在工作线程；跨线程直调 start()/stop() 会被 Qt 拒绝
+        （isActive 恒 False、只打 qWarning），排空判定永不执行、状态永久卡 SPEAKING，半双工下上行音频随之被永久拦截。
         """
         if active:
             self._drain_timer.start()
@@ -549,28 +510,8 @@ class DialogController(QObject):
     def _check_drain(self) -> None:
         """SPEAKING / THINKING → LISTENING：359 已到且本地播放缓冲已排空。
 
-        359 只代表服务端发完了，本地可能还压着几百毫秒；一收 359 就切
-        会在 AI 还在说话时显示「聆听中」。
-
-        THINKING 也算可完结态，**为无音频 provider 而设**：进 SPEAKING 的
-        唯一入口是首个音频帧（见 _handle_audio），而 Hermes 实测
-        capabilities.audio_api=false，一帧音频都不会来——只认 SPEAKING 的话
-        「思考中」永远出不去，界面永久停在 spinner，下一次热键还会被当成
-        「取消本轮」而不是「退出对话」。这类会话的「AI 说完了」只能由
-        _tts_ended + 播放器恒空共同判定（真出现「整轮零音频」的路径时，
-        这里也只是把永久卡死改成正常收尾）。
-
-        THINKING 收尾还多一道**轮次门槛** _ai_turn_started：它由本轮的
-        AI_TURN_START 置位、由 USER_TURN_END 清空，所以判定的前提是「本轮的
-        回复已经开始」。只复位 _tts_ended 挡不住**上一轮迟到**的
-        AI_TURN_END —— 取消后服务端的终局事件（run.cancelled / 干净断流补发）
-        走 SSE worker 线程、用户重说的判停走 ASR 线程，两者没有顺序保证，
-        迟到的那条会把 _tts_ended 重新置真，于是在下一次 50ms 轮询里把本轮
-        还没开始的思考期收掉（H36）。
-        代价：若某个 provider 对某一轮**只发终局事件、从不发 AI_TURN_START**，
-        该轮思考期不会自动收尾（麦克风不受影响——半双工闸门在客户端内部；
-        热键也仍能取消本轮、连按两次退出对话）。Hermes 抓到的时序里
-        message.started 必到，实际不触发。
+        359 只代表服务端发完，本地可能还压着几百毫秒。THINKING 也可完结，为无音频 provider 而设（进 SPEAKING 的唯一入口是
+        首个音频帧，否则「思考中」永远出不去），只能由 _tts_ended + 播放器恒空判定；并需轮次门槛 _ai_turn_started 挡住上一轮迟到的 AI_TURN_END。
         """
         if self._state not in (DIALOG_STATE_SPEAKING, DIALOG_STATE_THINKING):
             return
@@ -586,13 +527,8 @@ class DialogController(QObject):
     def _on_mic_block(self, block) -> None:
         """20ms 一块：算电平（声纹显示）→ 长按闸门 → 半双工闸门 → 上行。
 
-        本地不跑 VAD 状态机（服务端有 VAD，本地再判停会双重断句互相干扰），
-        只调 VAD.compute_rms 这一个纯函数（spec 取舍 3）。
-        本方法跑在 PortAudio 回调线程：不加锁、不抛异常。长按**分支**只读三个
-        缓存布尔（_hold_gate / _hold_uplink_open / _hold_client_gate），配置与热键串
-        的解析全在非音频线程做（见 hold_enabled）；长按关闭时走的是下面那条既有
-        路径，它按原样每次一块动态读 half_duplex（两层 getattr，改动前就是这样，
-        见「关闭长按行为逐字一致」的回归契约）。
+        跑在 PortAudio 回调线程：不加锁、不抛异常。本地不跑 VAD 状态机（服务端有 VAD），只调 VAD.compute_rms；长按分支只读
+        三个缓存布尔（_hold_gate / _hold_uplink_open / _hold_client_gate），配置与热键串解析全在非音频线程做。
         """
         from ..audio.vad import VAD
 
@@ -600,15 +536,13 @@ class DialogController(QObject):
         self.level_changed.emit(min(1.0, rms / LEVEL_NORMALIZE))
         # 长按闸门优先：未按住时不上行（真对讲机）。它开启时半双工被跳过
         # ——半双工的职责（防外放自我打断）已被闸门覆盖，两者叠加会让
-        # 「明明按住了却因为 AI 在说话而不上行」（spec §3.3）。
+        # 「明明按住了却因为 AI 在说话而不上行」。
         if self._hold_gate:
             if not self._hold_uplink_open and not self._hold_client_gate:
                 return
-            # 例外：客户端自带上行闸门（Hermes）时帧照旧递过去，由它补静音保活
-            # ——它的本地 ASR 是云引擎，15 秒收不到音频就断连（H58），而「没按住」
-            # 的时段可以很长（AI 思考 5~8 秒 + 用户不说话），断了整场对话失聪。
-            # 它同样不会把等待期的声音当人话：闸门关着时它只送静音、不送真音频，
-            # 也不喂本地 VAD。
+            # 例外：客户端自带上行闸门（Hermes）时帧照旧递过去，由它补静音保活——它
+            # 的本地 ASR 是云引擎，收不到音频就断连，而「没按住」的时段可以很长（AI
+            # 思考 + 用户不说话），断了整场对话失聪；它闸门关着时只送静音、不喂本地 VAD。
         else:
             # 半双工闸门动态读配置（每次一块，属性读取开销可忽略；配置热改即时生效）
             half_duplex = bool(getattr(getattr(self._app.cfg, "dialog", None),
@@ -618,40 +552,13 @@ class DialogController(QObject):
         if self._client is not None and self._client.is_connected():
             self._client.send_audio(block.tobytes())
 
-    # ---- 长按说话（可选；spec §3.3）----
+    # ---- 长按说话（可选）----
 
     def hold_enabled(self) -> bool:
         """长按模式是否生效（配置 + 探针可用性 + 对话热键主键可解析）。
 
-        开关取值走**共享**的 hold_flag_enabled()，不在此另写一份：配置里可能留下
-        拼错的字符串（loader 的 _coerce_value 对既非 true 也非 false 的字符串原样
-        保留），bool("meby") 为真会把功能静默开启——用户以为关着、实际开着。
-        只认 True 与白名单字符串（true/1/yes/on），其余一律视为关闭。
-
-        读的是 hotkey.hold_to_talk：设置页与右键菜单只有这一个「长按说话」字段
-        （见 config/defaults.py 的 hotkey 节），dialog 节根本没有这个键，读它会
-        让整条对话长按永远不生效（getattr 兜底拿到的恒为 False）。
-
-        结果同时写进 _hold_gate 缓存位：采集回调线程（_on_mic_block）只许读一个
-        布尔，不得在那里做环境变量读取与热键串解析。刷新点全在非音频线程——app
-        侧建/重建对话热键（启动、配置热加载、开关切换）、每次按下、会话启动。
-
-        主键虚拟键码**一并刷新**（不能像原先那样只在 `<= 0` 时算一次）：对话热键
-        可以在设置页现改，热加载会重建监听器，但控制器是长驻对象——键码缓存不清，
-        探针就会一直去读**旧键**，每一次采样都报「未按住」→ DISCARD → 一帧都不
-        上行；而 on_press 已取代 on_trigger，用户连退出对话都按不了。整条失效
-        静默无提示，只能重启程序。录音路径本来就是每次按下重算（_on_hotkey_press），
-        这里与它对齐。
-
-        这里刷新的是**对话热键**的键码，只对「自解析」的那条路径有效：录音热键按下
-        时 app 会把真正按下的键码穿透进来（hold_press(vk)），那个值压在
-        _hold_press_vk 里、由 _probe_held 优先取用，本方法刷不到它——否则每次按下
-        都被刷回对话热键，穿透就白传了。
-
-        最后一条与 app._hold_to_talk_enabled 同源：探针只能按虚拟键码采样，而
-        parse_hotkey 对「无修饰键的裸键」「多步组合」返回 None，长按判定无从谈起。
-        此时必须回落到「按一下启停」，否则对话热键会变成按下去毫无反应、既进不了
-        也退不出对话的死键。
+        开关走共享的 hold_flag_enabled()（拼错字符串会被 bool() 静默开启，只认真与白名单）；结果写进 _hold_gate 缓存位供采集回调
+        只读，主键键码一并刷新（对话热键可现改，缓存不清探针会读旧键→永不越阈值）；键码不可解析（裸键/多步组合）则回落「按一下启停」。
         """
         enabled = False
         try:
@@ -669,26 +576,8 @@ class DialogController(QObject):
     def hold_press(self, vk: int = 0) -> None:
         """热键按下瞬间（由 app 侧的 on_press 在**热键线程**调用）。
 
-        vk：本次按住真正被按下的那个虚拟键码；**0/缺省 = 控制器自己解析对话热键**
-        （按住对话热键就是这条，行为与改动前逐字一致）。为什么要能传进来：对话
-        进行中按住**录音**热键同样是「按住说话」（spec §3.3），而 app 侧算出的是
-        录音热键的键码（app._hold_vk_code 读 cfg.hotkey.toggle），控制器自解析的
-        却是 cfg.hotkey.dialog。不穿透传递的话，探针会一直去采**另一个键**：SPEAKING
-        下按下先不可逆地打断 AI，随后每一拍都报「未按住」→ DISCARD → 闸门永远不
-        开、一帧都不上行，用户对着死麦克风说话且毫无提示；LISTENING/THINKING 下则
-        静默什么都不做，连既有的「对话中，请先退出对话」提示都被顶掉了。
-        传进来的键码只作用于**本次按住**（_hold_press_vk 由 _probe_held 优先取用），
-        不写进 _hold_vk 缓存：hold_enabled() 每次按下都用自解析值刷新那个缓存，
-        穿透值必须压得住它，又不能把缓存改脏——下一次按住对话热键要回到自解析。
-        取值非法（None/非数字/负数）按「自解析」处理，绝不因参数问题把热键变成死键。
-
-        只有 SPEAKING 态在这里动手（打断必须即时，否则抢话感全失）；
-        THINKING 态的「取消本轮」刻意留到越过阈值——手滑轻点不该废掉一轮已经
-        跑了 5~8 秒的 agent（spec §3.3 的核心取舍）。
-        IDLE / STOPPING 一律不接管：前者要保住「按一下进入语音模式」的既有行为，
-        后者正在收尾（spec §3.3 守卫条件）——这两态由 app 侧走原 toggle 入口。
-        采样表必须回主线程建（见 _hold_press_queued）：打断留在本线程直接发，
-        它只是一次网络写，没有 Qt 亲和性问题，且不能等一个事件循环往返。
+        vk：本次按住真正被按下的键码；**0/缺省 = 控制器自解析对话热键**。必须能传：对话中按住录音热键也是「按住说话」，app 算的是
+        录音热键、控制器自解析的是 dialog 键，不穿透则探针采另一个键→SPEAKING 下先不可逆打断 AI 再永久关死闸门。只有 SPEAKING 在此动手。
         """
         if self._state in (DIALOG_STATE_IDLE, DIALOG_STATE_STOPPING):
             return
@@ -699,7 +588,7 @@ class DialogController(QObject):
         pressed = pressed if pressed > 0 else 0
         if not self.hold_enabled():
             return
-        # 赋值排在接管判定**之后**：没接管的那一次按下（长按没生效、态不对）不该
+        # 赋值排在接管判定之后：没接管的那一次按下（长按没生效、态不对）不该
         # 改动一次仍在进行中的按住所采样的键
         self._hold_press_vk = pressed
         # 诊断留痕（打断链路此前是日志盲区：按下/取消/派发都不打日志，"想打断
@@ -818,7 +707,7 @@ class DialogController(QObject):
                             "取消本轮" if self._state == DIALOG_STATE_THINKING
                             else "开闸门")
                 if self._state == DIALOG_STATE_THINKING:
-                    # 思考中按住 = 取消本轮回聆听（既有语义，spec §3.3）
+                    # 思考中按住 = 取消本轮回聆听（既有语义）
                     self._cancel_current_turn()
                 self.set_hold_active(True)
             elif action in (HoldAction.END, HoldAction.DISCARD):
@@ -860,7 +749,7 @@ class DialogController(QObject):
             elif self._state == DIALOG_STATE_STOPPING:
                 return  # 收尾中，忽略连按
             elif self._state == DIALOG_STATE_THINKING:
-                # 思考中按键 = 取消当前轮回到聆听，**不是**退出对话。
+                # 思考中按键 = 取消当前轮回到聆听，不是退出对话。
                 # 用户此刻按键的意图大概率是「识别错了，重说」；想真正退出
                 # 时再按一次即可（多一步，换来重说零成本）。
                 self._cancel_current_turn()
@@ -926,30 +815,17 @@ class DialogController(QObject):
     def _cancel_current_turn(self) -> None:
         """取消在途轮次 → 回 LISTENING，会话不拆。
 
-        与 _begin_stop 的区别：采集流、连接、播放器全部保留，只是把这一轮
-        作废。被取消的那句用户文本原样重发一次并带 interrupted=True ——
-        复用 barge-in 已有的划线通道（_handle_barge_in 同款做法），
-        UI 少一条并行状态。
-
-        划线那句必须与重说的新句**分属两轮**，否则 UI 会原地覆盖：_begin_turn
-        只在说话人变化时自增轮次号，不改 _turn_role 的话下一句会复用同一个
-        轮次号，新句于是占据划线行（划线残留在新句上），被取消的原句看起来
-        凭空消失——正是本方法要防的事（H37）。故重发后清空 _turn_role，让
-        下一句（用户或 AI）必定另起一轮。
-        代价（已接受，不绕过）：同一段思考期内连按两次取消而中间没有说话时，
-        第二次不会再重发划线行——_turn_role 已空，再发会得到一条没有角色的
-        划线行，不如不发（重发的前置条件之一是 _turn_role 仍为 ROLE_USER）。
+        与 _begin_stop 的区别：采集/连接/播放器全保留，只作废本轮；被取消的用户文本原样重发并带 interrupted=True（复用 barge-in 划线通道）。
+        划线句必须与新句分属两轮：重发后清空 _turn_role，让下一句另起一轮，否则划线留在新句上、原句凭空消失（连按两次取消时第二次不重发）。
         """
         cancel = getattr(self._client, "cancel_current_turn", None)
         logger.info("取消本轮：state=%s 客户端=%s，取消能力=%s",
                     self._state, type(self._client).__name__,
                     "有" if callable(cancel) else "无（回落退出对话）")
         if not callable(cancel):
-            # W2：客户端不具备「取消本轮」能力（豆包/Qwen）时，**整个方法**回落到
-            # _begin_stop —— 与本计划接入前逐字一致（思考中一按即退出对话）。
-            # 不能只跳过分派那两行：划线重发是「能重说」的 UI 承诺，那两家没有重说
-            # 通路，划线只会留下一句凭空消失的话（H37 的具体表现）。
-            # 本波不做 interrupt 回退（豆包 515 在 server_vad 模式未实测，记为 H63）。
+            # W2：客户端不具备「取消本轮」能力（豆包/Qwen）时整个方法回落到 _begin_stop
+            # （思考中一按即退出对话）。不能只跳过分派那两行：划线重发是「能重说」的 UI
+            # 承诺，那两家没有重说通路，划线只会留下一句凭空消失的话。
             self._begin_stop()
             return
         if (self._last_role == ROLE_USER and self._last_text
@@ -1000,11 +876,9 @@ class DialogController(QObject):
         except Exception:
             logger.exception("恢复后台音频失败")
         self._audio_gate_closed = False
-        # 长按闸门一并复位：会话可能在**按住期间**结束（热键退出、错误收场、
-        # 退出意图），若留着开着，下一次会话就是「没按住也照常上行」——设置页
-        # 那句承诺当场失效。定时器不在这里 stop：本方法跑在收尾 worker 线程，
-        # 跨线程操作 QTimer 会被 Qt 拒绝（见 _apply_drain_poll），把 tracker 置空
-        # 后，主线程下一拍自己会收摊（_on_hold_tick 的 tracker is None 分支）。
+        # 长按闸门一并复位：会话可能在按住期间结束，留着开着下次就是「没按住也照常
+        # 上行」。定时器不在这里 stop（本方法跑在收尾 worker 线程，跨线程操作 QTimer
+        # 会被 Qt 拒绝），把 tracker 置空后主线程下一拍自己收摊（_on_tick 的 None 分支）。
         self._hold_uplink_open = False
         self._hold_tracker = None
         self._tts_ended = False
@@ -1094,14 +968,8 @@ class DialogController(QObject):
     def _create_hermes_client(self, dialog_id: str = ""):
         """创建 HermesDialogClient（组合型：本地 VAD + ASR 引擎 + HTTP）。
 
-        ASR 引擎用 asr_factory 延迟构造：对话专属引擎与听写引擎可能不是同一家
-        （见 spec §八：听写偏中文准，对话可能要中英混说），而引擎模块的构造
-        参数各不相同，所以把「按 dialog_asr_engine 造一个引擎」这件事交给
-        一个工厂闭包，本方法不关心具体是哪家。
-
-        dialog_id 只保留形参（与 _create_doubao_client 同形）：Hermes 的会话
-        id 与 Qwen 的 session.id 一样不跨连接续接（读取/落盘门控也只认豆包，
-        见 _persist_dialog_id），故本方法不使用它。
+        ASR 引擎用 asr_factory 延迟构造：对话专属引擎与听写引擎可能不是同一家，而各引擎构造参数不同，故把「按
+        dialog_asr_engine 造一个引擎」交给工厂闭包。dialog_id 只保留形参（Hermes 会话 id 不跨连接续接，与 Qwen session.id 同）。
         """
         from ..asr.hermes_dialog import HermesDialogClient
         from ..config.loader import (
@@ -1177,4 +1045,4 @@ class DialogController(QObject):
             return ""
 
 
-# ---- 错误码中文映射已下沉到 asr/doubao_dialog.py（spec §3.2）----
+# ---- 错误码中文映射已下沉到 asr/doubao_dialog.py ----

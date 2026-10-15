@@ -1,16 +1,10 @@
 r"""开机自启动：HKCU Run 注册表键读写。
 
-实现方式：HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
-写入当前程序的自启命令（用户级，无需管理员权限）。
-
-- 打包模式（exe）：直接写 exe 绝对路径
-- 源码模式：优先用 pythonw.exe（无控制台窗口）运行项目根的 run.py；
-  配置与日志查找已锚定源码位置（loader.find_config_path /
-  main.setup_logging），工作目录漂移（开机自启时为 system32）无影响
-
-自启命令统一追加 --hidden 参数：开机静默启动（仅托盘图标，悬浮条
-不弹出，热键按下时悬浮条自然呼出）。用户手动启动不带参数，悬浮条
-正常显示--与微信/QQ 的静默自启同款方案。
+写入 HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run 当前程序的自启
+命令（用户级，无需管理员权限）。打包模式直接写 exe 绝对路径；源码模式优先用
+pythonw.exe（无控制台）跑项目根 run.py——配置与日志查找已锚定源码位置，工作目录漂移
+（开机自启时为 system32）无影响。自启命令统一追加 --hidden：开机静默启动（仅托盘图标，
+悬浮条不弹出，热键按下时自然呼出）；手动启动不带参数、悬浮条正常显示。
 """
 from __future__ import annotations
 
@@ -23,7 +17,7 @@ logger = logging.getLogger(__name__)
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 # 注册表键名即任务管理器/启动项里显示的名称
 APP_NAME = "Open-RealtimeASR-UI"
-# 历史遗留键名：0.x 用 "OpenRealtimeASR-UI"，测试版用缩写 "ORI"，
+# 历史遗留键名：0.x 用 "OpenRealtimeASR-UI"，测试版用缩写 "ORI"
 # 改名后一并清理，避免任务管理器启动项里出现孤儿条目
 _LEGACY_NAMES = ("ORI", "OpenRealtimeASR-UI")
 
@@ -38,7 +32,7 @@ def _launch_command() -> str | None:
         if root is not None:
             launcher = root / "launcher.exe"
             if launcher.is_file():
-                # 渠道版：注册 launcher.exe（它注入发行标记并选依赖环境），
+                # 渠道版：注册 launcher.exe（它注入发行标记并选依赖环境）
                 # 开机自启不依赖平台客户端（SDK 初始化失败静默降级）
                 return f'"{launcher}" --hidden'
     except Exception:
@@ -68,11 +62,8 @@ def is_enabled() -> bool:
 def set_enabled(enabled: bool) -> tuple[bool, str]:
     """开/关开机自启动，返回 (成功, 用户提示消息的 i18n 键)。
 
-    i18n（A6）：本模块**不接触界面语言**，所以返回键而不是文案，由 UI 层
-    （`app._on_autostart_toggled`）在调用点 `t()`。理由同 i18n 模块 docstring
-    的「导入期求值禁令」——本模块的手段不建界面，语言在它跑起来时还没定。
-    失败详情（异常文本）只进日志，**不编码进返回的键**；界面文案由
-    `app.err.autostart_registry` 承担（值里不含 `{error}` 占位符）。
+    本模块**不接触界面语言**，故返回键而非文案，由 UI 层在调用点 `t()`（其手段不建
+    界面，语言此时还没定）。失败详情只进日志，**不编码进返回的键**。
     """
     try:
         import winreg

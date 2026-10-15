@@ -1,22 +1,11 @@
 """阿里云百炼实时语音识别（WebSocket）封装。
 
-协议要点（DashScope 全双工 WebSocket，2026 版 v2 协议无需 continue-task）：
-- URL: wss://dashscope.aliyuncs.com/api-ws/v1/inference
-- 鉴权: 请求头 Authorization: bearer <百炼 API Key>（握手阶段校验，无效返回 401/403）
-- 开任务: 发送 {"header":{"action":"run-task","task_id":<32位hex>,"streaming":"duplex"},
-          "payload":{"task_group":"audio","task":"asr","function":"recognition",
-                     "model":<模型名>,"parameters":{...},"input":{}}}
-- 启动确认: 收到 header.event == "task-started" 后才能发音频
-- 音频: binary message（PCM 单声道，按实时率发送）
-- 结束: 发送 {"header":{"action":"finish-task","task_id":...,"streaming":"duplex"},
-          "payload":{"input":{}}}，收到 task-finished 后关闭
-- 结果: header.event == "result-generated"，
-       payload.output.sentence = {"text": <当前句累积文本>,
-                                  "begin_time": <ms>, "sentence_end": <bool>}
-       sentence_end=true 表示一句最终结果（稳态），对应腾讯 slice_type=2
-- 失败: header.event == "task-failed"，error_code / error_message 在 header 内
-
-文档: https://help.aliyun.com/zh/model-studio/websocket-for-paraformer-real-time-service
+协议要点（DashScope 全双工 WebSocket）：
+- URL wss://dashscope.aliyuncs.com/api-ws/v1/inference；鉴权头 bearer <API Key>；开任务发
+  run-task（streaming=duplex），须收到 header.event=="task-started" 才可发音频（binary PCM）
+- 结束发 finish-task，收到 task-finished 后关闭。结果 header.event=="result-generated"，
+  payload.output.sentence 含 text/sentence_end，sentence_end=true 即最终结果（对齐腾讯
+  slice_type=2）。失败 header.event=="task-failed"，error_code/error_message 在 header 内
 """
 
 from __future__ import annotations
@@ -73,16 +62,8 @@ StateCallback = Callable[[str], None]
 class AliyunRealtimeASR:
     """阿里云百炼实时语音识别客户端。
 
-    在独立线程运行 asyncio 事件循环，对外提供与 TencentRealtimeASR
-    相同的同步接口，app 层无需区分引擎：
-    - start() 建立连接并完成 run-task 握手
-    - send_audio(block) 推送音频块（numpy int16 数组）
-    - stop() 发送 finish-task 并关闭连接
-
-    通过回调返回结果：
-    - on_result(text, slice_type, index)：sentence_end=false -> 1，true -> 2
-    - on_error(code, message)：code 为阿里云 error_code 字符串
-    - on_state(state)
+    在独立线程跑 asyncio 事件循环，对外接口同 TencentRealtimeASR（start/send_audio/stop）；
+    on_result 的 slice_type：sentence_end=false->1，true->2。
     """
 
     WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
@@ -147,10 +128,8 @@ class AliyunRealtimeASR:
     def _build_run_task(self) -> str:
         """构建 run-task 指令 JSON。
 
-        参数按模型区分：语气词过滤/心跳/热词/语种等 Paraformer v2 专属
-        参数只对该模型发送；断句控制（关语义断句 + VAD 静音阈值）对
-        paraformer v2 / qwen-audio 均发送。其余模型仅发通用必选项
-        format/sample_rate，避免不支持的模型因未知参数报 task-failed。
+        参数按模型区分：语气词过滤/心跳/热词/语种等 Paraformer v2 专属参数只对该模型发送；
+        断句控制对 paraformer v2 / qwen-audio 均发送，其余模型仅发 format/sample_rate。
         """
         params: dict = {
             "format": "pcm",
@@ -175,7 +154,7 @@ class AliyunRealtimeASR:
                     params["language_hints"] = hints
         # 断句控制：paraformer 实时系列与 qwen-audio 官方均支持这两个参数
         # （见百炼实时识别文档）。不发送时服务端按自身默认策略断句（语义断句
-        # 切小语义块，表现为"两个字两个字一段"）。显式关语义断句走 VAD 断句，
+        # 切小语义块，表现为"两个字两个字一段"）。显式关语义断句走 VAD 断句
         # 静音阈值用 max_sentence_silence（ms）。
         if self.model.startswith(("paraformer-realtime", "qwen-audio")):
             params["semantic_punctuation_enabled"] = False
@@ -237,7 +216,7 @@ class AliyunRealtimeASR:
         # "DNS 卡顿"与"握手无响应"，并供 app 层判定是否自动重试。
         try:
             t0 = time.monotonic()
-            # 注意：asyncio 模块级 getaddrinfo 在 Python 3.12 已移除，
+            # 注意：asyncio 模块级 getaddrinfo 在 Python 3.12 已移除
             # 需用事件循环的方法（loop.getaddrinfo）。
             infos = await asyncio.wait_for(
                 asyncio.get_running_loop().getaddrinfo(

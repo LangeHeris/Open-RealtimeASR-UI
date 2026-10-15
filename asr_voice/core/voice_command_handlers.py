@@ -89,11 +89,8 @@ def maybe_route_command(app, text: str) -> bool:
     """命令检测，命中返回 True（调用方停止常规上屏/注入）。判定顺序：
     待命态整句即命令 > 句首触发词（有余文即命令，无余文进待命）。
 
-    两个调用点：ASR 线程 raw final（_on_asr_result）；主线程修正版
-    文本（_do_llm_replace_job 命令复检——触发词被听错时 raw 未命中、
-    整句进了修正管道，修正版拼回触发词后补检）。主线程调用时各信号
-    直连当轮执行；涉及注入队列的动作（send_key/replace）与先前提交
-    的退格任务按 FIFO 保序（调用方需先入队退格再调本函数）。"""
+    调用点：ASR 线程 raw final 与主线程修正版复检；涉及注入队列的动作与退格任务按 FIFO 保序（先入队退格再调本函数）。
+    """
     if not text:
         return False
     from . import voice_commands
@@ -210,9 +207,8 @@ def update_cmd_hotkey_listener(app) -> None:
 def on_command_hotkey(app) -> None:
     """命令待命热键触发（键盘线程回调）：进入命令待命态，下一句直接当命令。
 
-    - 已在录音：立即进待命态（免说触发词）
-    - 空闲：置 _standby_start 后走常规启动，会话建立后由
-      asr_pipeline.start_session 自动补进待命态
+    已在录音则立即进待命态（免说触发词）；空闲则置 _standby_start 走常规启动，会话建立后
+    由 asr_pipeline.start_session 自动补进待命态。
     """
     from . import voice_commands
 
@@ -240,7 +236,7 @@ def on_command_action(app, action: str, arg: str) -> None:
         return
     try:
         if action == "enter":
-            # 「发送」与 AI 修正冲突：回车后新内容已进框，修正回调再退格会删错，
+            # 「发送」与 AI 修正冲突：回车后新内容已进框，修正回调再退格会删错
             # bump _last_final_at 让"新句检测"取消替换。wait 模式立即回车会发
             # 空消息，先冲刷修正，仍有在途则延迟到上屏后再回车
             app._last_final_at = time.time()
@@ -293,6 +289,13 @@ def on_command_phrase(app, content: str) -> None:
 def on_command_ai(app, instruction: str) -> None:
     """主线程槽：「帮我」AI 命令链：读选中 -> LLM -> 粘贴。回调内继续推进，
     全部在注入线程串行，不冻结主线程。"""
+    from ..steam_integration import external_services_allowed
+
+    if not external_services_allowed():
+        # 外部服务不可用时：AI 命令入口不存在（设置页无该字段、也无处
+        # 填密钥），走到这里只能是历史配置残留——按未识别处理，不提示去设置。
+        logger.debug("忽略 AI 命令：外部服务不可用")
+        return
     llm = getattr(app.cfg, "llm", None)
     cmd_cfg = getattr(app.cfg, "commands", None)
     if not getattr(llm, "api_key", ""):

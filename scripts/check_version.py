@@ -1,4 +1,4 @@
-"""CI 版本校验：tag 与 asr_voice/version.py 不一致即失败（Plan B spec §5）。
+"""CI 版本校验：tag 与 asr_voice/version.py 不一致即失败。
 
 用法：
     python scripts/check_version.py v0.1.0     # 一致 → exit 0；否则 exit 1
@@ -33,7 +33,7 @@ def check(tag: str) -> int:
     if raw[1:] != __version__:
         print(f"[FAIL] tag {raw!r} != asr_voice/version.py __version__ {__version__!r}")
         print("       bump asr_voice/version.py, pyproject.toml and CHANGELOG.md together,")
-        print("       then re-tag (see the internal RELEASING runbook).")
+        print("       then re-tag.")
         return 1
     print(f"[ok] tag {raw!r} matches __version__ {__version__!r}")
     return 0

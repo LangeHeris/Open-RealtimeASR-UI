@@ -1,18 +1,12 @@
 """下行音频播放：24kHz 单声道 int16 PCM 流式输出。
 
-S2S 对话的下行音频由 StartSession 的 `tts.audio_config.format="pcm_s16le"` 指定为
-裸 PCM（默认是 OGG/Opus，项目无解码器），因此这里只需一个环形缓冲 +
-sounddevice OutputStream，**零新依赖**。
+下行音频由 StartSession 的 `tts.audio_config.format="pcm_s16le"` 指定为裸 PCM
+（默认 OGG/Opus，项目无解码器），故只需环形缓冲 + sounddevice OutputStream。
 
-线程模型：`write()` / `clear()` 由 client 的 asyncio 线程调用（barge-in 要求毫秒级，
-刻意不经 Qt 主线程），`_pull()` 由 sounddevice 的播放回调线程调用，
-两者用一把 `threading.Lock` 保护 deque。
-
-设备兼容：部分老声卡/虚拟音频设备不支持 24000Hz，`start()` 捕获 PortAudioError 后
-降级用 16000Hz 打开设备，并在 `write()` 里用 numpy 线性插值重采样 24k→16k。
-
-与 capture.py 的对称：capture 是 InputStream + on_block 回调向外推，
-playback 是 OutputStream + _pull 回调向内拉，两者不共享任何状态。
+线程模型：`write()` / `clear()` 由 client 的 asyncio 线程调用（barge-in 要毫秒级，
+刻意不经 Qt 主线程），`_pull()` 由 sounddevice 回调线程调用，两者用一把
+`threading.Lock` 保护 deque。设备不支持 24000Hz 时 `start()` 降级 16000Hz 并在
+`write()` 里用 numpy 线性插值重采样（老声卡/虚拟设备常见）。
 """
 
 from __future__ import annotations
@@ -36,9 +30,8 @@ BYTES_PER_SAMPLE = 2             # int16
 class AudioPlayer:
     """24k PCM 流式播放器。
 
-    流**常驻**：进入对话 `start()`、退出 `stop()`，不在每次 TTS 开关流
-    （开流有 50~200ms 延迟，会造成每句首字卡顿）。WASAPI 共享模式不阻止
-    其他程序发声。
+    流**常驻**：进入对话 `start()`、退出 `stop()`，不在每次 TTS 开关流——开流有
+    50~200ms 延迟，会造成每句首字卡顿。
     """
 
     def __init__(self, sample_rate: int = DEFAULT_SAMPLE_RATE, channels: int = 1,
@@ -125,9 +118,8 @@ class AudioPlayer:
     def write(self, pcm: bytes) -> None:
         """追加待播 PCM（int16 小端，采样率 = `requested_rate`）。线程安全。
 
-        由 client 的 asyncio 线程直接调用，不经 Qt 主线程：音频约 40ms 一包，
-        绕主线程排队会积压并引入不可控延迟。未开流时静默丢弃（不缓存，避免
-        开流前堆积一大堆陈旧音频一开就全喷出来）。
+        由 client 的 asyncio 线程直接调用，不经 Qt 主线程（约 40ms 一包，绕主线程排队
+        会积压并引入不可控延迟）。未开流时静默丢弃，不缓存陈旧音频。
         """
         if not pcm or self._stream is None:
             return
@@ -141,8 +133,8 @@ class AudioPlayer:
     def clear(self) -> None:
         """barge-in：立即丢弃全部未播缓冲。
 
-        由 asyncio 线程在收到 `ASRInfo(450)` 时同步调用（打断时序要求毫秒级，
-        这是设计文档里刻意不绕主线程的三处之一）。
+        由 asyncio 线程在收到 `ASRInfo(450)` 时同步调用——打断时序要求毫秒级，
+        绕主线程排队会引入不可控延迟。
         """
         with self._lock:
             dropped = self._buf_bytes

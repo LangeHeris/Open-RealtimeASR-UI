@@ -1,14 +1,9 @@
 """历史对话剪贴板：记录最终上屏文本，右键菜单点击复制。
 
-AI 修正开启时记录的是修正后的文本（修正前原文不入历史）；
-AI 修正关闭时记录 ASR 原始识别文本。
-
-存储于状态目录的 history.json（打包版在 exe 同目录 .asr_voice/，
-源码版在 ~/.asr_voice/，见 paths.state_dir；与窗口状态文件同目录），
-不写 config.yaml，避免触发热加载。开关状态由 app 启动时从
-config 读入（history.enable），右键菜单切换即时生效并持久化。
-
-独立历史窗口通过 add_listener/remove_listener 注册变化回调，
+AI 修正开启时记录修正后文本（修正前原文不入历史），关闭时记录 ASR 原始识别文本。
+存储于状态目录 history.json（见 paths.state_dir，与窗口状态文件同目录），不写
+config.yaml 以免触发热加载。开关由 app 启动时从 config 读入（history.enable），右键
+菜单切换即时生效并持久化。独立历史窗口通过 add_listener/remove_listener 注册回调，
 条目新增/清空后实时刷新（保持 stdlib-only，不引 Qt）。
 """
 from __future__ import annotations
@@ -90,9 +85,7 @@ def _save() -> None:
 def add(text: str) -> None:
     """最终文本上屏后记录一条；开关关闭或空文本忽略。
 
-    AI 修正开启时由修正回调传入修正后文本（原文不记），
-    修正关闭时由注入流程传入原始识别文本。
-
+    AI 修正开启时由修正回调传入修正后文本（原文不记），关闭时传入原始识别文本。
     与上一条完全相同（连续重复句）不重复记录，避免刷屏。
     """
     text = (text or "").strip()

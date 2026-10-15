@@ -1,15 +1,11 @@
 """Hermes Agent API server 客户端（纯网络层，不碰音频）。
 
-分两层，便于单测：
-- `SSEFrameBuffer` / `HermesFrameMapper`：纯解析，零 IO
-- `HermesClient`：HTTP 会话（建会话 / 发起轮次 / 取消），见 Task 3
+分两层便于单测：`SSEFrameBuffer` / `HermesFrameMapper` 纯解析零 IO；
+`HermesClient` 管 HTTP 会话（建会话 / 发起轮次 / 取消）。
 
-为什么不复用 OpenAI 客户端：Hermes 的 `/api/sessions/{id}/chat/stream`
-返回的是它自己的「命名事件流」（`event: run.started` / `assistant.delta`
-/ ...），不是 OpenAI 的 `chat.completion.chunk`。原始帧见设计文档 §3.5。
-
-音频能力：Hermes 的 API server `audio_api=false`（实测），既不识别也不
-合成。断句与识别由 `HermesDialogClient` 在本端补齐。
+不复用 OpenAI 客户端：`/api/sessions/{id}/chat/stream` 返回 Hermes 自己的
+「命名事件流」（`event: run.started` 等），不是 `chat.completion.chunk`。
+`audio_api=false`：既不识别也不合成，断句与识别由 `HermesDialogClient` 补齐。
 """
 from __future__ import annotations
 
@@ -36,9 +32,9 @@ STATE_SESSION_READY = "session_ready"
 STATE_DISCONNECTED = "disconnected"
 STATE_ERROR = "error"
 
-# 取消失败专用错误码：表示 /stop 这次请求本身没发出去（服务端可能还在跑），
+# 取消失败专用错误码：表示 /stop 这次请求本身没发出去（服务端可能还在跑）
 # 与三种轮次失败出口（code=-1）区分开。兄弟模块据此判定「这不是本轮结束」——
-# /stop 的 POST 可能拖到下一轮已经在途时才落地（最长 connect_timeout_ms），
+# /stop 的 POST 可能拖到下一轮已经在途时才落地（最长 connect_timeout_ms）
 # 若按轮次失败重开半双工闸门，会把刚关上的麦克风在回答中途放开。
 CODE_CANCEL_FAILED = -2
 
@@ -104,13 +100,8 @@ class SSEFrameBuffer:
 class HermesFrameMapper:
     """Hermes 命名事件 → dialog_events 中立事件。
 
-    **必须按 event: 名分派，不能按 data 里有没有 delta 字段判断** ——
-    `tool.progress` 帧同样带 `delta`（如 tool_name=_thinking 时回显正文），
-    `assistant.completed` 带完整 `content`。若图省事「见到 delta 就累加」，
-    正文会被重复累积（实测得到「收到收到」）。
-
-    run_id 单独留存：取消要走 `POST /v1/runs/{run_id}/stop`，而它只在
-    `run.started` 帧里出现一次。
+    **必须按 event: 名分派，不能按 data 里有没有 delta 字段判断**：`tool.progress` 同样带
+    `delta`，只认 delta 会重复累积正文。`run_id` 只在 `run.started` 出现一次，留存供 /stop 用。
     """
 
     def __init__(self) -> None:
@@ -122,10 +113,8 @@ class HermesFrameMapper:
     def map(self, event: str, data: str) -> list[tuple[str, dict]]:
         """返回该帧对应的中立事件列表（可能为空）。
 
-        形状与豆包一致（`DoubaoDialogClient._translate_event`）：一帧可产出
-        0..N 个中立事件（assistant.completed 同时产出 AI_FULL_TEXT 与
-        AI_TURN_END）；且 `AI_TRANSCRIPT` 的 text 与豆包/Qwen 一样是**全量**
-        —— Hermes 给的是增量，累积在本卡完成（控制器只认全量）。
+        一帧可产出 0..N 个事件（`assistant.completed` 同时产出 AI_FULL_TEXT 与 AI_TURN_END）。
+        `AI_TRANSCRIPT` 的 text 必须是**全量**：Hermes 只给增量，累积在本卡完成（控制器只认全量）。
         """
         try:
             payload = json.loads(data) if data else {}
@@ -147,7 +136,7 @@ class HermesFrameMapper:
             delta = str(payload.get("delta", "") or "")
             if not delta:
                 return []
-            # Hermes 只给增量，但中立事件契约要求 AI_TRANSCRIPT 是**全量**
+            # Hermes 只给增量，但中立事件契约要求 AI_TRANSCRIPT 是全量
             # （core/dialog.py「累积责任在客户端」），故先累积再抛，与 qwen 的
             # _ai_transcript_buf 同形；str() 顺带兜住非字符串 delta。
             self._text_buf += delta
@@ -175,12 +164,8 @@ class HermesFrameMapper:
 class HermesClient:
     """Hermes API server 的 HTTP 会话层。纯网络，不碰音频。
 
-    线程模型：start()/cancel() 在调用方线程同步执行；start_turn() 起一个
-    worker 线程读 SSE，回调从该线程发出 —— 与 DoubaoDialogClient 的
-    asyncio 线程回调同语义，控制器侧已是 queued 信号，无需改动。
-
-    用标准库 urllib 而非 requests/httpx：与 postprocess/openai_client.py
-    同策略，不给打包版 exe 增重。
+    线程模型：start()/cancel() 在调用方线程同步执行；start_turn() 起 worker 线程读 SSE，
+    回调从该线程发出（控制器侧已是 queued 信号）。用标准库 urllib 而非 requests/httpx，不给 exe 增重。
     """
 
     def __init__(self, *, base_url: str, api_key: str,
@@ -213,7 +198,7 @@ class HermesClient:
         self._stream_resp = None          # 在途 SSE 响应：stop() 要能关它唤醒读线程
         self._stopped = False             # stop() 之后不再发任何事件回调（终态）
         self._turn_thread = None          # type: ignore[var-annotated]
-        self._pending_text = ""           # 被「上一轮还活着」拒掉的那句：轮末补发（W1b）
+        self._pending_text = ""           # 被「上一轮还活着」拒掉的那句：轮末补发
         self._turn_lock = threading.Lock()   # 串行化「上一轮是否还活着」的判定
         self._stop_lock = threading.Lock()   # 串行化 取消闩/run_id/是否已打 stop
 
@@ -234,7 +219,7 @@ class HermesClient:
             self.on_state(state)
 
     def _notify_event(self, neutral: str, payload: dict) -> None:
-        # stop() 之后一律不再回调：控制器收尾后会把同一批回调接到下一个会话，
+        # stop() 之后一律不再回调：控制器收尾后会把同一批回调接到下一个会话
         # 残留事件会把上一轮的正文喂进新会话（见 stop 的 docstring）。
         if self._stopped:
             return
@@ -273,10 +258,8 @@ class HermesClient:
     def start(self) -> None:
         """健康检查 + 建会话。阻塞至就绪；失败抛 DialogError。
 
-        先探 /health 再建会话：地址填错与密钥填错是两种最常见的配置失误，
-        分开报错能省一轮排查（与豆包客户端分两步握手同理）。两步**各自**捕获
-        HTTPError：合在一起时 /health 的 HTTP 错误会被报成「建会话失败」，
-        与上面这句承诺自相矛盾（H52）。
+        先探 /health 再建会话，两步**各自**捕获 HTTPError：合在一起时 /health 的
+        HTTP 错误会被误报成「建会话失败」。
         """
         self._set_state(STATE_CONNECTING)
         try:
@@ -309,15 +292,10 @@ class HermesClient:
         return f"{base} {suffix}" if base else suffix
 
     def _create_session(self) -> dict:
-        """建会话；标题撞车时换一个后缀重试一次（H51）。
+        """建会话；标题撞车时换一个后缀重试一次。
 
-        为什么标题必须带唯一后缀：Hermes 服务端要求标题**全局唯一**，重复即
-        400 invalid_title；而本客户端从不关闭会话（stop() 只 cancel 当轮 run，
-        全仓没有 DELETE 会话的调用），若用配置里的常量标题，**第二次进对话必被
-        拒**（实测：第一次正常，之后每次都 400）。配置标题保留为前缀，用户仍能
-        在服务端会话列表里认出自己的会话。
-        只对 invalid_title 重试一次：其余 4xx/5xx 重发没有意义，只会把真错误
-        拖慢、还可能把状态码换成更晚的那一个。
+        服务端要求标题**全局唯一**（重复即 400 invalid_title），而本客户端从不关闭会话，
+        常量标题第二次进对话必被拒；配置标题保留为前缀便于辨认。只对 invalid_title 重试一次。
         """
         for attempt in (1, 2):
             title = self._build_session_title()
@@ -342,12 +320,8 @@ class HermesClient:
     def _read_error(exc) -> tuple:
         """读 HTTPError 的响应体 → (error.code, error.message)（取不到给空串）。
 
-        Hermes 的错误体形如
-        {"error": {"message": "Title already in use by session api_…",
-                   "type": "invalid_request_error", "code": "invalid_title"}}，
-        可诊断的只有 message 那一句：原实现只报 HTTP 状态码，日志里看不出原因
-        （H51 是手工复现才定位的），故把体读出来（H52）。解析不了就退化成原文
-        （空白折叠 + 截断 200 字）。
+        错误体形如 `{"error": {"code": ..., "message": ...}}`；解析不了就退化成
+        原文（空白折叠 + 截断 200 字）。
         """
         try:
             raw = exc.read().decode("utf-8", "replace")
@@ -371,8 +345,7 @@ class HermesClient:
     @classmethod
     def _http_dialog_error(cls, prefix: str, exc, code: str = "",
                            message: str = "") -> DialogError:
-        """HTTPError → DialogError：401/403 保持既有「鉴权失败」文案（H46 已实测），
-        其余带上状态码与服务端错误体（未预解析时才读体）。"""
+        """HTTPError → DialogError：401/403 统一报「鉴权失败」，其余带状态码与服务端错误体（未预解析时才读体）。"""
         if exc.code in (401, 403):
             return DialogError("Hermes 鉴权失败：请检查 API Key")
         if not code and not message:
@@ -384,20 +357,15 @@ class HermesClient:
         """发起一轮对话。立即返回，SSE 在 worker 线程读。"""
         with self._turn_lock:
             if self._turn_thread is not None and self._turn_thread.is_alive():
-                # 不丢句（W1b）：这一句先存下，等旧轮收尾时补发起轮（见 _finish_turn）。
-                # 用户按取消后立刻重说时，/stop 到服务端 ai_turn_end 之间真有
-                # 1.14~4.11 秒窗口（真机实测），以前这里只报一句「还在处理上一句」
-                # 就把刚识别出来的整句静默吞掉了。错误提示照发：用户有权知道这句
-                # 得等上一轮收尾。后到覆盖先到（同一窗口内连说两句，留最后一句）。
+                # 不丢句：这句先存下，等旧轮收尾时补发起轮（见 _finish_turn）；
+                # 错误提示照发，后到覆盖先到（同窗口连说两句留最后一句）。
                 self._pending_text = text
                 self._notify_error(DialogErrorEvent(
                     -1, "上一轮尚未结束", "还在处理上一句"))
                 return
-            # 取消闩故意不在开轮时清：用户可能在 run.started 帧到达前就按了取消
-            # （Task 5 的取消由 THINKING 迁移触发，可能早于 start_turn），那次取消
-            # 要靠 _maybe_fire_stop 补发；闩只在轮次结束时清（见 _finish_turn），
-            # 避免上一轮的取消波及下一轮。别在开轮时清它 —— 那会让
-            # 早按的取消被静默丢掉：界面显示已取消，服务端其实还在跑 run/工具。
+            # 取消闩不在开轮时清：早于 run.started 到达的取消要靠 _maybe_fire_stop
+            # 补发，开轮时清会被静默丢掉（界面显示已取消，服务端还在跑 run/工具）；
+            # 闩只在轮次结束时清（见 _finish_turn）。
             with self._stop_lock:
                 self._stop_fired = False
             self._turn_thread = threading.Thread(
@@ -437,43 +405,32 @@ class HermesClient:
                             turn_ended = True
                         self._notify_event(neutral, payload)
                 self._maybe_fire_stop(mapper.run_id)
-            # 流「正常结束」不等于本轮完成：服务端或代理优雅关流（chunked end、
-            # 连接复用超时）时，读循环只是自然退出 —— 既不抛异常，也没有
-            # assistant.completed / run.cancelled 帧。不补发这一条，控制器就永远
-            # 等不到 AI_TURN_END：半双工闸门再也不开，麦克风永久失聪，而且界面上
-            # 一个字都不提示（比 H21 那种「至少还有横幅」的静默更隐蔽）。
-            # _stopped 时不补：那是收场，不是轮次结束；异常路径也不补 —— 那里已经
-            # 报了「回答未完成」，是另一种用户可见的结局。
-            # exit_intent 恒 False，与 mapper 同一条契约（H11）：补一次收场 ≠ 退出对话。
-            # 取消轮不补：控制器 cancel 分支已经把状态收回 LISTENING，迟到的
-            # AI_TURN_END 会在**下一轮思考期**把客户端闸门重新打开（与 W1 同源的
-            # 竞态）。_cancel_requested 由 _finish_turn 清，此处必然还没清（陷阱 2）。
-            # 干净 EOF（非取消）路径照旧补发 —— 那是承重路径
-            # （test_orderly_eof_emits_turn_end_once），别顺手删。
+            # 流「正常结束」不等于本轮完成：优雅关流（chunked end）时读循环自然退出，
+            # 既无异常也无 assistant.completed/run.cancelled；不补发则控制器永远等不到
+            # AI_TURN_END，麦克风永久失聪。仅在非取消、非收场、非异常路径补发
+            # （干净 EOF 是承重路径，别删），exit_intent 恒 False 与 mapper 同契约。
             if not turn_ended and not self._stopped and not self._cancel_requested:
                 self._notify_event(AI_TURN_END, {"exit_intent": False})
         except Exception as exc:
-            # 收场时关流会让读线程抛异常，那不是故障；取消后主动关流（W1a）同样是
-            # **预期收束**：控制器已按 cancel 回到 LISTENING，再报一条只会白发横幅。
+            # 收场时关流会让读线程抛异常，那不是故障；取消后主动关流同样是
+            # 预期收束：控制器已按 cancel 回到 LISTENING，再报一条只会白发横幅。
             if self._stopped:
                 pass
             elif self._cancel_requested:
                 logger.debug("Hermes 流在取消后收束：%s", exc)
             else:
-                # 超时与其余中断分开报（W3.1）：spec §十 第 2 行的文案是
-                # 「Hermes 响应超时」；socket.timeout 是 TimeoutError 的别名
+                # 超时与其余中断分开报：超时给「Hermes 响应超时」文案；
+                # socket.timeout 是 TimeoutError 的别名，判断要两个都收
                 timeout = isinstance(exc, (socket.timeout, TimeoutError))
                 logger.warning("Hermes 流中断：%s", exc)
                 self._notify_error(DialogErrorEvent(
                     -1,
                     "Hermes 响应超时" if timeout else f"Hermes 流中断：{exc}",
                     "Hermes 响应超时" if timeout else "回答未完成"))
-                # ⚠️ 顺序不能反（W3.2 陷阱 4）：先发错误（控制器据此回 LISTENING 开闸），
-                # 再 best-effort /stop。cancel() 会置 _cancel_requested —— W1 之后它抑制
-                # 兜底 AI_TURN_END，这正是期望；而 /stop 失败会来一条 CODE_CANCEL_FAILED，
-                # 那条**不开闸门**，所以必须在它之前把闸门打开。
-                # 目的：超时后那个 run 可能还在服务端跑工具，_finish_turn 一清 _run_id
-                # 就再也没人停得掉它。
+                # 顺序不能反：先发错误（控制器据此回 LISTENING 开闸）再 best-effort
+                # /stop；cancel() 置 _cancel_requested 会抑制兜底 AI_TURN_END（期望），
+                # 而 /stop 失败的 CODE_CANCEL_FAILED 不开闸门，故闸门必须先在错误里打开。
+                # 目的：超时的 run 可能还在服务端跑工具，_finish_turn 清 _run_id 后就没人停得掉。
                 if self._run_id:
                     self.cancel()
         finally:
@@ -487,28 +444,15 @@ class HermesClient:
     def _finish_turn(self) -> None:
         """轮次生命周期结束：清取消闩与 run_id。
 
-        闩的复位放在这里而不是 start_turn：开轮时清会擦掉「run.started 帧还没到
-        就按下的那次取消」，让它既发不出去也补发不了（见 start_turn 的注释）。
-        放到轮次结束清同样能达到「上一轮的取消不波及下一轮」的目的。
-
-        run_id 也必须在这里清空：留着上一轮的值，下一轮的 cancel() 会照着旧 id
-        打 /stop（打到早已结束的 run），顺手把 _stop_fired 置真 —— 等本轮的
-        run.started 真到了，_maybe_fire_stop 见它已置位就不再停这一轮的 run，
-        正是「按了没用，它还在答」；stop() 收场时也会白发一次注定 404 的 /stop，
-        让用户每次退出都看到假的「取消失败」。一轮已结束就没有 run 可停。
-
-        残留行为：完全没有轮次在途时调 cancel()，会把闩挂到下一轮上（下一轮一读到
-        run.started 就被 stop）。可接受：Task 5 只在 THINKING（有轮次在途或即将发起）
-        时取消；且任何一轮结束都会清闩。
+        闩在此清而非 start_turn：开轮清会擦掉「run.started 未到就按下的取消」。run_id 也必须
+        清：留旧值会让下一轮 cancel() 照旧 id 打 /stop 并置 _stop_fired，真正的 run 就停不掉。
         """
         with self._stop_lock:
             self._cancel_requested = False
             self._run_id = ""
-        # 被拒的那句在这里补发（W1b，恰好一次）。
-        # ⚠️ 陷阱 3：本方法跑在**旧轮自己那个线程**上，若直接调 start_turn，它会看到
-        # _turn_thread 就是自己（is_alive 为真）而再次拒绝。所以先在锁内把
-        # _turn_thread 置 None，**出锁之后**再起轮（两把锁不许嵌套）。
-        # stop() 收场时 _stopped 为真：不得补发，否则残留事件会喂给已收场/新会话。
+        # 被拒的那句在这里补发（恰好一次）。本方法跑在旧轮自己的线程上，须先在锁内把
+        # _turn_thread 置 None、出锁后再 start_turn（两把锁不许嵌套）；_stopped 时不得
+        # 补发，否则残留事件会喂给已收场/新会话。
         with self._turn_lock:
             self._turn_thread = None
             pending, self._pending_text = self._pending_text, ""
@@ -518,12 +462,8 @@ class HermesClient:
     def _maybe_fire_stop(self, run_id: str) -> None:
         """记录 run_id；若用户已按过取消，在这里补发。
 
-        run_id 只在 run.started 帧里出现一次。用户完全可能在那一帧到达前
-        就按了热键 —— 那时 cancel() 拿不到 run_id，只能置标志，靠这里补。
-        少这一步，早按的取消会被静默丢掉（表现为「按了没用，它还在答」）。
-
-        「查闩 → 置 _stop_fired → 发 /stop」必须在同一把锁里：cancel() 可能正在
-        主线程上走同一条路，不锁就会对同一个 run 打出两次 /stop。
+        run_id 只在 run.started 出现一次，早按的取消拿不到它，只能置标志靠这里补，否则会被
+        静默丢掉。「查闩 → 置 _stop_fired → 发 /stop」必须在同一把锁里，否则会打出两次 /stop。
         """
         if not run_id:
             return
@@ -537,13 +477,8 @@ class HermesClient:
     def cancel(self) -> None:
         """取消当前轮。线程安全、**不阻塞**，可从主线程（热键）调用。
 
-        必须打服务端的 /stop：Hermes 的 agent 会在服务器上执行工具，
-        「断开 HTTP 连接」不等于服务端停止运行（设计文档 §3.4 实测）。
-
-        /stop 的 HTTP 交给短命线程去发：本方法跑在 Qt 主线程（热键）上，遇到
-        黑洞端点会白等满 _connect_timeout_s（默认 5s），界面直接冻住 —— 全局
-        约束要求所有 HTTP 调用都在 worker 线程里。_stop_fired 在交接前就置位，
-        所以每轮仍至多一次。
+        必须打服务端 /stop：agent 在服务器上跑工具，断开 HTTP 连接不等于服务端停。/stop 交给
+        短命线程发 —— 本方法跑在 Qt 主线程，白等 _connect_timeout_s 会冻界面（HTTP 全在 worker）。
         """
         with self._stop_lock:
             self._cancel_requested = True
@@ -556,11 +491,9 @@ class HermesClient:
                 return
             self._stop_fired = True
         logger.info("Hermes 取消：已派发 /stop（run=%s）", run_id)
-        # run.started 已到、/stop 已交接：顺手结束本地读循环，不再等那 1~2 秒的
-        # 服务端尾巴（真机实测 /stop 到 ai_turn_end 要 1.14~4.11 秒）。这 1~2 秒里
-        # 用户重说会撞上「上一轮尚未结束」，正是 W1 要消掉的那句丢失。
-        # ⚠️ _run_id 为空时**绝不能**关流：那条路径要靠读循环走到 _maybe_fire_stop
-        # 才把 /stop 补发出去（用户在 run.started 之前按的取消），关了就再也发不出。
+        # run.started 已到、/stop 已交接：顺手关本地读循环，不等 1~2 秒的服务端尾巴
+        # （用户在这段时间重说会撞上「上一轮尚未结束」）。_run_id 为空时绝不能关流 ——
+        # 那条路径要靠读循环走到 _maybe_fire_stop 补发 /stop，关了就再也发不出。
         self._close_stream()
         self._spawn_stop(run_id)
 
@@ -597,16 +530,8 @@ class HermesClient:
     def stop(self) -> None:
         """收场：停掉在途轮次**及其回调**，再置断开态。
 
-        「返回即已停」是控制器的契约（core/dialog.py:_begin_stop 之后会拆播放器/
-        采集，并把同一批回调接到下一个会话）：只要 worker 还在读流，它就会继续
-        _notify_event —— 上一轮的正文会追加进已收场的会话，甚至喂给新会话。
-        所以这里要：挂牌 → 关流（唤醒阻塞在 read 上的读线程）→ join 等它退。
-        join 超时只记警告：线程是 daemon，且不该让收尾卡住。
-
-        _stopped 是终态：本实例收场后不再产出任何事件（控制器每次会话都新建
-        实例，见 core/dialog.py:_create_client），不要拿它再 start_turn。
-        再调 start() 也一样：服务端会真的建出会话，但 SESSION_READY 被终态吃掉
-        ——「连上了却什么都不发生」。要再次对话请新建实例，别复用本对象。
+        「返回即已停」是控制器契约：worker 还在读流就会继续 _notify_event，把上一轮正文喂进已收场
+        甚至新会话。故：挂牌 → 关流 → join（超时只警告）。_stopped 是终态，要再对话须新建实例。
         """
         self._stopped = True             # 先挂牌：此后不会再有任何事件回调
         self.cancel()                    # 非阻塞：/stop 由短命线程发

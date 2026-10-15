@@ -1,30 +1,12 @@
 """应用级字体管理：用户配置字体 > 内置默认字体（普惠体 Medium）> Qt 默认。
 
-用户在 config.yaml 中可选三种方式（优先级从高到低）：
-  1) ui.font_file:  "fonts/MyFont.ttf" 或绝对路径  加载任意 .ttf/.otf 文件
-  2) ui.font_family: "Microsoft YaHei UI"   系统已装字体的 family 名
-  3) 都不填: 内置默认字体 fonts/AlibabaPuHuiTi-3-65-Medium.ttf（普惠体 3.0
-     Medium，比系统默认雅黑 Regular 更饱满）；文件缺失（如构建未投放
-     fonts/）时退回 Qt 默认
+config.yaml 可选 ui.font_file（任意 .ttf/.otf 路径）或 ui.font_family（系统已装 family），
+都不填则用内置 fonts/AlibabaPuHuiTi-3-65-Medium.ttf，文件缺失才交给 Qt 默认。
+相对路径基于 exe 目录（打包版）或项目根（源码版）解析——PyInstaller onefile 的 _MEIPASS
+临时目录每次运行都不同，绝不能作为字体落点或绝对路径基准。
 
-启动时：
-- 若 font_file 有效，QFontDatabase.addApplicationFont 加载，再用其 family
-- 若仅指定 font_family，Qt 会自动按系统字体库查找
-- 都未指定则尝试内置默认字体，仍缺失才交给 Qt 默认
-
-运行时：悬浮条右键 → "选择字体文件..." 弹 QFileDialog，选完 OTF/TTF 即生效
-（复制到程序目录 fonts/ + 写入 config 相对路径 + 重新应用）；"恢复默认字体"
-即清空 font_file，回到上述内置默认。重启后无需重新选择。
-
-路径锚定：font_file 存相对路径（fonts/xxx.ttf）时，基于 exe 目录（打包版）
-或项目根（源码版）解析——PyInstaller onefile 的 _MEIPASS 临时目录每次
-运行都不同，绝不能作为字体落点或绝对路径基准。
-
-另有像素主题专用字体（文件末尾一节）：缝合像素字体 Fusion Pixel Font 10px
-点阵规格，OFL-1.1 授权可随包内置，**只用于气泡正文**（2× = 20px）；
-右键菜单沿用应用常规字体与字号（与其他主题一致），像素主题只覆盖菜单外观。
-由 get_pixel_font / get_pixel_font_family 提供，与上述用户字体体系互不干扰
-——像素主题以外的界面仍用普惠体。
+像素主题专用字体（Fusion Pixel Font 10px 点阵，OFL-1.1 可随包内置）**只用于气泡正文**，
+右键菜单沿用应用常规字体，与上述用户字体体系互不干扰。
 """
 from __future__ import annotations
 
@@ -52,12 +34,8 @@ _registered_fonts: dict[str, str] = {}
 def fonts_dir() -> Path:
     """字体目录：exe 同目录（打包版）/ 安装根（发行 depot）/ 项目根（源码版）下 fonts/。
 
-    打包版不能用源码锚定（会落到 _MEIPASS 临时目录，重启即失）；
-    exe 同目录与 config.yaml 落点一致，用户数据集中一处。
-    发行 depot 同样不能源码锚定：非 frozen 裸跑时 __file__ 上溯两级是 app/，
-    而随包字体由 assemble_depot 投在 <安装根>/fonts/（与 app/ 平级）。修复前
-    depot 加载不到普惠体/像素字体，静默回退 Qt 默认——冒烟日志里只体现为
-    「未指定字体，使用 Qt 默认」，不算失败，2026-09-25 真机实测才抓到。
+    不能源码锚定：打包版会落到 _MEIPASS（重启即失）；发行 depot 裸跑时 __file__ 上溯两级是
+    app/，而随包字体在 <安装根>/fonts/。锚错会静默回退 Qt 默认字体，很难发现。
     """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent / "fonts"
@@ -82,12 +60,43 @@ def _bundled_fonts_dir() -> Path | None:
 
 
 def _font_dirs() -> list[Path]:
-    """候选字体目录：用户目录（可写，可继续投放字重）在前，内置目录兜底。"""
+    """候选字体目录：用户目录（可写，可继续投放字重）在前，内置目录兜底。
+
+    工坊字体**不走这里**——它不是"目录"而是一批具体文件，由 `_workshop_font_files()` 单独收集。
+    """
     dirs = [fonts_dir()]
     b = _bundled_fonts_dir()
     if b is not None and b != dirs[0]:
         dirs.append(b)
     return dirs
+
+
+def _workshop_font_files() -> list[Path]:
+    """已安装工坊物品里的字体文件（无工坊 / 不可用时为空）。"""
+    try:
+        from ..workshop import font_files
+        return font_files()
+    except Exception:
+        logger.debug("查询工坊字体失败", exc_info=True)
+        return []
+
+
+def load_workshop_fonts() -> list[tuple[str, Path]]:
+    """注册全部工坊字体，返回 [(family, 文件路径), ...]（供设置页列出可选字体）。
+
+    注册失败只跳过该文件、记警告——一个坏字体不该让整批都用不了。**不碰 `_loaded_*` 状态**：
+    只是"把字体放进数据库"，选不选是用户的事。
+    """
+    out: list[tuple[str, Path]] = []
+    for path in _workshop_font_files():
+        family = _register_font(str(path))
+        if family is None:
+            logger.warning("工坊字体注册失败（跳过）：%s", path)
+            continue
+        out.append((family, path))
+    if out:
+        logger.info("工坊字体已注册 %s 个", len(out))
+    return out
 
 
 def resolve_font_path(path: str) -> str:
@@ -107,10 +116,8 @@ def resolve_font_path(path: str) -> str:
 def _register_font(path: str) -> str | None:
     """把字体文件注册进 QFontDatabase，返回其 family 名（None 表示失败）。
 
-    无状态助手：只做存在检查 + addApplicationFont，不触碰 _loaded_* /
-    _effective_family 等模块状态——批量注册多字重时绝不顶替用户所选
-    字体。同一文件（解析后路径一致）经 _registered_fonts 去重，重复
-    调用直接返回缓存 family。
+    无状态助手：不触碰 _loaded_* / _effective_family（批量注册多字重时不顶替用户所选字体）；
+    同一文件经 _registered_fonts 去重，重复调用返回缓存 family。
     """
     p = Path(path)
     if not p.is_file():
@@ -140,9 +147,8 @@ def _register_font(path: str) -> str | None:
 def load_font_file(path: str) -> str | None:
     """加载指定 .ttf / .otf 文件，返回其 family 名（None 表示失败）。
 
-    用户配置入口：经 _register_font 注册（同一文件只注册一次），并
-    维护"最近加载"状态（_loaded_file_family/_loaded_file_path）供诊断；
-    文件不存在或注册失败时清空该状态，避免残留无效路径。
+    用户配置入口：经 _register_font 注册并维护"最近加载"状态供诊断；文件不存在或注册
+    失败时清空该状态，避免残留无效路径。
     """
     global _loaded_file_family, _loaded_file_path
     p = Path(path)
@@ -172,21 +178,16 @@ def set_user_family(family: str) -> None:
 # 55 Regular / 65 Medium / 75 SemiBold / 85 Bold / 115 Black ...
 _PUHUITI_GLOBS = ("AlibabaPuHuiTi*.ttf", "AlibabaPuHuiTi*.otf")
 
-# 内置默认字体：未配置 font_file/font_family 时使用（普惠体 65 Medium，
+# 内置默认字体：未配置 font_file/font_family 时使用（普惠体 65 Medium
 # 观感比系统默认雅黑 Regular 饱满）。相对路径走 resolve_font_path 锚定
 _BUILTIN_FONT_FILE = "fonts/AlibabaPuHuiTi-3-65-Medium.ttf"
 
 
 def load_puhuiti_weights() -> str | None:
-    """把候选目录（用户目录 + 内置解包目录）下全部 AlibabaPuHuiTi 字重
-    文件注册进 QFontDatabase。
+    """把候选目录下全部 AlibabaPuHuiTi 字重文件注册进 QFontDatabase。
 
-    普惠体各字重 TTF 共用同一 family（"Alibaba PuHuiTi 3.0"），逐个
-    addApplicationFont 后 Qt 自动按 family 合并字面（styles）——Normal /
-    Bold 请求从此各自命中对应字面，不再"单字重文件顶替全部请求"。
-    只做注册不触碰 _loaded_* / _effective_family：单个文件失败仅警告、
-    绝不清空用户所选字体的状态；已注册文件自动去重。返回解析出的
-    family（各字重一致；目录为空或全部失败返回 None）。
+    各字重 TTF 共用同一 family，逐个 addApplicationFont 后 Qt 自动合并 styles——Normal/Bold
+    请求各自命中对应字面。只做注册不触碰 _loaded_*，单文件失败仅警告；返回解析出的 family。
     """
     family: str | None = None
     found_any = False
@@ -218,10 +219,8 @@ _REGULAR_STYLE_HINTS = ("regular", "normal", "book", "roman")
 def _family_has_regular(family: str) -> bool:
     """判断 family 是否含 Regular（Normal 请求可命中）的字面。
 
-    Qt 列出的 styleName 含常规字重关键字（Regular/Normal/Book/Roman，
-    不区分大小写，如 "55 Regular"）即视为有常规字重，避免 styleName
-    为 Normal/Book 的第三方字体被误判回退。查不到任何 style（系统字体
-    名大小写差异等）时返回 True，不强行回退，交给 Qt 自行解析。
+    styleName 含常规字重关键字（Regular/Normal/Book/Roman，不区分大小写）即视为有；查不到
+    任何 style 时返回 True，不强行回退，交给 Qt 自行解析。
     """
     try:
         styles = QFontDatabase.styles(family)
@@ -243,20 +242,8 @@ def apply_default_font(app, family: str = "", font_file: str = "",
                        app_point_size: int = 9) -> str:
     """设置 QApplication 默认字体，返回最终选用的 family 名。
 
-    优先级：
-      1) font_file 加载成功 -> 用其 family
-      2) family 非空 -> 直接用（Qt 自动查系统字体库）
-      3) 都不填 -> 内置默认字体（fonts/ 下普惠体 65 Medium），文件缺失
-         才保持 Qt 默认（不调用 setFont，让 OS 选择）
-
-    font_file 确为普惠体系列（family/文件名含 puhuiti，见 _is_puhuiti）
-    时，fonts/ 下其余字重文件一并注册（见 load_puhuiti_weights），
-    Normal/Bold 各归其位；若该 family 仍无 Regular 字面（如只放了几份
-    粗字重文件），正文回退 Microsoft YaHei UI——请求 Normal 却渲染成
-    SemiBold/Bold 会整体偏粗发糊。
-    最终生效 family（含回退结果）写入 _effective_family，get_font /
-    get_loaded_family 消费同一来源，回退后悬浮条绘制与菜单 QSS 不会
-    再停留在旧 family。
+    优先级：font_file 加载结果 > family（Qt 查系统库）> 内置普惠体 65 Medium，文件缺失才保持
+    Qt 默认。生效 family 写入 _effective_family（get_font 同源）；无 Regular 字面则回退雅黑。
     """
     global _effective_family
     set_user_family(family)
@@ -276,7 +263,7 @@ def apply_default_font(app, family: str = "", font_file: str = "",
         chosen = _user_family
     if not chosen:
         # 内置默认字体：打包版从解包目录（_MEIPASS/fonts）、源码版从
-        # 项目根 fonts/ 查找；文件缺失（构建未投放 fonts/）返回 None，
+        # 项目根 fonts/ 查找；文件缺失（构建未投放 fonts/）返回 None
         # 继续落 Qt 默认
         for d in _font_dirs():
             p = d / Path(_BUILTIN_FONT_FILE).name
@@ -312,18 +299,10 @@ def apply_default_font(app, family: str = "", font_file: str = "",
 
 
 def get_font(point_size: int = 9, weight: QFont.Weight = QFont.Weight.Medium) -> QFont:
-    """取一个 QFont 实例，应用于 paintEvent 显式指定字体。
+    """取一个 QFont 实例，应用于 paintEvent 显式指定字体（默认 Medium 字重）。
 
-    默认 Medium 字重：悬浮条/气泡文字用 Regular 偏细，Medium 更饱满；
-    字体无 Medium 字面时 Qt 自动匹配最近字重（如雅黑落回 Regular），无副作用。
-
-    优先级：apply_default_font 实际生效 family（含雅黑回退结果）>
-    font_file family > 用户 family > QApplication 默认 > Microsoft YaHei UI
-    ——与 QApplication 默认字体同源，回退后显式绘制不会停留在旧 family。
-
-    空 family 绝不用 QFont("")：Windows 上会解析为 MS Sans Serif 位图
-    字体（无 CJK 覆盖、位图缩放发糊），故兜底到矢量字体；QApplication
-    未创建（罕见边界）时直接用雅黑。
+    优先级：_effective_family > font_file family > 用户 family > QApplication 默认 > 雅黑。
+    空 family 绝不用 QFont("")（Windows 上会解析为无 CJK、发糊的 MS Sans Serif 位图字体）。
     """
     family = (_effective_family if _effective_family is not None
               else (_loaded_file_family or _user_family)) or ""
@@ -349,49 +328,22 @@ def get_loaded_family() -> str:
 
 
 # ---------------------------------------------------------------------------
-# 像素主题专用字体（缝合像素字体 / Fusion Pixel Font）
-#
-# 授权：SIL Open Font License 1.1（随字体文件附 OFL 全文于 fonts/
-#       FusionPixel-LICENSE-OFL.txt）。个人/企业均可免费商用、可自由传播、
-#       可与本程序捆绑再分发——满足内置随包投放的条件。
-#       注意：不要改用 Zpix（最像素）——它个人/教育免费但商业产品收费
-#       （单产品 ￥7000），且禁止修改/转换/再分发，不可随程序内置。
-#
-# 点阵规格：10px（9px 字身 + 1px 间距）。像素字体只在点阵整数倍字号下
-#       才成立——10px 规格的干净档是 15pt/30pt（20/40px），其余字号笔画会
-#       落到半像素、网格错位发虚（实测放大即见灰阶糊边）。故像素主题的
-#       字号必须**吸附**到这几档（见 snap_pixel_pt），不能直接用配置里的
-#       任意字号。
+# 像素主题专用字体（缝合像素字体 Fusion Pixel Font）
+# 授权：SIL Open Font License 1.1（OFL 全文随文件投放于 fonts/），个人/企业均可
+# 免费商用与捆绑再分发。不要改用 Zpix：商用收费且禁止修改/再分发，不可随包内置。
+
+# 点阵规格 10px（9px 字身 + 1px 间距）只在点阵整数倍字号下成立——干净档是 15pt/30pt
+# （20/40px），其余字号笔画落到半像素、网格错位发虚。故像素主题字号必须吸附到这几档
+# （见 snap_pixel_pt），不能用配置里的任意字号。
 # ---------------------------------------------------------------------------
 
-# 像素字体文件名（fonts/ 下；随包投放，缺失则气泡退回常规字体）
-#
-# **仅气泡正文使用像素字体**：缝合像素字体 Fusion Pixel Font（OFL-1.1）
-# **10px 点阵规格、2× = 20px**。这一段踩过多轮坑，把结论写清楚免得回退：
-#
-#   · 右键菜单**不用像素字体**——常规菜单是 13px，而点阵字体没有 13px
-#     干净档（12px 规格只有 12/24px，8px 规格 16px、10px 规格 20px 都比
-#     常规明显偏宽）。用户最终明确要求菜单「用默认的就可以了，字体大小也
-#     和别的主题同步」→ 菜单走应用常规字体，像素主题只覆盖菜单外观。
-#   · 气泡正文经过的档位试错（用户逐档反馈）：
-#       12px（12px 规格 1×）→ 「字体太小」
-#       24px（12px 规格 2×）→ 「搞那么大干嘛 / 有点过大了」
-#       16px（8px 规格 2×）→ 当年「怎么那么糊」；2026-09-20 复测其实是
-#              干净硬边，实切一档后被嫌「太小」且想「更细」——8px 网格
-#              笔画占字身 2/14≈14%，比 10px 规格的 2/18≈11% 更粗，小而密
-#              观感不佳，已回退
-#       20px（10px 规格 2×）→ 清晰舒展；曾被温和反馈「有点大和粗、稍微
-#              改小一点」，但经 16px 一轮对比后回落本档——字更大、笔画
-#              占字身比例更低，观感反而更纤细（2026-09-20 第二轮）
-#     结论：**10px 规格的 20px**。点阵字体没有细体——「细」= 更大规格的
-#     更低笔画占比，20px 是「够大 + 相对细」的平衡点；16~20px 之间没有
-#     干净中间档，再小的 16px/12px 均已否决。
-#
+# 像素字体文件名（fonts/ 下；随包投放，缺失则气泡退回常规字体）。仅气泡正文使用：
+# 10px 点阵规格、2× = 20px。右键菜单不用像素字体（走应用常规字体与字号）。
 # 通用铁律：点阵字号只能是点阵规格的整数倍，非整数倍一律发糊。
 _PIXEL_FONT_FILE = "fonts/FusionPixel10px-zh_hans.ttf"
 
-# 像素字号档（pt @96dpi -> 实测汉字宽 px），10px 点阵的整数倍：
-#   15pt=20px（2×，气泡正文档） / 30pt=40px（4×，备用）
+# 像素字号档（pt @96dpi -> 汉字宽 px），10px 点阵的整数倍：
+# 15pt=20px（2×，气泡正文档） / 30pt=40px（4×，备用）
 PIXEL_PT_TIERS: tuple[int, ...] = (15, 30)
 
 # 基准字号：15pt @96dpi = 20px = 10px 点阵的 2×（本主题实际用档）
@@ -445,30 +397,18 @@ def _snap_pt(point_size: int, tiers: tuple[int, ...]) -> int:
 def snap_pixel_pt(point_size: int) -> int:
     """把任意字号吸附到**不小于它的**最近档（10px 规格：PIXEL_PT_TIERS）。
 
-    像素字体只在点阵整数倍下成立，配置里的 13pt / 17px 这类字号直接拿来
-    渲染会网格错位。吸附采用**向上取整**（ceil）而非"取最近档"：
-
-        13pt -> 15pt（20px，2×）
-        11pt -> 15pt（20px，2×）
-        40pt -> 30pt（40px，4× 封顶）
-
-    向上取整而不取最近：取最近会让用户"设了 13pt 字反而变小"，属于反直觉的
-    缩小。**但这只是"不缩小"的下限保证**——实际用哪一档由调用方显式指定
-    （PIXEL_TEXT_PT）。超过最大档时钳到最大档。
+    像素字体只在点阵整数倍下成立，非整数倍会网格错位。用**向上取整**而非"取最近档"
+    （取最近会让"设了 13pt 反而变小"，反直觉）；超过最大档钳到最大档。
     """
     return _snap_pt(point_size, PIXEL_PT_TIERS)
 
 
 def get_pixel_font(point_size: int = PIXEL_BASE_PT,
                    weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
-    """取像素主题用 QFont（**10px 点阵规格**，正文与菜单共用）。
+    """取像素主题用 QFont（**10px 点阵规格**）；字体缺失时回退常规字体。
 
-    point_size 先经 snap_pixel_pt 吸附到可用档（15 / 30pt = 20 / 40px）
-    ——传任意字号进来都不会破坏点阵网格。字体缺失时回退常规字体。
-    字重固定 Normal——像素字体只有单一 Regular 字面，请求 Medium/Bold
-    会让 Qt 做合成加粗（synthetic bold），笔画糊成一团、点阵硬边尽失。
-    额外关掉字形微调与整字抗锯齿：像素字体必须按格点落位，Qt 默认的
-    subpixel 定位会把字身推到半像素上。
+    point_size 先经 snap_pixel_pt 吸附。字重固定 Normal——像素字体只有单一 Regular 字面，
+    请求 Medium/Bold 会让 Qt 合成加粗、点阵硬边尽失；关掉字形微调与抗锯齿（须按格点落位）。
     """
     fam = pixel_family()
     if not fam:

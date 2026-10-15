@@ -26,9 +26,9 @@ def setup_llm_corrector(app) -> None:
         app.bar.signals.transient_hint.emit(t("hint.llm_no_key"), 2.0)
         return
     from ..postprocess.llm_corrector import LLMCorrector
-    # 历史上下文开关开启时注入 provider（取最近 15 条，与右键菜单展示数
-    # 一致）；关闭传 None，corrector 不做历史拼接。_call_llm 在后台线程
-    # 调 provider，history.entries 自带锁，线程安全
+    # history_context 开启时注入 provider（取最近 15 条，与右键菜单展示数一致）；
+    # 关闭传 None，corrector 不做历史拼接。_call_llm 在后台线程调 provider，
+    # history.entries 自带锁，线程安全
     history_provider = (
         (lambda: _history.entries()[:15])
         if getattr(llm_cfg, "history_context", False) else None
@@ -74,7 +74,7 @@ def on_llm_corrected(
         "corrected": corrected,
         "seq": app._session_seq,
         "requested_at": requested_at,
-        # 携带 feed 时的 wait 模式：回调前热切换了设置也按 feed 时处理，
+        # 携带 feed 时的 wait 模式：回调前热切换了设置也按 feed 时处理
         # 避免原文没上屏却走退格分支
         "wait": is_wait,
         # 长按整段提交：会话已切换时不能按普通 wait 直接丢弃（见 do_llm_replace_job）
@@ -147,14 +147,12 @@ def do_llm_replace_job(app, job: dict) -> None:
             history_record_on_screen(app, original, pairs)
         return
 
-    # wait 模式：final 没上屏，直接 inject 修正版。无原文可删，只校验会话序号、
+    # wait 模式：final 没上屏，直接 inject 修正版。无原文可删，只校验会话序号
     # 打断标记和焦点（等待期间用户切了窗口就不打）
     if is_wait:
-        # 这里只认「真打断」（删除键 / 左键点击），**不认** _discard_results：
-        # 后者在手动停止时必然置位（stop_session 对无冲刷能力的引擎硬切断），
-        # 而「修正后上屏」的回包必然晚于停止（长按整段提交更是必然落在停止
-        # 之后）—— 用它判会把用户刚说完的话整段吃掉：原文从未上屏，历史里
-        # 也查不到。打断后已开新会话的情况由上面的会话序号校验兜住。
+        # 只认「真打断」（删除键 / 左键点击），不认 _discard_results：它在手动停止时必然置位，
+        # 而修正回包必然晚于停止——用它判会把用户刚说完的话整段吃掉（原文从未上屏、历史也查不到）。
+        # 打断后已开新会话的情况由上面的会话序号校验兜住。
         if getattr(app, "_session_interrupted", False):
             logger.info("会话被真打断，取消 wait 模式上屏")
             return
@@ -168,7 +166,7 @@ def do_llm_replace_job(app, job: dict) -> None:
             logger.info("等待修正期间焦点已切换（%s -> %s），放弃上屏",
                         app._inject_hwnd, cur_hwnd)
             # 不上屏不等于内容可以无痕消失：wait 模式原文从未上过屏，这一放弃就
-            # 从屏幕到历史都没了痕迹。补记历史（历史开关关着时 add 内部忽略），
+            # 从屏幕到历史都没了痕迹。补记历史（历史开关关着时 add 内部忽略）
             # 用户至少还能从历史里把这段话找回来
             if pairs is not None:
                 for orig_i, corr_i in pairs:
@@ -180,11 +178,9 @@ def do_llm_replace_job(app, job: dict) -> None:
             return
         try:
             if pairs is not None:
-                # 多句：顺序注入修正版即可，无原文可删。
-                # 修正版命令复检（纯探测）：触发词被听错（raw final
-                # 未命中）而修正版拼回触发词的句子，作命令执行、
-                # 不上屏不进历史。派发与注入同队列 FIFO，顺序=
-                # 说话顺序（inject 与 send_key 交错正确）
+                # 多句：顺序注入修正版即可，无原文可删。修正版命令复检（纯探测）：触发词被听错
+                #（raw final 未命中）而修正版拼回触发词的句子，作命令执行、不上屏不进历史。
+                # 派发与注入同队列 FIFO，顺序=说话顺序（inject 与 send_key 交错正确）
                 from . import voice_commands
 
                 out_len = 0
@@ -221,7 +217,7 @@ def do_llm_replace_job(app, job: dict) -> None:
                 out, is_final=True,
                 done_callback=app._record_inject_hwnd,
             )
-            # 「删除那句」的退格基准：wait 模式原文从未上屏（长按整段提交也走这条），
+            # 「删除那句」的退格基准：wait 模式原文从未上屏（长按整段提交也走这条）
             # 基准只能在这里补——否则它停在更早那次的长度上，删除键会删错对象
             app._last_spoken_text = out
             # 历史记最终上屏文本（修正成功=修正版，失败=原文，都入）
@@ -240,7 +236,7 @@ def do_llm_replace_job(app, job: dict) -> None:
             logger.exception("wait 模式上屏失败")
         return
 
-    # 新句检测：修正后又上屏了新 final，光标已后移，退格会删错对象，
+    # 新句检测：修正后又上屏了新 final，光标已后移，退格会删错对象
     # 放弃替换（宁漏修不错乱）
     if app._last_final_at > last_final_at:
         logger.info("修正期间有新句子注入，取消本次替换")
@@ -317,11 +313,9 @@ def do_llm_replace_job(app, job: dict) -> None:
             # 结果==原文即 LLM 判定无需改动，照样入历史
             _history.add(corrected)
             return
-        # 修正版命令复检：触发词被听错（raw final 未命中）而修正版拼回
-        # 触发词时，删掉已上屏的听错文本后执行命令。先退格入队再派发：
-        # send_key 等键序才能落在删除之后（注入队列 FIFO 保序）。非
-        # wait 模式选区已被听错文本顶掉：AI 命令会提示"请先选中要处理
-        # 的文字"，本地命令（发送/开关等）不受影响
+        # 修正版命令复检：触发词被听错（raw final 未命中）而修正版拼回触发词时，删掉已上屏的
+        # 听错文本后执行命令。先退格入队再派发，send_key 等键序才落在删除之后（注入队列 FIFO 保序）。
+        # 非 wait 模式选区已被听错文本顶掉：AI 命令会提示"请先选中要处理的文字"，本地命令不受影响
         from . import voice_commands
 
         if (voice_commands.enabled()

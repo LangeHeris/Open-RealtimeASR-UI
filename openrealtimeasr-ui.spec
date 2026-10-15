@@ -44,16 +44,13 @@ datas += [('config/config.example.yaml', '.')]
 # 解析到 _MEIPASS/asr_voice/assets/，必须按相同相对结构打包。
 # 凯尔特结素材已迁出至 themes/凯尔特风格/assets/（外部主题包，不进 exe）。
 datas += [('asr_voice/assets', 'asr_voice/assets')]
-# 内置默认字体（阿里巴巴普惠体 3.0，免费商用，授权条款见随包
-# THIRD_PARTY_NOTICES.md）：
-# 白名单只投放代码实际引用的三个字重（55 Regular / 65 Medium / 85 Bold，
-# 对应 font-weight 400/500/700 命中字面），不用 glob 通配：
-# fonts/ 顶层其余字重（45 Light / 75 SemiBold / 95 ExtraBold 等）留给
-# 本地运行使用，不进安装包（每个约 8MB）。新增字重需同时在此白名单登记。
-# 打包后解包到 _MEIPASS/fonts/，fonts.py 的 _bundled_fonts_dir() 从此
-# 读取；用户自行投放的字重走 exe 同目录 fonts/（fonts_dir()）。
-# 字体文件本身不随仓库分发（EULA 约束，见 README 致谢节）：干净克隆/CI 没有
-# fonts/ 时跳过打包并提示，程序回退系统字体（fonts.py 已有容错），构建不失败。
+# 内置默认字体（阿里巴巴普惠体 3.0，免费商用，条款见随包 THIRD_PARTY_NOTICES.md）：
+# 白名单只投代码实际引用的三个字重（55/65/85 ↔ font-weight 400/500/700），不用
+# glob 通配；顶层其余字重（45/75/95 等）留给本地运行、不进包，新增字重需登记。
+#
+# 解包到 _MEIPASS/fonts/ 供 fonts.py 的 _bundled_fonts_dir() 读取；用户投放的字重
+# 走 exe 同目录 fonts/（fonts_dir()）。字体文件不随仓库分发（EULA，见 README 致谢
+# 节）：干净克隆/CI 缺 fonts/ 时跳过打包并提示，程序回退系统字体，构建不失败。
 _BUNDLED_FONTS = []
 for _w in ('55-Regular', '65-Medium', '85-Bold'):
     _fp = f'fonts/AlibabaPuHuiTi-3-{_w}.ttf'
@@ -63,9 +60,18 @@ for _w in ('55-Regular', '65-Medium', '85-Bold'):
         print(f'[spec] font not found (not shipped in repo): {_fp} - exe falls back to system fonts')
 datas += _BUNDLED_FONTS
 # 像素主题专用字体（缝合像素字体 Fusion Pixel 10px 点阵规格，SIL OFL-1.1）
-# **不进 GitHub 版**：像素主题是 商店版独占，GitHub 版连主题包与特性模块
-# 一起排除，字体跟着主题走。发行包由组装脚本直接从源码树投放
-# 字体，不经本 spec（该脚本属 渠道私有资产，不随本仓库分发）。
+# **不进 GitHub 版**：像素主题为渠道独占，GitHub 版连主题包与特性模块一起
+# 排除，字体跟着主题走（发行包由渠道侧组装脚本从源码树投放，不经本 spec）。
+#
+# 用户文档：随包内置，离线可读（设置 → 关于 → 使用帮助）；运行时由
+# ui/doc_viewer.doc_path() 从 _MEIPASS/docs 读取。缺文件时 UI 自动隐藏内置
+# 入口、只留在线文档，缺失只会降级、不会让构建失败。
+for _d in ('User_Doc_zh.md', 'User_Doc_en.md'):
+    _p = f'docs/{_d}'
+    if os.path.exists(_p):
+        datas += [(_p, 'docs')]
+    else:
+        print(f'[spec] user doc not found (help card falls back to online docs): {_p}')
 # 第三方许可清单随 exe 分发（LGPL / Apache 等许可声明与字体授权依据）；
 # 本项目自身的 Apache-2.0 LICENSE 与 NOTICE 一并随包分发（Apache-2.0 §4 要求）
 datas += [('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.'), ('NOTICE', '.')]
@@ -77,11 +83,10 @@ if not LITE_BUILD:
         'asr_voice.ui.theme_features.celtic',
         'asr_voice.ui.theme_features.cyberpunk',
     ]
-    # DLC 主题包（完整构建）：theme.yaml + 素材随 exe 打进 _MEIPASS/themes/，
-    # 单文件即可用，无需 exe 同目录 themes/ 文件夹。theme_registry._themes_roots()
-    # 优先读 _MEIPASS/themes，再读 exe 同目录 themes（仍可投放外部主题包扩展）。
-    # 按包逐个登记，不用 `datas += [('themes', 'themes')]` 整目录拷贝：整目录会把
-    # 商店版独占的像素主题一并打进 GitHub 版（守卫见 tests/test_github_theme_packs.py）。
+    # DLC 主题包（完整构建）：theme.yaml + 素材随 exe 打进 _MEIPASS/themes/，单文件
+    # 即可用。theme_registry._themes_roots() 优先读 _MEIPASS/themes，再读 exe 同目录
+    # themes（仍可投放外部主题包）。必须按包逐个登记、不能整目录拷贝：整目录会把
+    # 渠道独占的像素主题一并打进 GitHub 版。
     for _pack in ('凯尔特风格', '赛博朋克风'):
         datas += [(f'themes/{_pack}', f'themes/{_pack}')]
 
@@ -95,11 +100,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # 本地 FunASR 引擎依赖（funasr/torch 全家桶约 2GB+）不打包：
-    # funasr_realtime.py 的延迟导入也会被静态分析捕获，必须显式排除。
-    # 打包版选 FunASR 时运行期会给出明确提示（改用云端或源码运行）。
-    # pixel 恒排除：像素主题为 商店版独占，GitHub 版（含 lite）一律物理剔除。
-    # 只排模块不够，主题包与字体也要一并断掉，见上面两处 datas 的注释。
+    # 本地 FunASR 引擎依赖（funasr/torch 全家桶约 2GB+）不打包：funasr_realtime.py
+    # 的延迟导入也会被静态分析捕获，必须显式排除；打包版选 FunASR 时运行期会给
+    # 明确提示（改用云端或源码运行）。pixel 恒排除（像素主题为渠道独占，GitHub
+    # 版含 lite 一律物理剔除）；只排模块不够，主题包与字体也要断掉，见上面注释。
     excludes=[
         'funasr', 'torch', 'torchvision', 'torchaudio',
         'scipy', 'matplotlib', 'pandas', 'modelscope',
@@ -153,10 +157,8 @@ _EXE_KW = dict(
 
 # 双产物形态（同一份 Analysis，构建命令不变）：
 # - 默认 onefile：单个 ORI.exe，运行时自解压到 %TEMP%（GitHub Release 现产物）
-# - ORI_PACKAGE=onedir：目录形态 dist/ORI/——EXE 只装引导代码，COLLECT 把依赖
-#   平铺进 _internal/。无 %TEMP% 解包（杀软启发式面更小、启动更快）；
-#   sys.frozen 仍为 True、sys._MEIPASS 指向 _internal/，主题/字体/配置模板定位
-#   与 paths.py 的「exe 同目录」语义和 onefile 完全一致，应用代码零改动。
+# - ORI_PACKAGE=onedir：dist/ORI/ 目录形态（EXE 只装引导代码，依赖平铺进 _internal/，
+#   无 %TEMP% 解包）。sys._MEIPASS 指向 _internal/，定位语义与 onefile 一致，代码零改动。
 if os.environ.get('ORI_PACKAGE') == 'onedir':
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True, **_EXE_KW)
     COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, upx_exclude=[],

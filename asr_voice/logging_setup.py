@@ -26,15 +26,14 @@ def _is_frozen() -> bool:
 def resolve_log_file(cfg) -> Path:
     """解析日志文件绝对路径（与 setup_logging 一致，供 UI 打开/清空复用）。
 
-    锚定规则：相对路径（如默认 logs/asr_voice.log）统一解析到
-    打包版 = exe 同目录 / 源码版 = 项目根，且保留 logs/ 子目录；
-    绝对路径原样使用（用户显式指定时尊重其意图）。
+    相对路径（如默认 logs/asr_voice.log）统一解析到打包版 exe 同目录 / 源码版项目根，保留
+    logs/ 子目录；绝对路径原样使用（用户显式指定时尊重其意图）。
     """
     log_cfg = cfg.logging
     log_path = Path(str(log_cfg.file))
     if not log_path.is_absolute():
         if _is_frozen():
-            # 打包后日志写到 exe 同目录（开机自启时工作目录是 system32，
+            # 打包后日志写到 exe 同目录（开机自启时工作目录是 system32
             # 不能锚定 cwd）；保留配置里的 logs/ 相对目录
             anchor = Path(sys.executable).parent
         else:
@@ -45,7 +44,7 @@ def resolve_log_file(cfg) -> Path:
 
 
 def _log_file_pattern(log_path: Path) -> list:
-    """匹配当前日志及其滚动/压缩文件：asr_voice.log、asr_voice.log.2026-08-24 等。"""
+    """匹配当前日志及其滚动/压缩文件：asr_voice.log、asr_voice.log.<日期> 等。"""
     return [log_path, *log_path.parent.glob(log_path.name + ".*")]
 
 

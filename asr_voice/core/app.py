@@ -1,11 +1,6 @@
-"""主程序：状态机与模块集成。
+"""主程序：状态机与模块集成（实时流式识别，WebSocket 逐字同步上屏）。
 
-实时流式识别，WebSocket 逐字同步上屏。
-
-状态流转：
-  IDLE --热键/按钮--> LISTENING (采集 + 识别)
-  LISTENING --热键/按钮--> IDLE (停止)
-  LISTENING --无语音超时--> IDLE (自动停止)
+状态流转：IDLE --热键/按钮--> LISTENING --热键/按钮/无语音超时--> IDLE。
 """
 
 from __future__ import annotations
@@ -49,15 +44,18 @@ APP_STATE_IDLE = "idle"
 APP_STATE_LISTENING = "listening"
 APP_STATE_STOPPING = "stopping"
 
+# 删除键打断的轮询兜底采样间隔：25ms 长按时延上限，远小于一句人声
+DELETE_POLL_INTERVAL_MS = 25
+VK_BACK = 0x08      # Backspace
+VK_DELETE = 0x2E    # Delete
+
 # 语音命令 App 侧处理器（同包轻模块，命令路由/待命/AI/开关）
 # 延迟到常量定义之后导入：voice_command_handlers 顶层 from .app import APP_STATE_*
 from . import voice_command_handlers
 from . import settings_handlers
 
-# 语音命令的默认触发词 / AI 前缀兜底值。
-# 与 config/defaults.py 的 commands.prefix / ai_prefix 同源 —— 这是「用户要
-# 说出的词」而不是界面文案：翻成英文会让兜底值与配置文件里的默认值不一致
-# （用户在设置页看到的默认值反而不生效）。理由同 core/voice_commands.py。
+# 语音命令默认触发词 / AI 前缀兜底值：与 config/defaults.py 同源，是「用户
+# 说出的词」而非界面文案，走 i18n 会与配置文件默认值不一致
 DEFAULT_CMD_PREFIX = "听我说"      # noqa: i18n
 DEFAULT_CMD_AI_PREFIX = "帮我"     # noqa: i18n
 
@@ -66,7 +64,7 @@ LEVEL_NORMALIZE = 3000.0
 # 单次录音硬超时（秒）：超过即强制停止，兜底防底噪贴阈值导致"永远停不下来"
 MAX_SESSION_SECONDS = 60
 
-# ASR 后台建连期间的音频预缓冲上限（块，100ms/块 -> 20 秒），
+# ASR 后台建连期间的音频预缓冲上限（块，100ms/块 -> 20 秒）
 # 防御性封顶：建连异常挂起时不会无限吃内存
 PENDING_AUDIO_MAX_BLOCKS = 200
 
@@ -76,23 +74,16 @@ ASR_CONNECT_RETRY_MAX = 3
 ASR_CONNECT_RETRY_DELAY = 2.0
 
 
-# 建连瞬时错误判定与火山 resource_id 合成已随管线搬入 asr_pipeline
-
 # 预滚缓冲（100ms/块）：覆盖热键呼出 0.15s 和麦克风启动耗时，防吞首字
 PREROLL_BLOCKS = 4
 
-# 「延后 toggle 的收尾」窗口（毫秒）。悬浮条隐藏时，越过阈值的正式开始走
-# _on_toggle → _delayed_toggle，延后 150ms 才真正 _toggle；用户若在这 150ms 里
-# 松手，END 分支看到的状态还是待机（于是不 toggle），而那次延后的开始随后照样
-# 落地——开出一段谁也没要的录音，只有 10 秒静音超时能收场，且这条路径会冲刷
-# final，附近的说话内容可能被上屏。取值必须**大于**那个 150ms 延后（否则定时器
-# 会在开始落地之前空跑一趟），又远小于任何有意义的录音时长。
+# 「延后 toggle 的收尾」窗口（毫秒）：悬浮条隐藏时正式开始延后 150ms 才真正
+# _toggle，用户若在窗口内松手，延后的开始会照样落地成没人要的录音。取值必须
+# 大于 150ms 延后，又远小于有意义的录音时长。
 PENDING_START_CLEANUP_MS = 200
 
-# 长按 + AI 修正的「收尾窗口」（毫秒）：松手后 ASR 引擎的尾句 final 是异步冲刷
-# 回来的（stop() 之后仍可能吐一帧），而整段送修只发生一次——不等这一下，用户刚
-# 说的最后半句就进不了这次修正。窗口取「听得见的最小值」：够网络引擎冲刷一帧，
-# 又短到松手到上屏的额外延迟不易察觉。
+# 长按 + AI 修正的收尾窗口（毫秒）：松手后等引擎冲刷尾句 final（stop() 之后仍
+# 可能吐一帧）再整段一次性送修；取值够冲刷一帧、又短到延迟不易察觉
 HOLD_LLM_COLLECT_MS = 300
 
 # 底噪校准：头 1 秒采样，阈值=中位数×1.8，封顶配置阈值×3（防校准期说话抬过头）
@@ -107,12 +98,8 @@ class VoiceApp(QObject):
     # LLM 修正完成 → 主线程执行替换注入（后台线程 emit，自动 queued 到主线程）
     llm_replace_requested = Signal()
 
-    # 长按说话：热键线程 → 主线程的「按下了」通知（同上，Qt 跨线程自动排队）。
-    # 为什么要绕这一道：QObject 有线程亲和性，QTimer 只有在主线程创建并启动才会被
-    # Qt 调度；热键回调跑在 hotkey-native（或 keyboard 钩子）线程上，就地建表得到的
-    # 是「启动失败、永不触发」的定时器（实测报 QObject::startTimer: current thread's
-    # event dispatcher has already been destroyed，isActive() 为 False），状态机随之
-    # 永远停在 ARMED——热键从此按下去毫无反应，且只在日志里留一行异常。
+    # 长按按下通知：热键线程 emit、主线程处理（QObject 线程亲和性——QTimer 只在
+    # 主线程创建启动才被调度，热键线程就地建表会静默失效）
     hold_press_requested = Signal()
 
     # 发行层默认引擎：实例属性在 __init__ 里按发行层判定决定；
@@ -124,14 +111,14 @@ class VoiceApp(QObject):
         self.cfg = config
         # 静默启动：仅托盘常驻；热键/托盘唤出悬浮条后再录音
         self._start_hidden = start_hidden
-        # 发行层默认引擎（商店版 funasr）；首启与热加载共用同一默认值
+        # 发行层默认引擎（发行构建 funasr）；首启与热加载共用同一默认值
         self._default_engine: str | None = "funasr" if is_steam_build() else None
         self.state = APP_STATE_IDLE
         self.auto_stop_seconds = getattr(config.recording, "auto_stop_seconds", 5)
         self._lock = threading.Lock()
         self._last_voice_time = 0.0
 
-        # LLM 修正替换信号 → 槽（跨线程 queued；不能用 QMetaObject.invokeMethod，
+        # LLM 修正替换信号 → 槽（跨线程 queued；不能用 QMetaObject.invokeMethod
         # 它对 Python 类不可靠）
         self.llm_replace_requested.connect(self._do_llm_replace)
         # 长按说话：热键线程 emit → 主线程 _on_hotkey_press（与上面 LLM 一条路数）
@@ -147,20 +134,15 @@ class VoiceApp(QObject):
         self._last_block_time = 0.0      # 最近一次收到音频块的时刻（判流健康）
         self._capture_started_at = 0.0   # 采集流本次启动时刻
         self._capture_lock = threading.Lock()
-        # 丢弃标记（语义：**停止后不要再打新字**）：本会话未上屏结果全丢（含
-        # 排队中的注入、引擎停连时冲刷的残帧），停止即硬切断；新会话自动复位。
-        # 注意它**不是**「用户不要这段结果了」——手动停止（热键再按）一样会置位
-        # （见 asr_pipeline.stop_session），所以凡是「真打断才该放弃结果」的判定
-        # （LLM 修正上屏/替换）必须判 _session_interrupted，不能用本标记
+        # 丢弃标记（停止后不要再打新字）：本会话未上屏结果全丢（排队中的注入
+        # 停连冲刷的残帧），停止即硬切断，新会话自动复位；手动停止同样置位
+        # 「真打断才该放弃结果」的判定须用 _session_interrupted
         self._discard_results = False
-        # 真打断标记（语义：**用户明确不要这段结果**）：只在删除键打断、左键
-        # 点击打断两条路径置位，新会话复位。与 _discard_results 分开的原因：
-        # 后者在手动停止时必然置位，而「修正后上屏」的 AI 回包必然晚于停止 ——
-        # 用前者判会把用户刚说完的话整段吃掉（无提示、历史也查不到）
+        # 真打断标记（用户明确不要这段结果）：仅删除键/左键点击打断置位，新会话
+        # 复位；手动停止不置位，否则停止后才回包的修正会被整段吃掉
         self._session_interrupted = False
         # 自动停止挂起标记（静音超时/时长上限置位，stop_session 读后清除）：
-        # 自动停止放行引擎冲刷 final——停止时在途的尾句 final（各引擎停止
-        # 冲刷的残留句）放行上屏，硬切断会把用户刚说的话整句丢掉
+        # 放行引擎停止时冲刷的尾句 final 上屏，硬切断会整句丢掉
         self._auto_stop_pending = False
         # 会话序号，每次录音递增；LLM 修正替换比对序号，防旧会话回调误删新会话文字
         self._session_seq = 0
@@ -194,19 +176,21 @@ class VoiceApp(QObject):
         # 当前会话是本次长按起的：只有它归长按收尾。别的路径（录音按钮/托盘菜单/
         # 语音命令）起的会话与长按无关，长按绝不能替它启停
         self._hold_owns_session = False
-        # 「延后 toggle 还没落地」标记：悬浮条隐藏时越过阈值的正式开始要等 150ms
-        # 才真正发生（_on_toggle → _delayed_toggle）。置位 = 本次长按请求的开始仍
-        # 在半路上；用户在这段窗口里松手时，END 分支据此起一次性定时器把它收掉
-        # （见 _arm_pending_start_cleanup 与 PENDING_START_CLEANUP_MS）
+        # 「延后 toggle 还没落地」标记：正式开始要等 150ms 才真正发生，用户在
+        # 窗口内松手时由一次性定时器收掉（PENDING_START_CLEANUP_MS）
         self._hold_pending_start = False
         self._pending_start_timer: QTimer | None = None
         self.cmd_hotkey: HotkeyListener | None = None  # 命令待命热键（语音命令开启时注册）
         self.delete_listeners: list[HotkeyListener] = []  # 删除键打断监听（可选）
+        # 删除键打断的轮询兜底：主线程定时器，非聆听态空转（只做一次状态比较）
+        self._delete_poll_timer: QTimer | None = None
+        # 上一帧删除键是否按下；None = 本次聆听还没建基线（首帧只建基线不触发）
+        self._delete_poll_prev: bool | None = None
         self._app: QApplication | None = None
         self._config_watcher: QFileSystemWatcher | None = None
         self._config_path = None
         self._tray: QSystemTrayIcon | None = None
-        # 平台 SDK 能力层单例 + 500ms 回调泵（仅 商店版且初始化成功时起）
+        # 平台 SDK 能力层单例 + 500ms 回调泵（仅发行构建且初始化成功时起）
         self._steam = None
         self._steam_timer: QTimer | None = None
         # 统计累计（只记数字，不记文本）：字数在 _on_asr_result、时长在 _stop_session
@@ -240,25 +224,23 @@ class VoiceApp(QObject):
         self._deferred_enter = False
         # feed 时的 wait 模式按 requested_at 关联，防热切换 _wait_for_correction 后 job 走错分支
         self._feed_context: dict[float, bool] = {}
-        # 长按 + AI 修正：按住期间只累积文本（不上屏、不送修正），松手后等一个
-        # 极短收尾窗口（引擎冲刷尾句）再**整段一次性**送 AI，修正返回后上屏
-        # ——用户诉求「松开长按直接送 AI 处理然后返回，而不是长按状态下等待返回」
+        # 长按 + AI 修正：按住期间只累积文本（不上屏、不送修正），松手后等短
+        # 收尾窗口（引擎冲刷尾句）再整段一次性送 AI，修正返回后上屏
         self._hold_llm_collect = False      # 收尾窗口开启中（松手后短窗口内为 True）
         self._hold_llm_texts: list[str] = []  # 本轮长按待送修的 final（按时序）
         self._hold_llm_timer: QTimer | None = None
         # 整段提交批次的 requested_at：回调时据此标记 job，会话切换时降级注入
         # 原文（原文从未上屏，直接丢弃等于把用户说的话吃掉）
         self._hold_llm_batch_ts: set[float] = set()
-        # 修正替换队列：回调 append、主线程槽 pop(0) 逐条处理。单槽变量不行，
+        # 修正替换队列：回调 append、主线程槽 pop(0) 逐条处理。单槽变量不行
         # 两个回调同时完成会互相覆盖，丢句子
         self._pending_llm_replace: list = []
         self._instance_server: QLocalServer | None = None  # 单实例锁服务端
-        # 语音对话控制器（豆包 S2S，见 core/dialog.py）：延迟导入——dialog 模块
-        # 顶层虽无重依赖，但保持与 asr_pipeline 一致的按需加载风格
+        # 语音对话控制器（豆包 S2S）：延迟导入，保持按需加载风格
         from .dialog import DialogController
         self.dialog = DialogController(self)
         self.dialog_hotkey: HotkeyListener | None = None  # 对话热键（可配）
-        # 对话内容 → 历史记录的配对器（见 core/dialog_history；信号在 _setup 里接）
+        # 对话内容 → 历史记录的配对器（信号在 _setup 里接）
         from .dialog_history import ExchangeRecorder
         self._dialog_history = ExchangeRecorder()
 
@@ -300,7 +282,7 @@ class VoiceApp(QObject):
                 logger.info("检测到已有实例，本次启动退出")
                 return False
 
-        # 无实例：清理上次崩溃可能残留的管道（正常退出会 removeServer，
+        # 无实例：清理上次崩溃可能残留的管道（正常退出会 removeServer
         # 异常残留会导致 listen 失败）后创建服务端
         QLocalServer.removeServer(self._INSTANCE_KEY)
         self._instance_server = QLocalServer()
@@ -425,7 +407,7 @@ class VoiceApp(QObject):
         else:
             self.bar.show()
 
-        # 商店版首启欢迎（--hidden 开机自启不弹；只弹一次）
+        # 发行构建首启欢迎（--hidden 开机自启不弹；只弹一次）
         # 延迟导入：welcome_dialog 会带起 config.loader，顶层导入与 core.app 成环
         from ..ui.welcome_dialog import (
             WelcomeDialog,
@@ -444,7 +426,7 @@ class VoiceApp(QObject):
                     cfg=self.cfg,
                 ).exec()
 
-        # 麦克风常驻预热：后台打开采集流（设备打开耗时 0.2~0.6s），
+        # 麦克风常驻预热：后台打开采集流（设备打开耗时 0.2~0.6s）
         # 热键按下时音频即刻就绪，防止开头吞字；失败不阻塞启动
         if getattr(getattr(self.cfg, "audio", None), "warmup_capture", True):
             threading.Thread(
@@ -454,11 +436,8 @@ class VoiceApp(QObject):
         # 系统托盘
         self._setup_tray()
 
-        # 游戏模式沿上次会话保留开启 + 本次未提权：启动时补一次提权询问。
-        # 提权只活一个进程生命周期，重启后必然回到普通权限，而游戏模式
-        # 落盘保留——这个组合每次重启都会出现（2026-09-10 用户报「重启后
-        # 默认不是提权状态」）。复用开关时同款确认条（game_mode_elevate）；
-        # 静默启动不弹，免破坏开机自启的安静
+        # 游戏模式沿上次会话保留开启 + 本次未提权：启动时补一次提权询问（提权
+        # 只活一个进程生命周期而游戏模式落盘保留）；静默启动不弹
         from .elevation import should_prompt_elevation
         if (not self._start_hidden and should_prompt_elevation(bool(getattr(
                 getattr(self.cfg, "injection", None), "game_mode", False)))):
@@ -472,8 +451,8 @@ class VoiceApp(QObject):
         if self._config_path:
             self._config_watcher = QFileSystemWatcher()
             self._config_watcher.addPath(str(self._config_path))
-            # 热加载防抖：设置界面保存会逐字段写 30+ 次，每次都完整热加载能把
-            # 主线程卡死数秒（曾见 1 秒 33 次加载）。延迟 300ms 合并成一次
+            # 热加载防抖：设置界面保存会逐字段写 30+ 次，每次完整热加载会卡死
+            # 主线程；延迟 300ms 合并成一次
             self._config_reload_timer = QTimer(self._app)
             self._config_reload_timer.setSingleShot(True)
             self._config_reload_timer.setInterval(300)
@@ -485,6 +464,14 @@ class VoiceApp(QObject):
         # 完成、扩展包状态变化都靠它推进），不能塞进 Qt 事件循环的空隙里等。
         # 500ms 是平台文档给的经验值；初始化失败则整段静默跳过。
         self._steam = get_integration()
+
+        # 工坊目录查询注册必须在 init 分支之外无条件做：文件系统来源不依赖
+        # SDK，而提权启动（计划任务、拿不到环境变量）时 init 必失败；SDK 不可
+        # 用时 provider 自己返回空，无条件注册安全
+        from ..workshop import set_installed_dirs_provider
+
+        set_installed_dirs_provider(self._steam.workshop_installed_dirs)
+
         if is_steam_build() and self._steam.init():
             self._steam_timer = QTimer(self._app)
             self._steam_timer.setInterval(500)
@@ -492,10 +479,8 @@ class VoiceApp(QObject):
             self._steam_timer.start()
             logger.info("Steamworks 回调泵已启动（500ms）")
 
-            # 有 N 卡但没装显卡加速扩展包：主动提示一次（设置页另有安装入口）。
-            # 必须排在 init() 之后：扩展包状态查询读的是 init 里建的 Apps 句柄，
-            # 没 init 时它恒返回 False，会给已装扩展包的用户白提示一次。
-            # 用 transient_hint 而不是弹框：它不是错误，不值得打断用户。
+            # 有 N 卡但没装显卡加速扩展包：提示一次。必须排在 init() 之后——
+            # 扩展包状态查询读 init 里建的 Apps 句柄，没 init 恒返回 False
             from ..steam_integration import (
                 STEAM_DLC_GPU_APP_ID,
                 nvidia_gpu_present,
@@ -552,11 +537,10 @@ class VoiceApp(QObject):
         # FunASR 引擎：启动后台预热模型
         self._preheat_funasr()
 
-        # 右键菜单预热：Qt **首次**弹出菜单要一次性付掉创建分层弹出窗口
+        # 右键菜单预热：Qt 首次弹出菜单要一次性付掉创建分层弹出窗口
         # （WA_TranslucentBackground + DWM 合成）+ 首次解析菜单 QSS 的成本，
-        # 本机实测 0.65~0.76s、第二次仅 0.02s；用户机实测首次右键等了 3s+。
-        # 在屏幕外 popup 一次并立刻关闭，把这份成本挪到事件循环首轮 ——
-        # 用户第一次右键就是热的。内部吞掉一切异常，不影响启动。
+        # 可达数秒。在屏幕外 popup 一次并立刻关闭，把这份成本挪到事件循环
+        # 首轮，用户第一次右键就是热的。内部吞掉一切异常，不影响启动。
         from ..ui.context_menu import prewarm_context_menu
         QTimer.singleShot(0, lambda: prewarm_context_menu(self.bar))
 
@@ -568,12 +552,18 @@ class VoiceApp(QObject):
         try:
             return int(self._app.exec())
         finally:
-            self._cleanup()
+            # 「事件循环已结束」＝没人调过 _on_exit 也会走到这里（Qt 自己退出 /
+            # exec() 抛异常等），显式标注入口。触发方是日志取值不是界面文案，故豁免。
+            self._cleanup("事件循环已结束")  # noqa: i18n
 
     # ---- 删除键打断（可选功能）----
 
     def _update_delete_listener(self, enabled: bool) -> None:
-        """按配置启停删除键打断监听。"""
+        """按配置启停删除键打断监听。
+
+        两条路径任一命中即打断：keyboard 钩子（主）+ 主线程 25ms 轮询物理键状态（兜底，钩子被 UIPI 或反作弊挡住时根本收不到事件）；
+        共用 _on_delete_interrupt，内部按 state 二次确认，重复命中无害。
+        """
         if enabled:
             if self.delete_listeners:
                 return
@@ -588,16 +578,78 @@ class VoiceApp(QObject):
                     logger.error("删除键打断监听注册失败（%s）：%s", key, exc)
             if self.delete_listeners:
                 logger.info("删除键打断已开启（录音中按 Backspace/Delete 停止）")
+            self._start_delete_poll()
         else:
             for listener in self.delete_listeners:
                 listener.stop()
             self.delete_listeners.clear()
+            self._stop_delete_poll()
             logger.info("删除键打断已关闭")
 
-    def _on_delete_interrupt(self) -> None:
-        """删除键回调（keyboard 线程）：仅录音中响应。停止放独立线程，不阻塞分发。"""
-        if self.state != APP_STATE_LISTENING:
+    def _start_delete_poll(self) -> None:
+        """启动删除键轮询兜底（主线程定时器，重复调用幂等）。"""
+        # getattr 兜底：测试里的轻量假 app（VoiceApp.__new__）不走 __init__
+        # 没有这些属性（同 _steam_timer 的写法）
+        if getattr(self, "_delete_poll_timer", None) is not None:
             return
+        timer = QTimer(self)
+        timer.setInterval(DELETE_POLL_INTERVAL_MS)
+        timer.timeout.connect(self._on_delete_poll)
+        timer.start()
+        self._delete_poll_timer = timer
+        logger.debug("删除键轮询兜底已启动（%dms）", DELETE_POLL_INTERVAL_MS)
+
+    def _stop_delete_poll(self) -> None:
+        timer = getattr(self, "_delete_poll_timer", None)
+        if timer is None:
+            return
+        timer.stop()
+        timer.deleteLater()
+        self._delete_poll_timer = None
+        self._delete_poll_prev = None
+
+    def _on_delete_poll(self) -> None:
+        """聆听态采样删除键物理状态，命中按下边沿即打断。"""
+        if self.state != APP_STATE_LISTENING:
+            # 离开聆听就丢基线：下次进入重新建基线，避免沿用上次会话的按下状态
+            self._delete_poll_prev = None
+            return
+        down = False
+        for vk in (VK_BACK, VK_DELETE):
+            try:
+                if _hold_probe.is_key_down(vk):
+                    down = True
+                    break
+            except Exception:
+                logger.debug("删除键轮询采样失败 vk=%s", vk, exc_info=True)
+        prev = self._delete_poll_prev
+        self._delete_poll_prev = down
+        if prev is None:
+            # 进入聆听后的首帧只建基线：按着删除键起录（清屏后马上开录）不该
+            # 被当成打断，否则一开录就自杀
+            return
+        if down and not prev:
+            logger.info("删除键打断（轮询兜底命中）")
+            self._on_delete_interrupt(source="poll")
+
+    def _on_delete_interrupt(self, source: str = "hook") -> None:
+        """删除键回调（keyboard 线程或主线程轮询）：仅录音中响应；停止放独立线程，
+        不阻塞分发。`source` 只进日志，用于区分钩子命中与轮询兜底。"""
+        if self.state != APP_STATE_LISTENING:
+            logger.debug("删除键按下但未在录音中，忽略（来源=%s 状态=%s）",
+                         source, self.state)
+            return
+        # 自打断抑制：注入器（逐字同步退格重写 / LLM 修正替换）会真发 Backspace，
+        # 两条监听路径都区分不出合成键与真键——不挡就会把自注入当成用户按退格取消，
+        # 录音中止、未上屏文字丢弃。真按退格总在注入停下数百毫秒后，不受影响。
+        _injector = getattr(self, "injector", None)
+        _active = getattr(_injector, "synthetic_input_active", None)
+        if callable(_active) and _active():
+            logger.info("删除键打断被抑制（程序正在/刚结束自注入，来源=%s）", source)
+            return
+        # 记在打断请求这一侧：下次再报「按删除键打不断」时，日志里有这一行就说明
+        # 触发路径没问题，问题在后面的停止；连这行都没有 = 钩子根本没收到事件
+        logger.info("删除键打断请求（来源=%s）", source)
         threading.Thread(
             target=self._delete_interrupt, daemon=True, name="delete-interrupt"
         ).start()
@@ -629,15 +681,13 @@ class VoiceApp(QObject):
                 self.injector.cancel_pending()
                 self._stop_session()
 
-    # ---- 长按说话（可选交互，spec: docs/superpowers/specs/2026-09-19-hold-to-talk-design.md）----
+    # ---- 长按说话----
 
     def _hold_to_talk_enabled(self) -> bool:
         """长按模式是否生效：配置开启 + 探针可用 + 热键主键可解析。
 
-        最后一条是 fail-safe：探针只能按虚拟键码采样，而 parse_hotkey 对「无修饰键
-        的裸键」「多步组合」返回 None——这类热键本来就走 keyboard 钩子，探针拿不到
-        主键，长按判定无从谈起。此时自动下线、回落旧的「按一下启停」；否则 on_press
-        取代了 on_trigger，而探针永远报「未按住」，热键会变成按下去毫无反应的死键。
+        最后一条是 fail-safe：探针只能按虚拟键码采样，而 parse_hotkey 对「无修饰键的裸键」「多步组合」返回 None；
+        此时必须回落到「按一下启停」，否则 on_press 取代 on_trigger 而探针永远报「未按住」，热键变成死键。
         """
         try:
             if not hold_flag_enabled(getattr(self.cfg.hotkey, "hold_to_talk", False)):
@@ -680,16 +730,8 @@ class VoiceApp(QObject):
     def _on_hotkey_press(self) -> None:
         """热键按下（长按模式下由 hold_press_requested 排队到主线程后调用）。
 
-        对话进行中交给对话侧长按（spec §3.3：录音热键在对话里同样是「按住说话」
-        ——按住对话热键与按住录音热键都该能抢话）；对话长按没生效时，仍走既有
-        _on_toggle（它带互斥提示）；长按未启用时同理，保证关闭开关后行为与改动前
-        逐字一致。
-
-        交给对话侧时**必须把刚按下的键码带过去**（_hold_vk_code 读的是录音热键）：
-        控制器自己解析的是 cfg.hotkey.dialog，两个键不是一个键，带错了（或不带）
-        它就会去采另一个键——SPEAKING 下先不可逆地打断 AI，然后闸门永远打不开、
-        一帧都不上行（详见 DialogController.hold_press）。上面 _hold_to_talk_enabled()
-        已经证明这个键码可解析（> 0），此处不会抛。
+        对话进行中交给对话侧长按，否则走既有 _on_toggle。交给对话侧时**必须带上刚按下的键码**：
+        控制器自解析的是 cfg.hotkey.dialog，带错/不带会去采另一个键（SPEAKING 下先不可逆打断 AI 再关死闸门）。
         """
         if not self._hold_to_talk_enabled():
             self._on_toggle()
@@ -705,7 +747,7 @@ class VoiceApp(QObject):
         self._hold_vk = self._hold_vk_code()
         self._hold_owns_session = False   # 本次长按还没起会话，是否归属到 ACTIVATE 才定
         # 上一次长按的待修正缓冲可能还没送出去（松手后 300ms 收尾窗口内又按下了）：
-        # 必须**先送修再清**，否则连按两次时前一段话会被这里静默吃掉
+        # 必须先送修再清，否则连按两次时前一段话会被这里静默吃掉
         if getattr(self, "_hold_llm_texts", None):
             self._hold_llm_flush()
         # 兜底清空：异常路径留下的残句不得混进这一轮（正常路径已由 flush 清空）
@@ -759,7 +801,7 @@ class VoiceApp(QObject):
             self._stop_hold_watch()
             self._hold_tracker = None
             self._apply_hold_ui(HoldAction.DISCARD)
-            # 异常路径也算「松手」：本次长按请求的开始若还在半路上，仍然要收掉它，
+            # 异常路径也算「松手」：本次长按请求的开始若还在半路上，仍然要收掉它
             # 否则那次延后的开始会留下一段没人管的录音。收尾表自己出错不得再抛
             # ——本方法就是 Qt 定时器回调，抛出会中断后续调度
             if self._hold_pending_start:
@@ -772,11 +814,8 @@ class VoiceApp(QObject):
     def _hold_start_recording(self) -> None:
         """越过阈值：对话中则开对话上行闸门，否则走既有启停路径开始录音。
 
-        会话可能是别的路径起的（录音按钮/托盘菜单/语音命令），也可能本会话刚被
-        60 秒硬上限或左键打断停掉。_on_toggle 是无条件取反——此时调它会把别人的
-        录音停掉、或让松手凭空开一段新录音，所以只在 APP_STATE_IDLE 时真正启动。
-        对话分支是为「按下录音热键之后、越过阈值之前对话被别的入口打开」这条
-        交叉路径准备的：那一下必须落到对话闸门上，不能去 toggle 录音。
+        _on_toggle 是无条件取反，会话可能是别的路径起的（或刚被硬上限/打断停掉），
+        故只在 APP_STATE_IDLE 时真正启动，否则会停掉别人的录音或凭空开一段。
         """
         if self.dialog is not None and self.dialog.is_active():
             self.dialog.set_hold_active(True)
@@ -796,15 +835,8 @@ class VoiceApp(QObject):
     def _hold_end_recording(self) -> None:
         """松手：对话中则关对话闸门并结束本轮；否则只停「本次长按自己起的」录音。
 
-        长按起的会话若已经不在聆听态（硬上限/打断已把它停掉，或启动当场失败），
-        也不能再 toggle——那会从一次松手里凭空开出一段新录音。归属标记由
-        _on_hold_tick 在 END/DISCARD/异常三个分支统一清除。
-
-        三种收场：
-        1. 会话已落地且属于本次长按：当场 toggle 停掉，延后窗口的收尾不再需要；
-        2. 会话还在半路上（延后 toggle 未落地）：这一拍**绝不能** toggle（延后
-           路径下那是「开始」），改用一次性定时器盯着，落地了再收；
-        3. 别人的会话/已经结束的会话：什么都不做（既有契约）。
+        会话已落地且归本次长按则当场 toggle 停掉；还在半路上（延后 toggle 未落地）改用一次性定时器盯着
+        ——**绝不能** toggle（延后路径下那是「开始」）；别人的或已结束的会话什么都不做。
         """
         if self.dialog is not None and self.dialog.is_active():
             self.dialog.hold_end()
@@ -827,9 +859,8 @@ class VoiceApp(QObject):
     def _arm_pending_start_cleanup(self) -> None:
         """起一次性定时器：把「延后 toggle 窗口里松手」那段半路上的开始收掉。
 
-        单次 200ms（PENDING_START_CLEANUP_MS），到点后只在标记仍置位、且真的进入了
-        聆听态时才 stop（见 _on_pending_start_timeout）。定时器归主线程（本方法只从
-        主线程的采样回调进来），跨线程建表会被 Qt 拒绝，同 _start_hold_watch。
+        单次 PENDING_START_CLEANUP_MS，到点支路见 _on_pending_start_timeout；
+        本方法只从主线程调用，跨线程建 QTimer 会被 Qt 拒绝。
         """
         if self._pending_start_timer is None:
             self._pending_start_timer = QTimer(self)
@@ -841,12 +872,8 @@ class VoiceApp(QObject):
     def _on_pending_start_timeout(self) -> None:
         """收尾定时器到点：那次延后的开始若真的落地了，就停掉它。
 
-        只认「标记仍置位」+「当前正在聆听」两条同时成立：
-        - 标记已被清（会话在按住期间正常落地并收场，或已经收尾过）= 无事可做；
-        - 状态不是聆听 = 那次开始根本没落地（或已经被别的路径收掉）。**绝不能在
-          待机态调 _on_toggle**：那里它是「开始录音」——正是本机制要防的缺陷，
-          松手反倒开出一段没人要的录音。
-        异常必须吞掉：Qt 定时器回调里抛出会中断后续调度（同 _on_hold_tick）。
+        只认「标记仍置位」+「当前正在聆听」同时成立。**绝不能在待机态调 _on_toggle**——那里它是「开始录音」，
+        正是本机制要防的缺陷。异常必须吞掉：Qt 定时器回调抛出会中断后续调度。
         """
         try:
             if not self._hold_pending_start:
@@ -885,10 +912,8 @@ class VoiceApp(QObject):
     def _hold_llm_active(self) -> bool:
         """按住期间的累积判定：本次长按真正持有一个会话 + AI 修正器存在。
 
-        `_hold_owns_session` 不能省：按下越过阈值时若会话已由别的路径起（托盘/
-        按钮/命令热键），_hold_start_recording 会放弃归属，此时若还把 final 收进
-        缓冲就再也没人来送修——那些 final 会全部消失。
-        两个开关缺一不可——只开长按、或只开 AI 修正，行为与改动前逐字一致。
+        `_hold_owns_session` 不能省：会话若已由别的路径起，_hold_start_recording 会
+        放弃归属，此时收进缓冲的 final 再没人送修、全部消失。
         """
         # getattr 兜底：本方法会被「长按采样」路径调用，而该路径的测试替身
         # （以及构造中途的实例）未必带上修正器字段
@@ -899,10 +924,7 @@ class VoiceApp(QObject):
     def _begin_hold_llm_collect(self) -> None:
         """松手（主线程）：开收尾窗口，把引擎冲刷的尾句一起收齐再送 AI。
 
-        只做「置位 + 起表」：真正的送修在窗口到点后的 _hold_llm_flush。
-        主线程调用（_on_hold_tick），QTimer 的线程亲和性满足。
-        本方法只看修正器在不在——调用点都是「本次长按要收场了」，是否真有文本
-        由 _hold_llm_flush 自己判断（空缓冲直接返回，不会空发请求）。
+        只做「置位 + 起表」，真正的送修在 _hold_llm_flush；有无文本由后者判断。
         """
         if getattr(self, "_llm_corrector", None) is None:
             return
@@ -916,9 +938,7 @@ class VoiceApp(QObject):
     def _hold_llm_flush(self) -> None:
         """收尾窗口到点（主线程）：整段一次性送 AI，修正返回后上屏。
 
-        走 wait 语义（原文不上屏、回包直接注入修正版）：这正是用户要的「松手
-        才送 AI，修完才出字」——按住期间输入框一个字都不出，只在悬浮条气泡里
-        看识别文本。超时/失败由修正器降级为原文（见 do_llm_replace_job）。
+        走 wait 语义（原文不上屏、回包直接注入修正版）；超时/失败降级为原文。
         """
         self._hold_llm_collect = False
         # 局部名不用 `t`：本模块顶层 import 了 i18n 的 t()，遮蔽它会让下面的
@@ -927,7 +947,7 @@ class VoiceApp(QObject):
         chunks = [s for s in getattr(self, "_hold_llm_texts", []) if s]
         self._hold_llm_texts = []
         # 真打断（删除键 / 左键点击）后不得再送修：用户明确表示不要这段内容了。
-        # 打断会把界面打回待机，松手走的是本方法的兜底调用——不在这里拦，
+        # 打断会把界面打回待机，松手走的是本方法的兜底调用——不在这里拦
         # "打断"之后整段照样被送 AI 并上屏，打断动作等于失效
         if getattr(self, "_session_interrupted", False):
             logger.info("长按整段已被真打断，丢弃缓冲：%d句", len(chunks))
@@ -937,7 +957,7 @@ class VoiceApp(QObject):
             return
         corrector = getattr(self, "_llm_corrector", None)
         if corrector is None:
-            # 修正器在会话中途被关掉（设置热改 / key 被清）：直接上屏原文，
+            # 修正器在会话中途被关掉（设置热改 / key 被清）：直接上屏原文
             # 不能因为"没人修正了"就把用户说的话吞掉
             try:
                 self.injector.inject(whole, is_final=True,
@@ -1034,9 +1054,8 @@ class VoiceApp(QObject):
     def _kick_funasr_preheat(self, model: str, display_name: str) -> None:
         """切到本地引擎后立即预热（菜单切换路径专用）。
 
-        菜单切换已把 engine/model 预同步进内存 cfg，配置热加载对比不出
-        差异、不会自动触发预热，必须在此显式启动，否则模型要等到用户
-        首次按录音热键才开始加载。
+        菜单切换已把 engine/model 预同步进内存 cfg，热加载对比不出差异、不会自动
+        触发预热，必须在此显式启动，否则模型要等用户首次按录音热键才开始加载。
         """
         if not getattr(self.cfg.funasr, "preheat", True):
             self.bar.signals.transient_hint.emit(
@@ -1095,7 +1114,7 @@ class VoiceApp(QObject):
             SLICE_START,
         )
         # 长按 + AI 修正的收尾窗口（松手后 HOLD_LLM_COLLECT_MS 内）：引擎冲刷的
-        # 尾句收进待修正缓冲，不上屏也不送修正。必须排在下面两道守卫**之前**——
+        # 尾句收进待修正缓冲，不上屏也不送修正。必须排在下面两道守卫之前——
         # 松手时 stop_session 会置 _discard_results、状态也很快回待机，那两道守卫
         # 会把尾句挡在门外，整段送修就少了最后半句（用户选了「等一个极短窗口」）
         if slice_type == SLICE_FINAL and getattr(self, "_hold_llm_collect", False):
@@ -1145,7 +1164,7 @@ class VoiceApp(QObject):
                 )
                 return
             # 平台统计：只累计最终字数（数字，不含文本）。
-            # 放在状态守卫**之后**：那些残留帧是同一段话的重发（在途尾句已在
+            # 放在状态守卫之后：那些残留帧是同一段话的重发（在途尾句已在
             # STOPPING 期放过一次），计入会重复统计同一句话。
             stats = getattr(self, "_steam_stats", None)
             if text and stats is not None:
@@ -1182,8 +1201,8 @@ class VoiceApp(QObject):
         if not text:
             return
         self._last_final_at = time.time()
-        # 长按 + AI 修正：按住期间**只累积**——既不上屏也不送修正。松手后由
-        # _hold_llm_flush 整段一次性送 AI（用户诉求：松开长按才送 AI 处理，
+        # 长按 + AI 修正：按住期间只累积——既不上屏也不送修正。松手后由
+        # _hold_llm_flush 整段一次性送 AI（用户诉求：松开长按才送 AI 处理
         # 而不是按住期间就逐句送、逐句等返回）
         if self._hold_llm_active():
             self._hold_llm_texts.append(text)
@@ -1286,26 +1305,23 @@ class VoiceApp(QObject):
     def _update_dialog_hotkey_listener(self) -> None:
         """按配置注册/更新/注销对话热键（启动、热加载时调用）。
 
-        两种情况不注册：hotkey.dialog 为空（只关热键这一个入口，菜单与
-        悬浮条仍可用），或 dialog.enable=False（功能总开关，菜单项与悬浮条
-        对话入口一并下线）。注册失败只提示不阻断（对话是可选入口，与命令
-        热键同策略，主热键失败才致命）。总开关在设置页改完会随配置热加载
-        走到这里，故立即生效。
-
-        长按说话（可选）：会话进行中把「按下」交给对话侧长按闸门，其余情况
-        保持既有 toggle（spec §3.3 守卫条件——IDLE 时必须仍能按一下进入语音
-        模式）。on_press 与 on_trigger 是二选一（HotkeyListener._on_hotkey），
-        所以分流放在 _on_dialog_hotkey_press 里。开关热改要重建监听器：on_press
-        在构造时定下，与录音热键那条路数一致（见 _reload_config 的 old_hold）。
+        hotkey.dialog 为空或 dialog.enable=False 时不注册，注册失败只提示不阻断。长按说话生效时会话中把「按下」
+        交给对话侧长按闸门，否则保持 toggle（IDLE 必须仍能按一下进入）——分流在 _on_dialog_hotkey_press。
         """
         from ..config.loader import dialog_enabled
+        from ..steam_integration import external_services_allowed
 
-        # 早算：它同时刷新控制器里的闸门缓存位（_on_mic_block 只读那个），
+        # 早算：它同时刷新控制器里的闸门缓存位（_on_mic_block 只读那个）
         # 也决定下面要不要挂 on_press。放在任何提前 return 之前，配置里把对话
         # 热键删掉时这次刷新同样要发生。
         hold = self.dialog is not None and self.dialog.hold_enabled()
 
+        # 外部服务不可用时不注册对话热键：语音对话三家都是外部付费服务
+        # 界面入口此时整体不装配（见 steam_integration.external_services_allowed）。
+        # 云存档或手改配置把 dialog.enable 打开也不该在这里凭空多出一个可用入口。
         want = str(getattr(self.cfg.hotkey, "dialog", "") or "").strip()
+        if not external_services_allowed():
+            want = ""
         if not want or not dialog_enabled(self.cfg):
             if self.dialog_hotkey is not None:
                 try:
@@ -1337,11 +1353,8 @@ class VoiceApp(QObject):
     def _on_dialog_hotkey_press(self) -> None:
         """对话热键按下瞬间（仅长按说话生效时注册；在热键线程执行）。
 
-        分流：会话进行中交给对话侧长按（按下即打断、越过阈值才开闸门），
-        其余情况（IDLE / STOPPING / 长按被关掉）保持既有 toggle 入口——
-        后者还负责把隐藏的悬浮条先呼出来。
-        线程：hold_press 里的即时打断就在本线程发，建采样表由控制器自身的
-        信号排队回主线程（QTimer 的线程亲和性，见 DialogController._hold_press_queued）。
+        分流：会话进行中交给对话侧长按，其余情况保持既有 toggle 入口（先呼出隐藏的
+        悬浮条）。即时打断在本线程发，建采样表由信号排队回主线程（QTimer 亲和性）。
         """
         if self.dialog is not None and self.dialog.is_active():
             self.dialog.hold_press()
@@ -1441,7 +1454,7 @@ class VoiceApp(QObject):
 
     def _on_funasr_progress(self, percent: int, message: str) -> None:
         """FunASR 模型下载/加载进度，显示在悬浮条上。"""
-        # 引擎感知：加载中切走引擎后，被抛弃的预热线程仍会继续回调，
+        # 引擎感知：加载中切走引擎后，被抛弃的预热线程仍会继续回调
         # 不该再往悬浮条刷进度（尤其下载场景每秒一条）
         if getattr(self.cfg, "engine", "") != "funasr":
             return
@@ -1493,11 +1506,11 @@ class VoiceApp(QObject):
         old_tencent_model = self.cfg.tencent.engine_model_type
         old_funasr = getattr(self.cfg, "funasr", None)  # 参数变更检测用（引擎不变时重建预热）
         old_ui = self.cfg.ui  # 主题/配色变更检测用（apply 前先对比，避免无谓重应用）
-        # 分类绑定被改（设置页/手改 yaml）且当前生效引擎正是旧绑定时，
+        # 分类绑定被改（设置页/手改 yaml）且当前生效引擎正是旧绑定时
         # 生效模型字段跟随新绑定，避免保存后仍用旧模型、需重点右键菜单
         self._follow_slot_rebinding(self._engine_menu_id(self.cfg), new_cfg)
         self.cfg = new_cfg
-        # 同步完整配置到悬浮条：热加载整体替换 cfg 对象，
+        # 同步完整配置到悬浮条：热加载整体替换 cfg 对象
         # bar 的密钥过滤（_full_cfg）与 cfg.ui 引用都要跟上
         self.bar.set_full_config(new_cfg)
         self.bar.cfg = new_cfg.ui
@@ -1548,7 +1561,7 @@ class VoiceApp(QObject):
             self._wait_for_correction = False
             logger.info("LLM 修正已关闭")
         elif llm_on and self._llm_corrector is not None:
-            # 修正器存续期间改 wait_for_correction（设置页/手改）即时生效，
+            # 修正器存续期间改 wait_for_correction（设置页/手改）即时生效
             # 否则只有重建修正器（重启/重开 AI 修正）才读得到新值
             self._wait_for_correction = bool(
                 getattr(llm_cfg, "wait_for_correction", False))
@@ -1561,7 +1574,7 @@ class VoiceApp(QObject):
         self._sync_voice_commands_config()
         # 命令热键随 commands.enable / commands.hotkey 热加载刷新
         self._update_cmd_hotkey_listener()
-        # 对话热键随 hotkey.dialog 热加载刷新（对话进行中不重启会话，
+        # 对话热键随 hotkey.dialog 热加载刷新（对话进行中不重启会话
         # 其余 dialog 配置下次进入对话时由 _start_worker 重新读取生效）
         self._update_dialog_hotkey_listener()
         # 命令被禁用时清待命态：残留待命会阻断中间帧上屏，行为不一致
@@ -1652,7 +1665,7 @@ class VoiceApp(QObject):
         except Exception:
             logger.debug("bar_opacity 热加载失败", exc_info=True)
 
-        # 字体热加载：三个字段任一变化就重应用。绘制走 get_font() 缓存，
+        # 字体热加载：三个字段任一变化就重应用。绘制走 get_font() 缓存
         # app.setFont 广播 FontChange 触发重绘，再显式 update() 兜底
         font_sig = (
             str(getattr(ui, "font_file", "") or ""),
@@ -1695,9 +1708,8 @@ class VoiceApp(QObject):
     def _follow_slot_rebinding(self, old_active: str, new_cfg) -> None:
         """分类「调用」绑定被改且当前生效引擎正是旧绑定时，生效模型字段跟随新绑定。
 
-        绑定（menu_model_<slot>）与生效模型字段（tencent.engine_model_type /
-        aliyun.model）分开存储：右键菜单点击路径两者同步写，设置页/手改
-        yaml 只改绑定，此处补齐另一路径，否则保存后录音仍用旧模型。
+        绑定（menu_model_<slot>）与生效模型字段分开存储：右键菜单两者同步写，设置页/
+        手改 yaml 只改绑定，此处补齐，否则保存后录音仍用旧模型。
         """
         settings_handlers.follow_slot_rebinding(self, old_active, new_cfg)
 
@@ -1721,9 +1733,8 @@ class VoiceApp(QObject):
     def _on_injection_method_changed(self, method: str) -> None:
         """注入方式切换（右键菜单）：立即生效并写入配置持久化。
 
-        冲突确认：切到「剪贴输入」会强制关闭「逐字同步」——若逐字同步
-        开着，先弹内嵌确认（确认才执行切换，取消维持原状）。
-        游戏模式开启期间切「逐字输入」同样先确认（确认后联动关闭游戏模式）。
+        切到「剪贴输入」会强制关闭「逐字同步」、游戏模式开启期间切「逐字输入」会
+        联动关闭游戏模式：两者都先弹内嵌确认，取消则维持原状。
         """
         settings_handlers.on_injection_method_changed(self, method)
 
@@ -1760,21 +1771,16 @@ class VoiceApp(QObject):
     def _on_live_intermediate_toggled(self, enabled: bool) -> None:
         """右键菜单「逐字同步」：即时生效并持久化。
 
-        冲突确认：开启与 AI 修正（回包整句重写叠加实时上屏会闪烁）、
-        剪贴输入（整段粘贴叠加实时注入太折腾剪贴板）或语音命令
-        （命令句中间帧可能因同音误识别残留在输入框、顶掉选中文本）
-        冲突时，先弹确认（确认=连带关闭冲突项并开启；取消=维持原状）。
-        冲突源组合任意，统一走 conflict_live（待关闭项存
-        _pending_live_conflicts，确认回答时逐个执行）。
+        与 AI 修正 / 剪贴输入 / 语音命令冲突时先弹确认（确认=连带关闭冲突项并开启，
+        取消=维持原状）；冲突源组合任意，统一走 conflict_live。
         """
         settings_handlers.on_live_intermediate_toggled(self, enabled)
 
     def _on_llm_enable_toggled(self, enabled: bool) -> None:
         """右键菜单「AI 修正」：即时启停并持久化。未配 api_key 拒绝开启。
 
-        冲突确认：开启会强制关闭「逐字同步」——若逐字同步开着，先弹
-        内嵌确认（确认才执行开启，取消维持原状）；开启成功后再询问
-        是否连带开启「修正后上屏」。
+        开启会强制关闭「逐字同步」，冲突时先弹内嵌确认（取消维持原状）；开启成功
+        后再询问是否连带开启「修正后上屏」。
         """
         settings_handlers.on_llm_enable_toggled(self, enabled)
 
@@ -1879,7 +1885,8 @@ class VoiceApp(QObject):
 
     def _on_exit(self) -> None:
         logger.info("用户请求退出")
-        self._cleanup()
+        # 触发方是日志取值，见 `_cleanup` 的 noqa 说明（同处豁免）。
+        self._cleanup("退出请求")  # noqa: i18n
         if self._app:
             self._app.quit()
 
@@ -1901,11 +1908,9 @@ class VoiceApp(QObject):
         self._tray.setContextMenu(self.bar.build_menu(self._tray))
         self._tray.show()
         logger.info("系统托盘已创建")
-        # Windows 没有「让托盘图标默认可见」的接口：任何没被用户手动允许过的
-        # exe 都会被收进任务栏溢出区（新装的打包版 / 商店版因此默认看不见，
-        # 而源码版跑的 python.exe 早就允许过，所以看起来"只有打包版没图标"）。
-        # 系统只在**弹出通知**时把该图标临时提升到托盘区，故首次启动借一次
-        # 气泡让它自己露面，之后不再打扰。
+        # Windows 没有「让托盘图标默认可见」的接口：没被用户手动允许过的 exe 都被
+        # 收进溢出区，系统只在弹通知时临时提升图标到托盘区。首次启动借一次气泡让它
+        # 自己露面，之后不再打扰。
         self._promote_tray_once()
 
     def _promote_tray_once(self) -> None:
@@ -1957,9 +1962,8 @@ class VoiceApp(QObject):
     def _accrue_steam_session(self) -> None:
         """把本次会话时长计入 平台统计（只记数字）。
 
-        以 `_session_start_time` 去重：停止路径有好几条（热键、自动静音、
-        引擎切换、退出），同一次会话被重复结算时只算一次——新的会话会有
-        新的起始时间，所以按起始时间比对就够，不必额外置位。
+        以 `_session_start_time` 去重：停止路径多条，同一次会话重复结算只算一次；
+        新会话起始时间不同，按它比对就够。
         """
         stats = getattr(self, "_steam_stats", None)
         if stats is None:
@@ -1977,8 +1981,8 @@ class VoiceApp(QObject):
     def _flush_steam_cloud(self) -> None:
         """上传云存档（脱敏配置 + 历史）+ 统计落盘。失败只记日志。
 
-        调用点：设置保存后、退出时。刻意不做定时节流：真正会变的只有配置和
-        历史，而这两者都发生在用户动作之后，平台自己也会合并写入请求。
+        「同步密钥」关闭时还必须**删掉**云上那份含密钥的 `config.full.yaml`：只停止
+        写入不够——旧文件会留在云里，新机首启还会被恢复回来，等于开关关了密钥仍同步。
         """
         # 一律 getattr：_cleanup 会被「只造了半个 VoiceApp」的测试调用
         steam = getattr(self, "_steam", None)
@@ -2003,17 +2007,37 @@ class VoiceApp(QObject):
                 cfg_dict, _history.entries(), include_keys=include_keys)
             for name, text in files.items():
                 steam.cloud_write(name, text.encode("utf-8"))
+            if not include_keys:
+                self._revoke_cloud_full_config(steam)
             stats = getattr(self, "_steam_stats", None)
             if stats is not None:
                 stats.flush(steam)
         except Exception:
             logger.debug("云存档上传失败", exc_info=True)
 
-    def _open_settings(self) -> None:
-        """非模态打开设置对话框（打开期间悬浮条仍可拖动但右键菜单禁用），
-        保存后由热加载生效。
+    @staticmethod
+    def _revoke_cloud_full_config(steam) -> None:
+        """确保云上没有含密钥的 `config.full.yaml`。
 
-        不透明度滑块实时预览，取消/未保存关闭时恢复原值；单例守卫：
+        删除失败时**回读一次确认**再告警：`cloud_delete` 返回 False 也可能是「SDK 无
+        Cloud 能力」，此时云上本就没有密钥，只有确实还能读到那份文件才值得告警。
+        """
+        from ..steam_integration import CLOUD_FULL_CONFIG_NAME
+
+        if steam.cloud_delete(CLOUD_FULL_CONFIG_NAME):
+            return
+        if steam.cloud_read(CLOUD_FULL_CONFIG_NAME) is not None:
+            logger.warning(
+                "云存档：含密钥的 %s 仍留在 Steam 云上（删除失败）。"
+                "请在 Steam 的云同步设置里手动清除，或重开一次本开关再关闭",
+                CLOUD_FULL_CONFIG_NAME)
+        else:
+            logger.debug("云存档：%s 删除未确认，但也读不到，按已清除处理",
+                         CLOUD_FULL_CONFIG_NAME)
+
+    def _open_settings(self) -> None:
+        """非模态打开设置对话框（打开期间悬浮条仍可拖动但右键菜单禁用），保存后由
+        热加载生效。不透明度滑块实时预览，取消/未保存关闭时恢复原值；单例守卫：
         已打开则置前返回，不叠开第二窗。
         """
         from ..ui.settings_dialog import SettingsDialog
@@ -2039,7 +2063,7 @@ class VoiceApp(QObject):
             if n > 0:
                 self.bar.signals.transient_hint.emit(
                     t("hint.settings_saved", count=n), 1.5)
-                # 存过盘就把云存档重传一次：设置里可能刚改了 engine、
+                # 存过盘就把云存档重传一次：设置里可能刚改了 engine
                 # 云存档键白名单开关，这些都在云文件里
                 self._flush_steam_cloud()
             else:
@@ -2062,7 +2086,17 @@ class VoiceApp(QObject):
         self._history_win.raise_()
         self._history_win.activateWindow()
 
-    def _cleanup(self) -> None:
+    def _cleanup(self, source: str | None = None) -> None:
+        """退出收尾。`source` = 触发方（诊断用）。
+
+        **传了 `source` 就代表这是一次真实退出**，顺带武装退出兜底看门狗（`core/hard_exit.py`，
+        超 `EXIT_TIMEOUT_S` 直接硬退）；测试不传 → 不武装。`source` 同时写进日志，区分两条退出路径。
+        """
+        _t0 = time.monotonic()
+        if source:
+            from . import hard_exit
+            hard_exit.arm_exit_watchdog()
+            logger.info("开始清理（触发=%s）", source)
         # 单实例锁释放：关闭服务端并移除命名管道（避免残留导致下次无法 listen）
         if self._instance_server is not None:
             try:
@@ -2087,7 +2121,7 @@ class VoiceApp(QObject):
                 logger.debug("对话热键注销异常", exc_info=True)
             self.dialog_hotkey = None
         if getattr(self, "dialog", None) is not None:
-            # 最后一轮对话先落库：退出路径上 queued 的 idle 槽可能已经跑不到，
+            # 最后一轮对话先落库：退出路径上 queued 的 idle 槽可能已经跑不到
             # 不补这一下，最后一问一答就白说了（recorder.flush 幂等）
             try:
                 self._dialog_history.flush()
@@ -2099,6 +2133,7 @@ class VoiceApp(QObject):
                 logger.debug("对话收尾异常", exc_info=True)
         for listener in self.delete_listeners:
             listener.stop()
+        self._stop_delete_poll()
         # 暂停播放/全局静音：退出兑底恢复（退出路径不经过 stop_session）
         try:
             self.media_pauser.resume()
@@ -2123,7 +2158,7 @@ class VoiceApp(QObject):
         if self._tray:
             self._tray.hide()
             self._tray = None
-        # 长按采样定时器：退出路径一并停表并清状态——长按中途退出时定时器仍在跑，
+        # 长按采样定时器：退出路径一并停表并清状态——长按中途退出时定时器仍在跑
         # 而 _on_exit 之后到 exec() 返回之间 Qt 事件循环还会转，残留的采样会再触发
         # 一次录音启停；清空也免得状态跨实例残留
         self._stop_hold_watch()
@@ -2134,4 +2169,29 @@ class VoiceApp(QObject):
         # 正在拆的会话（而 _toggle 在待机态是「开始录音」）
         if self._pending_start_timer is not None:
             self._pending_start_timer.stop()
+
+        # 平台收尾：必须显式做，且必须排在最后——排在 _flush_steam_cloud() 之后（那
+        # 步还在用 Steam API），放最末尾（卡住时看门狗硬退会跳过本函数剩余动作）。
+        # 不做则 steam_api64.dll 要拖到 ExitProcess 的 DLL_PROCESS_DETACH 才收尾，
+        # 卡住 → 进程退不掉 → Steam 一直显示「运行中」。getattr 兜底半个 VoiceApp 测试。
+        _steam_shutdown = getattr(getattr(self, "_steam", None), "shutdown", None)
+        if callable(_steam_shutdown):
+            try:
+                _steam_shutdown()
+            except Exception:
+                logger.debug("Steamworks 收尾异常", exc_info=True)
+
+        # 收尾自述一行，用于排查「Steam 点停止停不掉」：没有这一行 → 上面某步卡住，
+        # 日志最后一行即卡点；有但进程不消失 → 卡在收尾之后（DLL 卸载 / Qt 收尾）；
+        # 提权=是 → 非管理员的 Steam 根本无法终止本进程。
+        try:
+            from .elevation import is_elevated
+            # 这三条是日志取值不是界面文案（全项目日志都是中文，A10 只
+            # 验收界面文案），故逐行豁免；不进 i18n 表，否则英文模式下日志
+            # 会中英掺半，反而更难读。
+            elevated = "是" if is_elevated() else "否"  # noqa: i18n
+        except Exception:
+            elevated = "未知"  # noqa: i18n
+        logger.info("收尾完成：耗时 %.0f ms，提权=%s",
+                    (time.monotonic() - _t0) * 1000.0, elevated)
         self._hold_pending_start = False

@@ -3,15 +3,9 @@ cd /d "%~dp0"
 setlocal
 
 REM Python lookup order (first hit wins):
-REM   0. python.local.bat - local override (gitignored, not in repo)
-REM      create it with one line: set "PYTHON=C:\path\to\python.exe"
-REM      use it when Python is in a non-standard location,
-REM      or when "python" in PATH is the Microsoft Store stub
-REM   1. project venv: .venv\Scripts\python.exe
-REM   2. py launcher (installed with the python.org installer)
-REM   3. python from PATH
-REM NOTE: keep this file pure ASCII - chcp 65001 + non-ASCII text
-REM       makes cmd mis-parse lines (known cmd bug).
+REM   0. python.local.bat (gitignored): set "PYTHON=C:\path\to\python.exe" - for a
+REM      non-standard install or the Microsoft Store stub;  1. .venv, 2. py, 3. PATH
+REM NOTE: pure ASCII only - chcp 65001 + non-ASCII text mis-parses lines.
 
 if exist "python.local.bat" call "python.local.bat"
 

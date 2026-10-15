@@ -123,11 +123,11 @@ def knot_icon(color: str | None = None, size: int = 18) -> QIcon:
 _KNOT_PARTS: dict[str, QImage] = {}
 _KNOT_RECOLORED: dict[tuple[str, str], QImage] = {}
 
-# 链带显示带宽 px，素材厚 73px，缩放比 s = KNOT_BAND/73。13px 为实测调细后的值。
+# 链带显示带宽 px，素材厚 73px，缩放比 s = KNOT_BAND/73。13px 为调细后的值。
 KNOT_BAND = 13.0
-_KNOT_SRC_BAND = 73.0    # 素材链带厚度（实测）
-_KNOT_PERIOD_H = 53.0    # 横带编辫周期（源图 px，实测）
-_KNOT_PERIOD_V = 50.0    # 竖带编辫周期（源图 px，实测）
+_KNOT_SRC_BAND = 73.0    # 素材链带厚度
+_KNOT_PERIOD_H = 53.0    # 横带编辫周期（源图 px，）
+_KNOT_PERIOD_V = 50.0    # 竖带编辫周期（源图 px，）
 
 
 def _knot_part(name: str) -> QImage:
@@ -245,7 +245,7 @@ def knot_border_pixmap(w: int, h: int, color: str = "#ffffff") -> QPixmap:
             draw("right", w - rw, y, rw, segv,
                  0, sy, right_img.width(), _KNOT_PERIOD_V)
 
-    # 四角最后画（压住边条端头）。对切时：上角裁掉下半（保结头），
+    # 四角最后画（压住边条端头）。对切时：上角裁掉下半（保结头）
     # 下角裁掉上半（保结头），源图按显示高度反推裁剪行
     draw("tl", 0, 0, tl_w, tl_vis_h, 0, 0, tl_w / s, tl_vis_h / s)
     draw("tr", w - tr_w, 0, tr_w, tr_vis_h, 0, 0, tr_w / s, tr_vis_h / s)
@@ -263,7 +263,7 @@ def knot_border_pixmap(w: int, h: int, color: str = "#ffffff") -> QPixmap:
 ICON_SIZE = 40
 TOGGLE_QSS = "QPushButton { background: transparent; border: none; }"
 
-# 长按准备中（spec §3.2.1）的结图色：暗红。准备中可能被撤销（轻点丢弃），
+# 长按准备中的结图色：暗红。准备中可能被撤销（轻点丢弃）
 # 既不能用录音的强调色，也不能借用录音的旋转动画
 ARMED_ICON_COLOR = "#a03c3c"
 

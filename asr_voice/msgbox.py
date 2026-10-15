@@ -1,13 +1,11 @@
 """统一错误提示（启动期致命错误共用）。
 
-打包版（PyInstaller frozen，无控制台）与 商店版（launcher 静默拉起，stderr
-无人可见）弹应用自有 Fluent 风格的 Qt 错误对话框（ui.error_dialog，与欢迎页/
-设置界面同视觉血统）；Qt 初始化失败时回退 Win32 原生 MessageBoxW，保证提示必达；
-其余源码版打印到 stderr（控制台可见，且测试/CI 不弹模态框）。
+打包版（PyInstaller frozen，无控制台）与发行构建（launcher 静默拉起，stderr 无人可见）
+弹应用自有 Fluent 风格 Qt 对话框（ui.error_dialog）；Qt 初始化失败时回退 Win32
+MessageBoxW，保证提示必达；其余源码版打印到 stderr（控制台可见，测试/CI 不弹模态框）。
 
-全项目启动期致命错误（配置加载失败、核心模块导入失败、热键注册失败、
-运行时异常）统一走 show_error，保证打包版与源码版的提示行为一致、
-风格统一。
+全项目启动期致命错误（配置加载失败、核心模块导入失败、热键注册失败、运行时异常）
+统一走 show_error，保证打包版与源码版提示行为一致。
 """
 
 from __future__ import annotations
@@ -32,9 +30,8 @@ def _is_steam() -> bool:
 def show_error(message: str, title: str = "Open-RealtimeASR-UI") -> None:
     """显示致命错误。
 
-    - 打包版 / 商店版（无控制台）：Qt Fluent 风格错误对话框；
-      Qt 不可用时回退 Windows MessageBoxW（图标 0x10 = MB_ICONERROR）
-    - 其余源码版：打印到 stderr（保持控制台可见）
+    打包版 / 发行构建（无控制台）：Qt Fluent 对话框，Qt 不可用时回退 Windows
+    MessageBoxW（图标 0x10 = MB_ICONERROR）；其余源码版打印到 stderr。
     """
     if not (_is_frozen() or _is_steam()):
         print(t("err.stderr_line", message=message), file=sys.stderr)

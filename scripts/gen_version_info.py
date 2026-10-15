@@ -1,15 +1,11 @@
 """从 asr_voice/version.py 生成 PyInstaller 用的 version_info.txt。
 
-为什么不用 PyInstaller 的 VSVersionInfo 对象序列化：那是二进制风格的
-repr 落盘，diff 不可读、字段顺序由库决定。这里用文本模板 + 版本号替换，
-生成结果人可读、可 diff，且「生成器输出 == 已提交文件」可被断言
-（tests/test_version.py::GenVersionInfoTest.test_committed_version_info_matches_generator）。
+不用 PyInstaller 的 VSVersionInfo 序列化：那是二进制风格的 repr 落盘，diff 不可读、
+字段顺序由库决定。文本模板 + 版本号替换可读可 diff，且「生成器输出 == 已提交文件」
+由测试守住。
 
-用法：
-    python scripts/gen_version_info.py                # 写仓库根 version_info.txt
-    python scripts/gen_version_info.py --out <path>   # 写指定路径
-
-注意：写文件固定 LF + 无尾换行（与仓库现存 version_info.txt 字节形态一致）。
+用法：python scripts/gen_version_info.py [--out <path>]，缺省写仓库根 version_info.txt
+（固定 LF + 无尾换行，与仓库现存文件的字节形态一致）。
 """
 
 from __future__ import annotations
@@ -67,11 +63,9 @@ VSVersionInfo(
 
 
 def normalize(version_str: object) -> str:
-    """归一化为 `X.Y.Z`：去前导 `v`，并要求恰好三段纯数字。
-
-    刻意不接受四段（`1.2.3.4`）与预发布后缀（`0.1.0-beta`）：法文资源里
-    filevers 恒四段、末段由本模块补 0，四段输入必是调用方搞错了来源，
-    静默丢一段会生成一个「版本号看着对、其实被截断」的坏资源。
+    """归一化为 `X.Y.Z`：去前导 `v`，恰好三段纯数字。
+    四段与预发布后缀不予接受：FixedFileInfo 需要四段、末段由 `filevers()` 补 0，
+    静默截断会生成「看着对、其实被截断」的坏资源。
     """
     raw = str(version_str if version_str is not None else "").strip().lstrip("vV")
     parts = raw.split(".")

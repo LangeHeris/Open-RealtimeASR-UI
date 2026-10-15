@@ -77,7 +77,7 @@ class ThemeCardGroup(QWidget):
 
     # (内部键, 显示名 i18n 键, 图标 kind)；默认主题放最前。
     # 显示名必须留到 __init__ 里再 t()：类属性在导入期就求值，那一刻连
-    # «用户说的哪种语言» 都还没定（A5 的 apply_configured_language 要等
+    # «用户说的哪种语言» 都还没定（apply_configured_language 要等
     # main 起来才跑），此处写死等于把中文永久焊在界面上。
     _CARDS: list[tuple[str, str, str]] = [
         ("minimal_dark", "set.style.minimal_dark", "moon"),
@@ -101,7 +101,7 @@ class ThemeCardGroup(QWidget):
             b.setIcon(_theme_card_icon(icon_kind, "#b8b8c0"))
             b.setIconSize(QSize(26, 26))
             b.setMinimumHeight(78)
-            # 通栏三等分：QToolButton 默认尺寸策略不随 stretch 扩张，
+            # 通栏三等分：QToolButton 默认尺寸策略不随 stretch 扩张
             # 显式 Expanding 让三张卡片铺满整行（参考图「外观」同款）
             b.setSizePolicy(QSizePolicy.Policy.Expanding,
                             QSizePolicy.Policy.Fixed)
@@ -123,11 +123,9 @@ class ThemeCardGroup(QWidget):
 
 
 class AccordionCard(QWidget):
-    """可展开卡片（复刻参考图「插件配置」样式）：标题+说明在左、箭头在右，
-    点击头部展开/收起内容区。
+    """可展开卡片（标题+说明在左、箭头在右）：点击头部展开/收起内容区。
 
-    展开状态不持久化（每次打开设置回默认）；默认由调用方指定
-    （当前引擎的卡片展开，其余收起，保持列表干净）。
+    展开状态不持久化（每次打开设置回默认），默认展开项由调用方指定。
     """
 
     def __init__(self, title: str, desc: str = "", expanded: bool = False,
@@ -218,9 +216,8 @@ class AccordionCard(QWidget):
 class _DisclosureTriangle(QWidget):
     """自绘 disclosure 小三角（macOS 式）：收起右指、展开下指。
 
-    内置普惠体对 ▸/▾/▶ 等几何三角字形覆盖不全（实测仅 ▲▼ 可渲染，
-    QFontMetrics.inFont 报告不可靠），字体方案太脆弱——矢量自绘
-    一次到位，且边缘抗锯齿比小字号字形更干净。
+    内置字体对 ▸/▾/▶ 等几何三角字形覆盖不全，QFontMetrics.inFont 报告不可靠，
+    故矢量自绘而非依赖字体字形。
     """
 
     def __init__(self, color: QColor, parent: Optional[QWidget] = None):
@@ -249,17 +246,10 @@ class _DisclosureTriangle(QWidget):
 
 
 class EngineOrderRow(QWidget):
-    """引擎排序专属行块（苹果「分组列表」风：iOS/macOS 设置的 inset grouped
-    list）——透明行块，视觉分组由外层 QWidget#engineOrderGroup 大圆角组承担。
+    """引擎排序专属行块（iOS/macOS inset grouped list 风）。
 
-    一个行块 = 厂商头行（▸ + 名称/副标题两行式 + 右侧控件位）
-    + 可展开模型区 + 底部 inset 分隔线（末行由 set_trailing_sep_visible
-    隐藏）。与上一版"独立卡片"设计的差异：
-    - 不再有单卡背景/边框，行与行之间只用 inset 发丝分隔线（左缩进
-      对齐文本、右到边，iOS 标志性细节），整组是一个大圆角容器
-    - 排序控件是 iOS UIStepper 式实底胶囊分段（横排 ▲|▼，填充底+细描边
-      +中缝），显眼且可点感强；头行两行式：主标题 + 灰色小字副标题
-      （"N 个模型"），右侧开关固定最右（iOS 惯例），步进器居其左
+    透明行块，视觉分组由外层 QWidget#engineOrderGroup 大圆角容器承担；一个行块 =
+    厂商头行 + 可展开模型区 + 底部 inset 分隔线（末行由 set_trailing_sep_visible 隐藏）。
     """
 
     def __init__(self, title: str, desc: str = "", expanded: bool = False,
@@ -376,11 +366,8 @@ class EngineOrderRow(QWidget):
     def make_stepper(self, on_up, on_down) -> QWidget:
         """生成横排 ↑↓ 步进器（iOS UIStepper 式实底胶囊分段）。
 
-        填充底 + 细描边 + 中缝竖分隔线把两个方向"装"成一个控件，
-        箭头用正文色——远看也读得出这是可点的排序件。
-        悬停以 btn_hover 加深该半区、按压以 selection_bg 强反馈；
-        首/尾方向由 set_step_enabled 禁用（仅禁点击，无差异配色，
-        两端箭头与其余保持同色）。
+        填充底 + 细描边 + 中缝竖线把两方向装成一个控件；悬停加深半区、按压以
+        selection_bg 反馈；首/尾方向由 set_step_enabled 禁用（仅禁点击，无差异配色）。
         """
         stepper = QFrame()
         stepper.setObjectName("eoStepper")
@@ -426,7 +413,7 @@ class ToggleSwitch(QCheckBox):
 
     def __init__(self, palette: Optional[dict] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        # 4 色取自 palette（两套预设各有 toggle_track_on/knob_on 等），
+        # 4 色取自 palette（两套预设各有 toggle_track_on/knob_on 等）
         # 缺省回退默认深色配色以保持向后兼容
         p = palette or {}
         self._track_off = QColor(p.get("toggle_track_off", "#3d3d3d"))
@@ -503,9 +490,8 @@ class ToggleSwitch(QCheckBox):
 class FlatSlider(QSlider):
     """整条轨道可点击/拖动的扁平滑块。
 
-    原生 QSlider 只有把手（白点）能拖，4px 细轨道点上去没反应——
-    重写鼠标事件：轨道任意位置按下即跳到该值并进入拖动，同时把
-    控件最小高度提到 24px（轨道上下 10px 内的点击都命中）。
+    原生 QSlider 只有把手能拖，细轨道点上去没反应：重写鼠标事件让轨道任意
+    位置按下即跳值并拖动，最小高度提到 24px（上下 10px 内点击都命中）。
     """
 
     def __init__(self, *args, **kwargs):
@@ -608,10 +594,8 @@ def _hotkey_kb_to_display(kb: str) -> str:
 class HotkeyCaptureEdit(QLineEdit):
     """热键按键捕获输入框：点击聚焦后直接按键录制，无需手输。
 
-    显示友好格式（Win+H），text() 返回 keyboard 库格式（win+h）供保存。
-    - 组合键：修饰键（Ctrl/Alt/Shift/Win）+ 主键
-    - 功能键/方向键可单独录制；普通字母数字必须带修饰键（防打字误触）
-    - Esc 取消本次捕获恢复原值；Backspace 清空
+    显示友好格式（Win+H），text() 返回 keyboard 库格式（win+h）供保存。功能键/
+    方向键可单独录制，字母数字必须带修饰键（防打字误触）；Esc 取消，Backspace 清空。
     """
 
     def __init__(self, value: str = "", parent: Optional[QWidget] = None):

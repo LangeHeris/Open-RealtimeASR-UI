@@ -295,7 +295,7 @@ dialog:
   # 用户自建的 hermes-agent API server（OpenAI 兼容 HTTP）：只提供文本、不提供
   # 音频，断句与识别都由本端补齐，故配合下方的「对话专属识别」使用
   hermes:
-    base_url: ""              # 如 http://192.168.0.242:8642（不含 /v1；误填 /v1 会自动剥掉）
+    base_url: ""              # 如 http://192.168.1.10:8642（不含 /v1；误填 /v1 会自动剥掉）
     api_key: ""               # 即服务器 ~/.hermes/.env 的 API_SERVER_KEY（留空=保存时不覆盖已填密钥）
     model: "hermes-agent"     # Hermes 侧的模型标识，通常保持默认
     session_title: "ORI 语音对话"   # 每轮进入对话在服务端建的会话标题（仅便于在 Hermes 侧辨认）
@@ -303,9 +303,9 @@ dialog:
     connect_timeout_ms: 5000  # 健康检查与建会话的超时 [毫秒]
     turn_timeout_ms: 60000    # 单轮回答上限 [毫秒]；Hermes 可能调用工具，实测纯文本轮也要 5.5~7.9 秒
 
-  # ---- 对话专属识别（新增）----
+  # ---- 对话专属识别 ----
   # 留空 = 跟随顶部 engine，行为与升级前完全一致；显式填写才覆盖。
-  # 用于「听写用中文引擎 + 对话用中英混说引擎」而不互相牺牲（见设计文档 §八）
+  # 用于「听写用中文引擎 + 对话用中英混说引擎」而不互相牺牲
   asr:
     engine: ""                # 留空 = 跟随顶部 engine；可选 tencent / aliyun
     model: ""                 # 留空 = 该引擎默认档；腾讯可填 16k_zh_en_2.0 / 16k_multi_lang
