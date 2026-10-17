@@ -186,10 +186,6 @@ docs/               # 文档
 本项目以 [Apache License 2.0](LICENSE) 开源。
 
 - 云端识别引擎（阿里云百炼 / 腾讯云 / 讯飞 / 火山引擎豆包）均为各厂商官方服务，使用前需自备密钥并按各厂商计费规则**自费开通**，产生的费用与合规责任由使用者自行承担。
-
 - 本项目通过官方接口调用上述服务；厂商接口变动可能导致对应引擎暂时不可用，请以各厂商最新文档为准。
-
 - 渠道版构建与本地自行构建的打包版内置[阿里巴巴普惠体 3.0](https://www.iconfont.cn/fonts/detail?cnid=adI1E7HF7yme)（55 Regular / 65 Medium / 85 Bold 三个字重）作为默认界面字体；GitHub Release 的 CI 产物**不内置字体**（`fonts/` 目录不入仓），界面自动回退系统字体。该字体由阿里巴巴集团发布并保留版权，面向全社会**永久免费商用**（个人与企业均可，无需署名）；本项目仅原样内置分发官方字体文件，未做修改、转换或再分发授权。授权要点与官方声明链接见 [THIRD\_PARTY\_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-- 设置页创意工坊的类型方块图标取自开源图标集 [Lucide](https://lucide.dev)（ISC License，免费商用、可再分发；其中 `type` 图标派生自 Feather，另适用 MIT）。图标形状未做改动，仅按最终尺寸光栅化并单色着色，源文件与许可全文随仓于 `asr_voice/assets/workshop/` 与 `licenses/Lucide-ISC.txt`，详见 [THIRD\_PARTY\_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
