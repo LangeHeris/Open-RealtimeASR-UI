@@ -113,19 +113,19 @@ def set_window_topmost(hwnd: int) -> bool:
         return False
 
 
-def reassert_topmost(widget) -> None:
+def reassert_topmost(widget, force: bool = False) -> None:
     """Windows：重设 WS_EX_TOPMOST（SWP_NOACTIVATE 不抢焦点）。
 
     隐藏后重新 show 的窗口会被 Windows 插到置顶组底部（标志仍在却"置顶失效"），显式
     SetWindowPos(HWND_TOPMOST) 提回。保留「传 widget」签名；菜单/对话框开着时静默返回。
 
-    只有窗口自己仍带 TOPMOST 标志才提：关闭「永远置顶」后气泡/确认条的 Qt 标志已被
-    清掉，若这里仍盲目 SetWindowPos(HWND_TOPMOST)，气泡会继续钉在最上层而方窗让位，
-    开关等于半失效。
+    默认只看窗口自己的 TOPMOST 标志：关闭「永远置顶」后气泡/确认条的 Qt 标志已被清掉，
+    若仍盲目提顶会让气泡独自钉在最上层、方窗让位。`force=True` 供临时置顶使用——
+    此时窗口 Qt 标志没有 TOPMOST，但悬浮条主动在保持置顶组。
     """
     if sys.platform != "win32":
         return
-    if not (widget.windowFlags() & Qt.WindowStaysOnTopHint):
+    if not force and not (widget.windowFlags() & Qt.WindowStaysOnTopHint):
         return
     if popup_or_modal_active():
         return
@@ -134,34 +134,27 @@ def reassert_topmost(widget) -> None:
         logger.debug("附属窗口重设 TOPMOST 失败：hwnd=%s", int(widget.winId()))
 
 
-def raise_window(widget) -> bool:
-    """把窗口提到**普通窗口组**顶部；返回 SetWindowPos 是否真的成功。
+def release_window_topmost(widget) -> None:
+    """撤销临时置顶：把窗口放回**普通窗口组**顶部（不抢焦点）。
 
-    关闭「永远置顶」后，show() 不会把窗口抢到前面（WS_EX_NOACTIVATE 更不会），热键
-    呼出的悬浮条会被别的普通窗口压住。此函数只做"提上来"：不置顶、不抢焦点，之后
-    别的窗口仍可正常盖住它。菜单/对话框开着时跳过，避免盖住用户正在点的菜单。
+    临时置顶到期/隐藏/整个 UI 让位时调用。刻意不走 popup 守卫——降低窗口层级
+    不会盖住任何菜单或对话框，而漏掉一次清除会留下永久 TOPMOST。
     """
-    if popup_or_modal_active():
-        return False
     if sys.platform != "win32":
-        try:
-            widget.raise_()
-            return True
-        except Exception:
-            logger.debug("raise() 失败，忽略", exc_info=True)
-            return False
+        return
     try:
         user32 = ctypes.windll.user32
         _declare_set_window_pos(user32)
-        HWND_TOP = 0
+        HWND_NOTOPMOST = -2
         SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
-        return bool(user32.SetWindowPos(
-            wintypes.HWND(int(widget.winId())), wintypes.HWND(HWND_TOP),
+        ok = bool(user32.SetWindowPos(
+            wintypes.HWND(int(widget.winId())), wintypes.HWND(HWND_NOTOPMOST),
             0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE,
         ))
+        if not ok:
+            logger.debug("撤销 TOPMOST 失败：hwnd=%s", int(widget.winId()))
     except Exception:
-        logger.debug("SetWindowPos(HWND_TOP) 失败，忽略", exc_info=True)
-        return False
+        logger.debug("SetWindowPos(HWND_NOTOPMOST) 失败，忽略", exc_info=True)
 
 
 # ---- 文本截断（悬浮条与气泡共用单一实现，消除双份漂移） ----
@@ -502,7 +495,8 @@ class SpeechBubble(QWidget):
         self._sync_pos()
         if not self.isVisible():
             self.show()
-        reassert_topmost(self)
+        # 临时置顶（关闭永久置顶后按热键起的会话）：Qt 标志没有 TOPMOST，需显式 force
+        reassert_topmost(self, force=getattr(self._bar, "_temp_topmost", False))
         self._force_full_repaint()
         self._sync_blink()      # 像素主题：有内容即启动 ▼ 闪烁
 
@@ -543,7 +537,8 @@ class SpeechBubble(QWidget):
         self._sync_pos()
         if not self.isVisible():
             self.show()
-        reassert_topmost(self)  # 重新弹出/内容更新时提回置顶组顶部
+        # 重新弹出/内容更新时提回置顶组顶部（临时置顶时同样生效）
+        reassert_topmost(self, force=getattr(self._bar, "_temp_topmost", False))
         self._force_full_repaint()
         self._sync_blink()      # 像素主题：有内容即启动 ▼ 闪烁
 
@@ -1199,7 +1194,7 @@ class ConfirmButtons(QWidget):
     def show(self) -> None:
         """显示并重断言置顶（隐藏再显示会掉到置顶组底部，见 reassert_topmost）。"""
         super().show()
-        reassert_topmost(self)
+        reassert_topmost(self, force=getattr(self._bar, "_temp_topmost", False))
 
     def set_colors(self, bg: QColor, text: QColor) -> None:
         """按当前主题上色：容器沿用悬浮条底色、描边按明暗派生；
