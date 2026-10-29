@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QMenu, QPushButton, QWidget
 
 from .bar_widgets import (ConfirmButtons, SpeechBubble, draw_caret_marker,
-                          elide_left, elide_right, raise_window,
+                          elide_left, elide_right, release_window_topmost,
                           reassert_topmost, set_window_topmost)
 from .icons import (
     close_icon,
@@ -132,6 +132,9 @@ DEFAULT_BAR_W = 326
 DEFAULT_BAR_H = 78
 VOICE_SIDE = 83                # 声纹主题正方形默认边长（主题包可用 side 覆盖）
 VOICE_MIN_SIDE = 56            # 声纹主题最小边长（波形 + ✕ 仍清晰可辨）
+# 「永远置顶」关闭时，热键起的会话仍临时置顶：会话结束回待机后再保留这么久，
+# 留出读最终结果的时间，然后自动让位（不是永久置顶）。
+TEMP_TOPMOST_LINGER_MS = 3000
 
 
 def _rgba(hex_color: str, alpha: int) -> str:
@@ -344,6 +347,12 @@ class FloatingBar(QWidget):
         self._topmost_timer = QTimer(self)
         self._topmost_timer.setInterval(500)
         self._topmost_timer.timeout.connect(self._assert_topmost)
+        # 临时置顶：关闭「永远置顶」后，热键起的会话期间主动提到置顶组（否则会被
+        # 取字目标窗口压住、看不到识别内容）；回待机保留 linger 后自动让位。
+        self._temp_topmost: bool = False
+        self._temp_topmost_linger = QTimer(self)
+        self._temp_topmost_linger.setSingleShot(True)
+        self._temp_topmost_linger.timeout.connect(self._release_temp_topmost)
 
         self._init_window()
         self._init_buttons()
@@ -384,16 +393,19 @@ class FloatingBar(QWidget):
             flags & ~Qt.WindowStaysOnTopHint
         )
         if enabled:
+            # 永久置顶接管：临时置顶状态与让位倒计时一并清掉
+            self._temp_topmost = False
+            self._temp_topmost_linger.stop()
             self._topmost_timer.start()  # 置顶开：保活定时器随开随启
         else:
             self._topmost_timer.stop()   # 置顶关：停掉保活定时器
         if flags != self.windowFlags():
             self.setWindowFlags(flags)
             self.show()
-        # 附属顶层小窗（气泡 / 确认按钮条）的 TOPMOST 是各自构造时写死的，必须一并
-        # 同步：否则关掉置顶后条能让位、气泡却仍钉在最上层——用户关这个开关就是要
-        # 整个悬浮 UI 让位，留一个气泡在前面等于开关没生效（录音中尤其明显，那时
-        # 气泡是唯一的内容载体）。
+        # 附属顶层小窗（气泡 / 确认按钮条）的 TOPMOST 在构造时按当时的开关决定，
+        # 切换时必须一并同步：否则关掉置顶后条能让位、气泡却仍钉在最上层——用户关
+        # 这个开关就是要整个悬浮 UI 让位，留一个气泡在前面等于开关没生效（录音中
+        # 尤其明显，那时气泡是唯一的内容载体）。
         for child in (getattr(self, "_bubble", None),
                       getattr(self, "_confirm_btns", None)):
             if child is None:
@@ -410,6 +422,10 @@ class FloatingBar(QWidget):
             if was_visible:
                 child.show()
                 reassert_topmost(child)
+        # 录音/对话进行中关掉永久置顶：当前会话仍要看得见，转临时置顶
+        #（回待机会按 TEMP_TOPMOST_LINGER_MS 自动让位）
+        if not enabled and self._state != UI_IDLE:
+            self._enter_temp_topmost()
 
     def is_always_on_top(self) -> bool:
         return bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
@@ -426,43 +442,83 @@ class FloatingBar(QWidget):
         # 极简主题：气泡随 hideEvent 一并收起，呼出后按当前状态/文本重新驱动
         # （录音中或语音模式中被自动隐藏再呼出，否则会一直没有气泡）
         self._sync_bubble()
-        # 非置顶模式：show() 不会把窗口抢到前面，热键/托盘呼出时会被别的普通
-        # 窗口压住（条形主题没有气泡，等于什么都看不见）。呼出这一下仍要保证
-        # 可见——只提到普通窗口组顶部，不置顶、不抢焦点。
-        self._raise_if_not_topmost()
+        # 会话进行中呼出（隐藏期间录音未停等）：重新进入临时置顶；待机呼出不置顶
+        self._sync_temp_topmost_for_state()
 
-    def _raise_if_not_topmost(self) -> None:
-        """非置顶模式呼出：本窗与可见的附属小窗提到普通窗口组顶部。
+    def _is_topmost_active(self) -> bool:
+        """当前是否应保持置顶：永久开关打开，或热键会话期间的临时置顶。"""
+        return self.is_always_on_top() or getattr(self, "_temp_topmost", False)
 
-        顺序先本窗后附属（后提的在上，气泡盖在条之上）。置顶模式不走这里：
-        _assert_topmost 已把本窗和附属一起提回置顶组。
+    def _enter_temp_topmost(self) -> None:
+        """「永远置顶」关闭时，热键起的会话临时提到置顶组（不抢焦点）。
+
+        否则悬浮条会被取字目标窗口压住：条形主题没有气泡，识别内容直接看不见。
+        会话期间持续保持；回待机后由 _restart_temp_topmost_linger 延时让位。
         """
         if self.is_always_on_top():
             return
-        raise_window(self)
+        self._temp_topmost = True
+        if not self._topmost_timer.isActive():
+            self._topmost_timer.start()   # 会话期间保持置顶组顶部（500ms 保活）
+        self._assert_topmost()
+        self._restart_temp_topmost_linger()
+
+    def _restart_temp_topmost_linger(self) -> None:
+        """按当前状态重置临时置顶的让位倒计时：会话中不放，回待机保留 linger。"""
+        if not getattr(self, "_temp_topmost", False):
+            return
+        if self._state != UI_IDLE:
+            self._temp_topmost_linger.stop()
+            return
+        self._temp_topmost_linger.start(TEMP_TOPMOST_LINGER_MS)
+
+    def _release_temp_topmost(self) -> None:
+        """撤销临时置顶，窗口回到普通窗口组（之后别的窗口仍可正常盖住它）。"""
+        if not getattr(self, "_temp_topmost", False):
+            return
+        self._temp_topmost = False
+        self._temp_topmost_linger.stop()
+        if self.is_always_on_top():
+            return
+        if self._topmost_timer.isActive():
+            self._topmost_timer.stop()
+        release_window_topmost(self)
+        # 隐藏的附属窗也要清（OS 的 TOPMOST 不随 hide 消失，留着会在下次
+        # 非临时置顶场合被重新 show 时冒出来）
         for child in (getattr(self, "_bubble", None),
                       getattr(self, "_confirm_btns", None)):
-            if child is not None and child.isVisible():
-                raise_window(child)
+            if child is not None:
+                release_window_topmost(child)
+
+    def _sync_temp_topmost_for_state(self) -> None:
+        """状态驱动临时置顶：热键起会话 → 提起；回待机 → 保留片刻再让位。"""
+        if self.is_always_on_top():
+            return
+        if self._state != UI_IDLE:
+            self._enter_temp_topmost()
+        else:
+            self._restart_temp_topmost_linger()
 
     def _assert_topmost(self) -> None:
         """Windows：重新断言 WS_EX_TOPMOST，提回置顶组顶部（SWP_NOACTIVATE 不抢焦点）。
 
         Qt 只在建窗时设一次 TOPMOST，隐藏后 show 会被 Windows 插到置顶组底部、被别的置顶窗压住；须走 set_window_topmost
         而非裸调 ctypes（64 位未声明 argtypes 时 HWND_TOPMOST(-1) 截成 0xFFFFFFFF 报 ERROR_INVALID_WINDOW_HANDLE、保活空转）。菜单/对话框开着不抢顶。
+        永久置顶与临时置顶共用这一条保活路径。
         """
         if sys.platform != "win32":
             return
-        if not (self.windowFlags() & Qt.WindowStaysOnTopHint):
+        if not self._is_topmost_active():
             return
         set_window_topmost(int(self.winId()))
         # 附属顶层小窗（气泡 / 确认按钮条）同样在置顶组里，压住了也得提回来：它们只在 show 和内容更新时
         # reassert，静止期间被别的置顶窗口压住就再也回不来（极简主题内容只画在气泡里，压住=什么都看不见）。
         # 顺序固定「先本窗、后附属」：后提的在上，保证气泡始终盖在条之上。
+        # force：临时置顶时附属窗口的 Qt 标志没有 TOPMOST，必须显式提顶。
         for child in (getattr(self, "_bubble", None),
                       getattr(self, "_confirm_btns", None)):
             if child is not None and child.isVisible():
-                reassert_topmost(child)
+                reassert_topmost(child, force=self._temp_topmost)
 
     def _apply_no_activate(self) -> None:
         """Windows：设 WS_EX_NOACTIVATE，点击悬浮条不抢输入焦点，选中的文字不会被顶掉。"""
@@ -1210,6 +1266,8 @@ class FloatingBar(QWidget):
         self._sync_pixel_idle_animation()
         # 主题特性（黑胶/未来皮肤）：同一时机启停动画
         self._sync_theme_animation()
+        # 非永久置顶：热键起的会话临时提到置顶组，回待机保留片刻后让位
+        self._sync_temp_topmost_for_state()
         self.update()
 
     def _on_pulse_tick(self) -> None:
@@ -1646,6 +1704,8 @@ class FloatingBar(QWidget):
 
     def hideEvent(self, event) -> None:
         """隐藏到托盘时持久化窗口位置和尺寸。"""
+        # 隐藏即结束临时置顶：下次呼出再按会话状态决定是否重新提起
+        self._release_temp_topmost()
         _save_window_state(self.x(), self.y(), self.width(), self.height())
         # 气泡一并收起（声纹主题；下次呼出后由录音状态重新驱动弹出）
         if getattr(self, "_bubble", None) is not None:
