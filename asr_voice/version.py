@@ -8,4 +8,4 @@
 - `pyproject.toml` 的 version 同值（守卫同上）
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

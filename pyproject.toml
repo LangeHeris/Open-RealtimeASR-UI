@@ -18,7 +18,7 @@ build-backend = "setuptools.build_meta"
 name = "openrealtimeasr-ui"
 # 与 asr_voice/version.py 一致（单一来源是 version.py；改动时同步改本行并重新
 # 生成 version_info.txt：python tools/gen_version_info.py，否则 tests/test_version.py 转红）
-version = "0.1.1"
+version = "0.1.2"
 description = "ORI (Open-RealtimeASR-UI)：Windows 实时语音输入工具，五大云端/本地 ASR 引擎 + LLM 文本修正 + 悬浮条 UI"
 readme = "README.md"
 requires-python = ">=3.10"
