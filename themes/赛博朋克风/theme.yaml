@@ -3,6 +3,7 @@
 name: 赛博朋克风
 key: cyberpunk
 feature: cyberpunk
+order: 60            # 菜单排序权重
 bg: "#0d0d1a"
 text: "#00f0ff"
 accent: "#ff2a5f"

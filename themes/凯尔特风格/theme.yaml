@@ -3,6 +3,7 @@
 name: 凯尔特风格
 key: celtic
 feature: celtic
+order: 50            # 菜单排序权重
 knot_icon: true
 bg: "#000000"
 text: "#ffffff"

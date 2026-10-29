@@ -23,6 +23,10 @@ GITHUB_THEME_PACKS: tuple[str, ...] = ("凯尔特风格", "赛博朋克风")
 # 渠道版独占的主题包：投放后必须从目标目录清除历史残留。
 STEAM_EXCLUSIVE_PACKS: tuple[str, ...] = ("像素",)
 
+# 双渠道内置的主题包：GitHub 版与商店版都随包投放。这类包不进创意工坊，
+# 不会遮蔽玩家的订阅版，因此允许出现在 Steam depot 清单里。
+BOTH_CHANNEL_PACKS: tuple[str, ...] = ("黑胶唱片",)
+
 
 def _a(text: object) -> str:
     """把任意动态文本压成 ASCII，避免 CI（stdout=cp1252）下 print 自己抛异常。"""

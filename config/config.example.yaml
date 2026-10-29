@@ -233,6 +233,8 @@ recording:
   pause_background_audio: false   # 暂停播放：录音时真暂停后台媒体（浏览器/播放器等），停止后自动恢复；右键菜单「程序行为」可切换（默认关，opt-in）
   mute_background_audio: false    # 全局静音：录音时静音全部后台声音（含游戏），停止后自动恢复；可单独使用，也可与暂停播放叠加
   mute_only_game_mode: false      # 仅游戏模式下静音：开启后全局静音只在游戏模式也开着时执行（避免日常录音误静音音乐/视频）
+  cue_sound: true                 # 录音开始/停止提示音
+  cue_style: "bubble"             # 提示音样式：bubble=气泡 | cork=瓶塞
 
 # 实时语音对话（豆包端到端 S2S 大模型）：按热键或右键菜单进入，
 # 可随时插话打断 AI（barge-in），说"退出/再见"或再按热键结束

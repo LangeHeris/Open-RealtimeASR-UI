@@ -19,6 +19,10 @@ from ..ui.floating_bar import UI_IDLE, UI_LISTENING, UI_RECOGNIZING
 
 logger = logging.getLogger(__name__)
 
+# 停止音放完后留一点余量再关麦；等待上限兜底异常长的音频
+CUE_STOP_MARGIN = 0.05
+CUE_STOP_HOLD_MAX = 0.5
+
 
 def decide_media_actions(cfg) -> tuple[bool, bool]:
     """按配置决定录音时要不要暂停播放/全局静音，返回 (do_pause, do_mute)。
@@ -147,6 +151,14 @@ def start_session(app) -> None:
         app.state = APP_STATE_IDLE
         app.bar.signals.state_changed.emit(UI_IDLE)
         return
+
+    # 录音提示音：会话检查全部通过、即将开麦时立刻响，不让它等设备。
+    # 开麦（蓝牙耳麦 A2DP→HFP 切换）本身要 0.5~1.5 秒，放到开麦后播会明显滞后；
+    # 播在开麦之前还顺带避开一件事：开始音不会被麦克风收进 ASR。
+    rec_cfg = getattr(cfg, "recording", None)
+    if getattr(rec_cfg, "cue_sound", False):
+        from ..audio import ui_cues
+        ui_cues.play_start(getattr(rec_cfg, "cue_style", ui_cues.DEFAULT_STYLE))
 
     # 采集流：预热模式复用启动时打开的流，否则重建，重建期音频进缓冲；
     # 预滚一并回灌，连"按下热键前刚出口的首字"都补得上。建连（握手约 1~2 秒）
@@ -349,6 +361,25 @@ def stop_session(app) -> None:
     app.bar.signals.level_changed.emit(0.0)
     # 清空悬浮条上的识别文字残留，回到待机提示
     app.bar.signals.text_updated.emit("", False)
+
+    # 录音结束提示音：必须在关麦之前同步播放并等它放完。蓝牙耳麦在采集流关闭
+    # 的瞬间会从 HFP 切回 A2DP，切换期间播放的声音会整段丢失——之前挂在悬浮条
+    # 的 IDLE 信号上，热键线程 emit 后要排队到主线程，真正播放往往已经晚于
+    # stop_capture，表现就是"有时结束没声音"。
+    cap = app.capture
+    capture_live = cap is not None and cap.is_running()
+    rec_cfg = getattr(app.cfg, "recording", None)
+    if capture_live and getattr(rec_cfg, "cue_sound", False):
+        from ..audio import ui_cues
+        hold = ui_cues.play_stop(
+            getattr(rec_cfg, "cue_style", ui_cues.DEFAULT_STYLE))
+        if hold:
+            # 保持采集流开着，让 HFP 链路撑到提示音放完；期间状态已是 STOPPING，
+            # on_audio_block 不会喂 ASR，只占住设备
+            time.sleep(min(hold + CUE_STOP_MARGIN, CUE_STOP_HOLD_MAX))
+            # 停止音落在采集流尾部的几块会被预滚缓冲留下，下一轮开机时回灌给
+            # ASR，白送一声爆音；这里直接丢掉尾部的会话残留
+            app._preroll.clear()
 
     # 立即停采集流：asr.stop() 异步期间没有新音频可回吐，杜绝"停止后继续录音"
     stop_capture(app)

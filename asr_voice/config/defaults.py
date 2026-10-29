@@ -194,6 +194,8 @@ DEFAULTS = {
         "pause_background_audio": False,  # 暂停播放：录音时真暂停后台媒体，停止后自动恢复（右键菜单「程序行为」可切换；默认关）
         "mute_background_audio": False,   # 全局静音：录音时静音全部后台声音（含游戏），停止后恢复；可单独使用或与暂停播放叠加
         "mute_only_game_mode": False,     # 仅游戏模式下静音：开启后全局静音只在游戏模式也开着时执行（避免日常录音误静音音乐/视频）
+        "cue_sound": True,                # 录音开始/停止提示音（默认开）
+        "cue_style": "bubble",            # 提示音样式：bubble（气泡）；后续样式在此登记
     },
     "dialog": {
         # 总开关：关闭后右键菜单「语音模式」项、对话热键与悬浮条对话入口

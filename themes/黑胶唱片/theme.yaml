@@ -1,0 +1,12 @@
+# 黑胶唱片主题包（DLC 主题包：精简构建不投放本目录）
+# 方形悬浮窗 + 整窗启停 + 文字走气泡；绘制逻辑就在本目录 feature.py
+# （主题注册表动态加载，新增同类主题无需改主程序源码）
+name: 黑胶唱片
+key: vinyl
+feature: vinyl        # 特性名：本目录 feature.py 里的 FEATURE_NAME
+order: 40             # 菜单排序权重（像素 30 → 黑胶 40 → 凯尔特 50 → 赛博 60）
+voice_print: true     # 正方形悬浮窗 + 整窗启停 + 文字走气泡（布局同「极简」）
+side: 83              # 方窗默认边长（px）
+bg: "#0b0b0e"
+text: "#e8dfc8"
+accent: "#d9a441"
