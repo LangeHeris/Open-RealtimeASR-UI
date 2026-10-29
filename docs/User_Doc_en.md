@@ -375,7 +375,7 @@ The settings dialog has 8 pages:
 | Engine Parameters | Collapsible recognition-parameter cards per engine (Tencent tier models & filtering, Alibaba segmentation & filler words, iFLYTEK parameters for both editions, Volcengine billing & smoothing, FunASR model & device) |
 | AI Correction | Enable switch, type after correction, include history context, request timeout, disable thinking mode, batch correction, custom prompt |
 | Voice Commands | Trigger word, command hotkey, AI command prefix, AI command thinking mode, AI command prompt, custom phrase list, standby timeout, command reference |
-| Recording | Recording (always-on mic warm-up, device selection, silence auto-stop, max recording length), Voice Activity Detection (VAD) (speech threshold, sentence-break wait, minimum speech) |
+| Recording | Recording (always-on mic warm-up, device selection, silence auto-stop, max recording length, recording cue and style), Voice Activity Detection (VAD) (speech threshold, sentence-break wait, minimum speech) |
 | Voice Mode | Dialog provider switch (Doubao / Alibaba Cloud Qwen / self-hosted Hermes), dialog hotkey, keys & test connection, model & persona, voice & playback, turn detection & half-duplex, session behavior, dialog-specific recognition (see Chapter 9) |
 | About | About the app, open-source components, contact, logs & troubleshooting |
 
@@ -1089,6 +1089,8 @@ The API address / key / model and the connectivity test are configured under "En
 | Recording | Microphone | Dropdown that enumerates WASAPI devices live, supports hot-plug, with "System default" pinned at the top |
 | Recording | Auto-stop | 0–300 seconds, default 10 (0 = never stop automatically) |
 | Recording | Max recording length | 0–3600 seconds, default 60 (0 = no limit) |
+| Recording | Recording cue sound | `recording.cue_sound` switch, on by default: plays a short cue when recording starts and stops |
+| Recording | Cue sound style | `recording.cue_style`: Bubble (pick sound) / Cork pop (wine cork pop) |
 | Voice Activity Detection (VAD) | Speech threshold | 50–5000, default 500 |
 | Voice Activity Detection (VAD) | Sentence-break wait | 200–3000 ms, default 600 |
 | Voice Activity Detection (VAD) | Minimum speech | 100–2000 ms, default 300 |
@@ -1155,13 +1157,17 @@ How to switch: right-click menu → Theme, or `config.yaml` → `ui.theme_name` 
 | --- | --- |
 | Cyberpunk (赛博朋克风) | Deep purple-black background `#0d0d1a`, neon cyan text `#00f0ff`, alert-red accent `#ff2a5f`, bright yellow top line; thin neon border + cut-off bottom-left corner |
 | Celtic (凯尔特风格) | White text on a black background; the start/stop button is a Celtic knot (with a rotating animation while recording), chain-pattern border |
+| Vinyl (黑胶唱片) | Dark square window: the record spins with the input level, the tonearm drops onto it and creeps toward the label, and a gloss sweeps across the disc as it turns; text sits in a cream-coloured bubble (bundled in the full build) |
 
 How theme packs work:
 
 - Structure: `themes/<pack name>/theme.yaml` (bg / text / accent are required); a pack takes effect as soon as it is dropped in
-- When a feature module is missing, that theme is skipped automatically and app startup is unaffected
-- A theme whose name collides with a built-in one is skipped
-- In the packaged build the themes directory sits next to the exe; in the source build it is at the project root
+- Optional fields: `feature` (drawing feature name), `order` (menu sort weight, lower comes first), `side` (default square-window edge length)
+- Drawing first looks for a pack-local `feature.py` (local packs may ship drawing code), then falls back to a built-in feature module; when neither exists the theme is skipped automatically and app startup is unaffected
+- Menu order follows `order` ascending (Vinyl 40, Celtic 50, Cyberpunk 60); packs without `order` sort last
+- Steam Workshop theme packs only honour `theme.yaml` and assets; their `feature.py` is never executed (security restriction). Workshop packs may reference a built-in feature name (e.g. `feature: vinyl`) to reuse existing drawing
+- A theme whose internal key (`key`) collides with an existing theme is skipped
+- In the packaged build the themes directory sits next to the exe (plus `_internal/themes`); in the source build it is at the project root
 - The lite build (`build.bat lite`) physically excludes the DLC themes
 
 ### 11.3 Font Settings
@@ -1231,6 +1237,8 @@ For the complete field list and comments see [config/config.example.yaml](../con
 | `hotkey.toggle` | `ctrl+g` | Global hotkey that starts recording |
 | `recording.auto_stop_seconds` | `10` | Stops automatically when no speech is detected (0 = never stop) |
 | `recording.max_session_seconds` | `60` | Hard timeout for a single recording (0 = no limit) |
+| `recording.cue_sound` | `true` | Play a cue when recording starts and stops |
+| `recording.cue_style` | `bubble` | Cue style: `bubble` = Bubble / `cork` = Cork pop |
 | `recording.live_intermediate` | `true` | Intermediate results are typed live (see §5.3 for the logic locks) |
 | `injection.method` | `simulate_keys` | Injection method: `simulate_keys` (simulated keystrokes) / `clipboard_paste` (clipboard paste) |
 | `injection.keep_clipboard` | `false` | `true` = the recognized result stays on the clipboard; `false` = the previous clipboard content is restored after pasting |
@@ -1374,6 +1382,7 @@ Simulated keystrokes are based on synthesized key events without scan codes (`KE
 | Injection method | Simulated keystrokes (keep clipboard off) |
 | Auto-stop on no speech | 10 s |
 | Max recording length | 60 s (0 = no limit) |
+| Recording cue / style | On / Bubble |
 | Standby timeout | 8 s |
 | Dialog turn-detection window / half-duplex | 800 ms / off |
 | Dialog provider / dialog model | Doubao S2S / General chat (O2.0) (1.2.1.1) |

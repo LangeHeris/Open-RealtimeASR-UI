@@ -118,12 +118,50 @@ def reassert_topmost(widget) -> None:
 
     隐藏后重新 show 的窗口会被 Windows 插到置顶组底部（标志仍在却"置顶失效"），显式
     SetWindowPos(HWND_TOPMOST) 提回。保留「传 widget」签名；菜单/对话框开着时静默返回。
+
+    只有窗口自己仍带 TOPMOST 标志才提：关闭「永远置顶」后气泡/确认条的 Qt 标志已被
+    清掉，若这里仍盲目 SetWindowPos(HWND_TOPMOST)，气泡会继续钉在最上层而方窗让位，
+    开关等于半失效。
     """
+    if sys.platform != "win32":
+        return
+    if not (widget.windowFlags() & Qt.WindowStaysOnTopHint):
+        return
     if popup_or_modal_active():
         return
     ok = set_window_topmost(int(widget.winId()))
-    if not ok and sys.platform == "win32":
+    if not ok:
         logger.debug("附属窗口重设 TOPMOST 失败：hwnd=%s", int(widget.winId()))
+
+
+def raise_window(widget) -> bool:
+    """把窗口提到**普通窗口组**顶部；返回 SetWindowPos 是否真的成功。
+
+    关闭「永远置顶」后，show() 不会把窗口抢到前面（WS_EX_NOACTIVATE 更不会），热键
+    呼出的悬浮条会被别的普通窗口压住。此函数只做"提上来"：不置顶、不抢焦点，之后
+    别的窗口仍可正常盖住它。菜单/对话框开着时跳过，避免盖住用户正在点的菜单。
+    """
+    if popup_or_modal_active():
+        return False
+    if sys.platform != "win32":
+        try:
+            widget.raise_()
+            return True
+        except Exception:
+            logger.debug("raise() 失败，忽略", exc_info=True)
+            return False
+    try:
+        user32 = ctypes.windll.user32
+        _declare_set_window_pos(user32)
+        HWND_TOP = 0
+        SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
+        return bool(user32.SetWindowPos(
+            wintypes.HWND(int(widget.winId())), wintypes.HWND(HWND_TOP),
+            0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE,
+        ))
+    except Exception:
+        logger.debug("SetWindowPos(HWND_TOP) 失败，忽略", exc_info=True)
+        return False
 
 
 # ---- 文本截断（悬浮条与气泡共用单一实现，消除双份漂移） ----
@@ -269,10 +307,13 @@ class SpeechBubble(QWidget):
         # 独立顶层窗口（parent=None）：随悬浮窗定位但不嵌入其几何
         super().__init__(None)
         self._bar = bar
-        self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-            | Qt.WindowDoesNotAcceptFocus   # 纯展示，永不抢输入焦点
-        )
+        # 置顶开关关闭时不带 TOPMOST：否则气泡独自钉在最上层、方窗让位，
+        # 用户看到"气泡出来了、下面方窗不出来"
+        flags = (Qt.FramelessWindowHint | Qt.Tool
+                 | Qt.WindowDoesNotAcceptFocus)   # 纯展示，永不抢输入焦点
+        if bar.is_always_on_top():
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._text = ""
@@ -347,6 +388,35 @@ class SpeechBubble(QWidget):
             self._tail_w_px, self._tail_h_px = int(feat.TAIL_W), int(feat.TAIL_H)
         else:
             self._tail_w_px, self._tail_h_px = self.TAIL_W, self.TAIL_H
+
+    def _theme_feature(self):
+        """当前主题的绘制特性模块（内置或主题包自带）；无特性返回 None。"""
+        return getattr(self._bar, "_theme_feature", None)
+
+    def _ink_color(self) -> QColor:
+        """气泡内文字颜色：主题若声明 BUBBLE_INK（如黑胶的奶油底），改用它。"""
+        feat = self._theme_feature()
+        ink = getattr(feat, "BUBBLE_INK", None) if feat is not None else None
+        if ink:
+            return QColor(ink)
+        return QColor(self._text_color)
+
+    def _sep_color(self) -> QColor:
+        """卡片两行之间的分隔线：主题声明了油墨色时随它压暗一档。"""
+        feat = self._theme_feature()
+        if getattr(feat, "BUBBLE_INK", None) is None:
+            return QColor(self._border)
+        sep = self._ink_color()
+        sep.setAlpha(70)
+        return sep
+
+    def _band_color(self, role: str) -> QColor:
+        """角色色带：主题可声明 BUBBLE_BANDS 覆盖（奶油底上换更深色系）。"""
+        feat = self._theme_feature()
+        colors = getattr(feat, "BUBBLE_BANDS", None) if feat is not None else None
+        if colors and role in colors:
+            return QColor(colors[role])
+        return QColor(ROLE_BAND_COLORS.get(role, "#8a8a94"))
 
     def _on_blink_tick(self) -> None:
         """▼ 标记翻转（硬切）：不可见时不驱动重绘，timer 由 _sync_blink 收停。"""
@@ -783,9 +853,12 @@ class SpeechBubble(QWidget):
         # 尾巴朝上（气泡翻到悬浮条下方）时，气泡体从尾巴高度起算
         top = self._tail_h_px if self._tail_up else 0
         body_h = h - self._tail_h_px
-        # 像素主题：阶梯边框体 + 四级金字塔尾巴（关闭抗锯齿的硬边像素观感）
+        # 主题自带气泡样式（像素阶梯体 / 黑胶唱片套 / 未来皮肤）：有就交给特性模块
         feat_pixel = get_feature("pixel") if getattr(self._bar, "_pixel_mode", False) else None
-        if feat_pixel is not None:
+        feat = self._theme_feature()
+        if feat is not None and hasattr(feat, "draw_bubble"):
+            feat.draw_bubble(self, painter)
+        elif feat_pixel is not None:
             feat_pixel.draw_bubble(self, painter)
         else:
             # 气泡体（圆角矩形 + 描边）
@@ -821,11 +894,12 @@ class SpeechBubble(QWidget):
 
         # 文本（单行，垂直居中于气泡体）；loading 模式前置转圈随 tick 旋转
         painter.setFont(bubble_font(self, size))
-        painter.setPen(self._text_color)
+        ink = self._ink_color()
+        painter.setPen(ink)
         text_x = self.PAD_X
         if self._loading:
             pix = spinner_pixmap(
-                self.LOADING_SPINNER_D, self._text_color.name(), self._spinner_angle
+                self.LOADING_SPINNER_D, ink.name(), self._spinner_angle
             )
             painter.drawPixmap(
                 self.PAD_X, int(top + (body_h - self.LOADING_SPINNER_D) / 2), pix
@@ -887,13 +961,15 @@ class SpeechBubble(QWidget):
         w = self.width()
         y = top + self.PAD_Y
         feat_pixel = get_feature("pixel") if getattr(self._bar, "_pixel_mode", False) else None
+        ink = self._ink_color()
+        sep = self._sep_color()
         for i, row in enumerate(self._rows):
             if i:
-                painter.setPen(QPen(self._border, 1))
+                painter.setPen(QPen(sep, 1))
                 painter.drawLine(self.ROW_PAD_X, int(y), w - self.ROW_PAD_X, int(y))
                 y += self.SEP_H
             # 角色色带（像素主题画直角，其余 1.5px 圆角）
-            band = QColor(ROLE_BAND_COLORS.get(row["role"], "#8a8a94"))
+            band = self._band_color(row["role"])
             if not row["current"]:
                 band.setAlpha(110)
             painter.setPen(Qt.NoPen)
@@ -907,7 +983,7 @@ class SpeechBubble(QWidget):
             if row.get("toast"):
                 # 临时提示行：右对齐小字，不占角色列
                 painter.setFont(bubble_font(self, row["size"]))
-                tc = QColor(self._text_color)
+                tc = QColor(ink)
                 tc.setAlpha(170)
                 painter.setPen(tc)
                 painter.drawText(self.ROW_PAD_X, int(y),
@@ -919,14 +995,14 @@ class SpeechBubble(QWidget):
             band_x = self.ROW_PAD_X + self.BAND_W + self.BAND_GAP
             # 角色标签
             painter.setFont(bubble_font(self, max(8, row["size"] - 2)))
-            who = QColor(self._text_color)
+            who = QColor(ink)
             who.setAlpha(150)
             painter.setPen(who)
             painter.drawText(band_x, int(y), self._who_w(), int(row["h"]),
                              Qt.AlignLeft | Qt.AlignVCenter,
                              role_label(row["role"]))
             # 正文
-            color = QColor(self._text_color)
+            color = QColor(ink)
             if not row["current"]:
                 color.setAlpha(120)          # 上一轮压暗
             elif not row["final"]:
@@ -950,7 +1026,7 @@ class SpeechBubble(QWidget):
             if self._rows:
                 y += self.SEP_H
             painter.setFont(bubble_font(self, self._thinking_size))
-            kc = QColor(self._text_color)
+            kc = QColor(ink)
             kc.setAlpha(200)
             painter.setPen(kc)
             painter.drawText(self.ROW_PAD_X, int(y), w - 2 * self.ROW_PAD_X,
@@ -962,7 +1038,7 @@ class SpeechBubble(QWidget):
             if self._rows and not self._thinking:
                 y += self.SEP_H
             painter.setFont(bubble_font(self, self._note_size))
-            tc = QColor(self._text_color)
+            tc = QColor(ink)
             tc.setAlpha(170)
             painter.setPen(tc)
             painter.drawText(self.ROW_PAD_X, int(y), w - 2 * self.ROW_PAD_X,
@@ -1096,10 +1172,12 @@ class ConfirmButtons(QWidget):
         self._border = QColor(255, 255, 255, 50)
         self._text = QColor("#eeeeee")
         self.setObjectName("confirmBtns")
-        self.setWindowFlags(
-            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-            | Qt.WindowDoesNotAcceptFocus  # 纯按钮条，不抢输入焦点
-        )
+        # 与气泡同理：置顶开关关闭时不带 TOPMOST，跟随悬浮条一起让位
+        flags = (Qt.FramelessWindowHint | Qt.Tool
+                 | Qt.WindowDoesNotAcceptFocus)  # 纯按钮条，不抢输入焦点
+        if bar.is_always_on_top():
+            flags |= Qt.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         lay = QHBoxLayout(self)

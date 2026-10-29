@@ -83,11 +83,11 @@ if not LITE_BUILD:
         'asr_voice.ui.theme_features.celtic',
         'asr_voice.ui.theme_features.cyberpunk',
     ]
-    # DLC 主题包（完整构建）：theme.yaml + 素材随 exe 打进 _MEIPASS/themes/，单文件
-    # 即可用。theme_registry._themes_roots() 优先读 _MEIPASS/themes，再读 exe 同目录
-    # themes（仍可投放外部主题包）。必须按包逐个登记、不能整目录拷贝：整目录会把
-    # 渠道独占的像素主题一并打进 GitHub 版。
-    for _pack in ('凯尔特风格', '赛博朋克风'):
+    # DLC 主题包（完整构建）：theme.yaml + 素材（含包自带 feature.py）随 exe 打进
+    # _MEIPASS/themes/，单文件即可用。theme_registry._themes_roots() 优先读
+    # _MEIPASS/themes，再读 exe 同目录 themes（仍可投放外部主题包）。必须按包逐个
+    # 登记、不能整目录拷贝：整目录会把渠道独占的像素主题一并打进 GitHub 版。
+    for _pack in ('凯尔特风格', '赛博朋克风', '黑胶唱片'):
         datas += [(f'themes/{_pack}', f'themes/{_pack}')]
 
 

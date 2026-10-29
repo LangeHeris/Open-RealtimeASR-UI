@@ -14,8 +14,8 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QMenu, QPushButton, QWidget
 
 from .bar_widgets import (ConfirmButtons, SpeechBubble, draw_caret_marker,
-                          elide_left, elide_right, reassert_topmost,
-                          set_window_topmost)
+                          elide_left, elide_right, raise_window,
+                          reassert_topmost, set_window_topmost)
 from .icons import (
     close_icon,
     play_icon,
@@ -130,11 +130,8 @@ MIN_H = 60                     # 非凯尔特主题最小高度：启停按钮 3
 # 跟随当前窗口大小调整（极简主题为正方形，不走此默认）
 DEFAULT_BAR_W = 326
 DEFAULT_BAR_H = 78
-VOICE_SIDE = 83                # 声纹主题正方形默认边长
+VOICE_SIDE = 83                # 声纹主题正方形默认边长（主题包可用 side 覆盖）
 VOICE_MIN_SIDE = 56            # 声纹主题最小边长（波形 + ✕ 仍清晰可辨）
-# 像素主题专属默认边长 70：取用户实际使用并确认的尺寸（persist 在 state.json）。
-# 不跟随 VOICE_SIDE，也不改它本身，避免波及极简等其它方窗主题。
-PIXEL_DEFAULT_SIDE = 70
 
 
 def _rgba(hex_color: str, alpha: int) -> str:
@@ -302,6 +299,9 @@ class FloatingBar(QWidget):
         self._hover: bool = False  # 极简主题整窗即按钮：悬停提亮反馈
         # 像素主题（voice_print 布局之上的像素皮肤）：阶梯边框/均衡器/像素气泡
         self._pixel_mode: bool = False
+        # 当前主题的绘制特性模块（内置或主题包自带 feature.py）：没有则走通用绘制
+        self._theme_feature = None
+        self._theme_feature_name: str = ""
         # 本会话 final 文本累积：气泡显示全文，避免频繁断句时气泡跳变
         self._session_text: str = ""
         # 语音模式对话显示（两行字幕式）：上行=上一轮，下行=当前轮。
@@ -426,6 +426,24 @@ class FloatingBar(QWidget):
         # 极简主题：气泡随 hideEvent 一并收起，呼出后按当前状态/文本重新驱动
         # （录音中或语音模式中被自动隐藏再呼出，否则会一直没有气泡）
         self._sync_bubble()
+        # 非置顶模式：show() 不会把窗口抢到前面，热键/托盘呼出时会被别的普通
+        # 窗口压住（条形主题没有气泡，等于什么都看不见）。呼出这一下仍要保证
+        # 可见——只提到普通窗口组顶部，不置顶、不抢焦点。
+        self._raise_if_not_topmost()
+
+    def _raise_if_not_topmost(self) -> None:
+        """非置顶模式呼出：本窗与可见的附属小窗提到普通窗口组顶部。
+
+        顺序先本窗后附属（后提的在上，气泡盖在条之上）。置顶模式不走这里：
+        _assert_topmost 已把本窗和附属一起提回置顶组。
+        """
+        if self.is_always_on_top():
+            return
+        raise_window(self)
+        for child in (getattr(self, "_bubble", None),
+                      getattr(self, "_confirm_btns", None)):
+            if child is not None and child.isVisible():
+                raise_window(child)
 
     def _assert_topmost(self) -> None:
         """Windows：重新断言 WS_EX_TOPMOST，提回置顶组顶部（SWP_NOACTIVATE 不抢焦点）。
@@ -824,17 +842,20 @@ class FloatingBar(QWidget):
         if not theme:
             return
         prev_theme = self._current_theme_name
+        prev_feature = self._theme_feature
         self._current_theme_name = theme_name
         # 先更新主题标记再应用配色：_apply_theme 依赖它们选择图标/尺寸分支
         self._knot_icon_mode = bool(theme.get("knot_icon"))
         self._pixel_mode = bool(theme.get("pixel"))
+        self._theme_feature = theme.get("_feature")
+        self._theme_feature_name = str(theme.get("feature") or "")
         voice_mode = bool(theme.get("voice_print"))
         if voice_mode != self._voice_mode:
             if voice_mode:
                 # 进入声纹/方窗布局：记住条形尺寸（切回时还原），强制正方形。
                 # 边长固定默认值、不从当前尺寸继承（旧的 max(VOICE_SIDE, min(w,h))
                 # 会把拖大的条形带进方窗，越滚越大回不去）。
-                # 像素主题的默认单独由 PIXEL_DEFAULT_SIDE 指定（见下方分支）。
+                # 主题声明的 side 在下方按主题名变化时统一生效。
                 self._pre_voice_size = (self.width(), self.height())
                 self.setMinimumSize(VOICE_MIN_SIDE, VOICE_MIN_SIDE)
                 self.resize(VOICE_SIDE, VOICE_SIDE)
@@ -854,11 +875,13 @@ class FloatingBar(QWidget):
         # 自动抬升到主题最小高度，保证按钮完整落在链带内侧
         if self._knot_icon_mode and self.height() < self._knot_min_height():
             self.resize(self.width(), self._knot_min_height())
-        # 像素主题：切换进入（含启动）时方窗回到 PIXEL_DEFAULT_SIDE = 70。不从当前窗口尺寸继承
-        # （旧逻辑 max(VOICE_SIDE, min(w,h)) 会把拖大的尺寸带进来、越滚越大回不去）。仅在主题名变化时触发：
-        # 配置重载等对当前主题的重放不动用户当前尺寸；主题内临时拖动只在该次会话有效，切主题/重启回到 70。
-        if self._pixel_mode and prev_theme != theme_name:
-            self.resize(PIXEL_DEFAULT_SIDE, PIXEL_DEFAULT_SIDE)
+        # 声纹/方窗主题：切换进入（含启动）时回到主题声明的边长（缺省 VOICE_SIDE）。
+        # 不从当前窗口尺寸继承（旧逻辑 max(VOICE_SIDE, min(w,h)) 会把拖大的尺寸带进来、
+        # 越滚越大回不去）。仅在主题名变化时触发：配置重载等对当前主题的重放不动用户
+        # 当前尺寸；主题内临时拖动只在该次会话有效，切主题/重启回到默认。
+        if voice_mode and prev_theme != theme_name:
+            side = int(theme.get("side") or VOICE_SIDE)
+            self.resize(side, side)
         # 按钮位置在 apply_colors 末尾重排：那里才刷新 _top_line_color 等主题标记
         self.apply_colors(
             theme["bg"], theme["text"], theme["accent"],
@@ -871,6 +894,10 @@ class FloatingBar(QWidget):
         if not self._pixel_mode:
             self._stop_pixel_idle_animation()
         self._sync_pixel_idle_animation()
+        # 主题包自带特性（唱片/未来的新皮肤）：切走时停上一套，切入后按状态启停
+        if prev_feature is not None and prev_feature is not self._theme_feature:
+            self._call_feature_hook(prev_feature, "stop")
+        self._sync_theme_animation()
 
     def apply_colors(self, bg: str, text: str, accent: str,
                     border: str | None = None, top_line: str | None = None) -> None:
@@ -1175,9 +1202,14 @@ class FloatingBar(QWidget):
                 self._auto_hide_timer.stop()
         # 状态切换后同步按钮样式（赛博朋克主题下黄/红描边随状态切换）
         self._apply_toggle_button_style()
+        # 录音起停提示音由音频管线在会话真实启停时播放（见 asr_pipeline：
+        # start_session 开麦前立即播，stop_session 关麦前播），不挂 UI 状态：
+        # 状态切换会被 80ms 残留过滤 / 30ms 延迟吞掉，且停止音会晚于关麦。
         self._sync_bubble()
         # 像素主题：待机↔活跃切换时启停五柱跳动动画
         self._sync_pixel_idle_animation()
+        # 主题特性（黑胶/未来皮肤）：同一时机启停动画
+        self._sync_theme_animation()
         self.update()
 
     def _on_pulse_tick(self) -> None:
@@ -1623,12 +1655,14 @@ class FloatingBar(QWidget):
         self._stop_spinner()
         # 像素待机动画同理：隐藏时停表，别让 100ms 定时器在托盘里空转
         self._sync_pixel_idle_animation()
+        self._sync_theme_animation()
         super().hideEvent(event)
 
     def showEvent(self, event) -> None:
         """重新显示（托盘呼出）：恢复像素待机动画。"""
         super().showEvent(event)
         self._sync_pixel_idle_animation()
+        self._sync_theme_animation()
 
     # ---- 像素主题待机动画 ----
 
@@ -1652,6 +1686,25 @@ class FloatingBar(QWidget):
             return
         feat.stop_pixel_animation(self)
 
+    # ---- 主题特性动画（主题包自带 skin） ----
+
+    def _call_feature_hook(self, feat, action: str) -> None:
+        """调特性模块的动画钩子（sync_animation / stop_animation）。
+        特性模块可能被 lite 构建裁掉或主题包缺钩子，缺失即跳过。"""
+        if feat is None:
+            return
+        hook = getattr(feat, "sync_animation" if action == "sync" else "stop_animation", None)
+        if hook is not None:
+            hook(self)
+
+    def _sync_theme_animation(self) -> None:
+        """按当前主题/状态/可见性启停特性动画；当前主题没有特性模块则 no-op。"""
+        self._call_feature_hook(self._theme_feature, "sync")
+
+    def _stop_theme_animation(self) -> None:
+        """无条件停表（切离当前主题/隐藏窗口时调用）。"""
+        self._call_feature_hook(self._theme_feature, "stop")
+
     # ---- 绘制 ----
 
     def paintEvent(self, event) -> None:
@@ -1661,11 +1714,11 @@ class FloatingBar(QWidget):
         rect = self.rect().adjusted(0, 0, -1, -1)
         painter.setBrush(self._bg_color)
         if self._voice_mode:
-            # 像素主题：阶梯边框面板 + 像素均衡器 + 状态块（布局同极简，皮肤换像素）
-            feat_pixel = get_feature("pixel") if self._pixel_mode else None
-            if feat_pixel is not None:
-                feat_pixel.draw_panel(painter, self)
-                feat_pixel.draw_pattern(painter, self)
+            # 主题包自带的 skin（像素/黑胶/未来的新皮肤）：面板 + 中央图案
+            feat = self._theme_feature
+            if feat is not None and hasattr(feat, "draw_panel"):
+                feat.draw_panel(painter, self)
+                feat.draw_pattern(painter, self)
             else:
                 # 极简主题：圆角方形面板，图标居中，右下角留缩放手柄
                 bg = QColor(self._bg_color)

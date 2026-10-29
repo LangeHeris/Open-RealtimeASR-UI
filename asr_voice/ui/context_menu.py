@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Optional
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import (
+    QAction,
     QActionGroup,
     QColor,
     QPainter,
@@ -400,15 +401,45 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
                 current_group = group
             _add_engine_action(engine_menu, engine_id, label)
 
-    # 主题子菜单（内置主题 + 已加载主题包）：注册表按内部键索引，显示名单独取
+    # 主题子菜单（内置主题 + 已加载主题包）：注册表按内部键索引，显示名单独取。
+    # 必须放进互斥 QActionGroup：托盘右键菜单是常驻对象（启动时只构建一次），
+    # 没有分组时每选一个主题就多留一个勾，旧勾一直不消失——用户看到"同时勾多项"。
     theme_menu = menu.addMenu(t("menu.theme"))
+    theme_group = QActionGroup(theme_menu)
+    theme_group.setExclusive(True)
+    theme_actions: list[tuple[str, QAction]] = []
     for key, theme in available_themes().items():
         action = theme_menu.addAction(theme_display_name(key))
         action.setCheckable(True)
-        action.setChecked(bar._current_theme_name == key)
+        theme_group.addAction(action)
+        theme_actions.append((key, action))
         action.triggered.connect(
             lambda checked, n=key: bar.signals.theme_changed.emit(n)
         )
+
+    def _sync_theme_checks() -> None:
+        """按实际渲染主题刷新勾选态：托盘菜单不重建，主题可能在悬浮条菜单/配置里被切换。
+
+        互斥组内直接勾中当前项即可自动取消旧项；没有匹配项（自定义配色/主题包下线）
+        时须临时解除互斥才能清空勾选。
+        """
+        current = bar._current_theme_name
+        matched = False
+        for key, action in theme_actions:
+            if key == current:
+                action.setChecked(True)
+                matched = True
+                break
+        if matched:
+            return
+        theme_group.setExclusive(False)
+        for _, action in theme_actions:
+            action.setChecked(False)
+        theme_group.setExclusive(True)
+
+    _sync_theme_checks()
+    # 每次弹出前重同步：常驻的托盘菜单也要与"当前实际渲染主题"一致
+    menu.aboutToShow.connect(_sync_theme_checks)
 
     menu.addSeparator()
 
@@ -532,7 +563,7 @@ def build_context_menu(bar: "FloatingBar", parent: Optional[QWidget] = None) -> 
         _menu_px = max(14, int(getattr(bar.cfg, "font_size_bar", 13) or 13))
         window_menu.setStyleSheet(
             "QMenu::item:disabled {"
-            f" padding: 7px 28px; font-size: {_menu_px}px; font-weight: 500;"
+            f" padding: 7px 28px 7px 12px; font-size: {_menu_px}px; font-weight: 500;"
             f" color: {_dis_color}; }}"
         )
     else:
