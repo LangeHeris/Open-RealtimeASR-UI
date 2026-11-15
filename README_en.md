@@ -20,6 +20,12 @@
 
 </div>
 
+<div align="center">
+
+[![Download for Windows](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![Latest release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
+
+</div>
+
 ***
 
 <div align="center">
@@ -41,7 +47,7 @@ Its core design is **no engine lock-in, dictation behavior is yours to define**:
 ### Requirements
 
 - Windows 10 / 11
-- Packaged build (`ORI.exe`): double-click to run, no environment needed
+- Packaged build ([download the latest `ORI-win64.zip`](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)): extract and double-click `ORI.exe`, no environment needed (keep the `_internal\` directory next to the exe)
 - Source build: Python 3.10+
 
 ### Run in Three Steps
@@ -153,9 +159,9 @@ docs/               # documentation
 
 ## Downloads
 
-- **Source**: clone this repo and follow the [Quick Start](#quick-start); local FunASR models are downloaded by the user
+- **Packaged build (zip, recommended)**: **[download the latest `ORI-win64.zip`](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)** — this link always resolves to the newest stable Release and starts the download immediately; past versions, release notes and checksums are on the [Releases](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases) page. Extract to any directory and double-click `ORI.exe` inside to run. **Releases are not yet code-signed** (SignPath integration in progress; CI signs automatically once its credentials are configured): Windows SmartScreen or antivirus software may flag it — PyInstaller packaging combined with global-hotkey and text-injection behavior easily triggers heuristic false positives. You can verify the zip against [SHA256SUMS.txt](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/SHA256SUMS.txt) (`certutil -hashfile ORI-win64.zip SHA256`), or run from source instead
 
-- **Packaged build (zip)**: see Releases. Download, extract to any directory, and double-click `ORI.exe` inside to run. **Releases are not yet code-signed** (SignPath integration in progress; CI signs automatically once its credentials are configured): Windows SmartScreen or antivirus software may flag it — PyInstaller packaging combined with global-hotkey and text-injection behavior easily triggers heuristic false positives. You can verify the zip against the `SHA256SUMS.txt` release asset (`certutil -hashfile ORI-<version>-win64.zip SHA256`), or run from source instead
+- **Source**: clone this repo and follow the [Quick Start](#quick-start); local FunASR models are downloaded by the user
 
 ## Privacy
 

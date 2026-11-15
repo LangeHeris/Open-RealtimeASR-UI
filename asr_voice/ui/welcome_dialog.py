@@ -40,8 +40,10 @@ from .settings_styles import _theme_palette, _welcome_qss
 logger = logging.getLogger(__name__)
 
 # 隐私政策链接：仓库内 docs/PRIVACY_POLICY.md。
+# 仓库路径必须与关于页帮助文档（settings_dialog._ABOUT_DOC_URLS）同一处：
+# 曾经写成另一个组织名，线上是 404，而按钮看起来一切正常。
 PRIVACY_URL = (
-    "https://github.com/Open-RealtimeASR-UI/Open-RealtimeASR-UI/"
+    "https://github.com/LangeHeris/Open-RealtimeASR-UI/"
     "blob/main/docs/PRIVACY_POLICY.md"
 )
 

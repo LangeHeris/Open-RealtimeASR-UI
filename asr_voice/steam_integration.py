@@ -344,8 +344,13 @@ class SteamIntegration:
         """把本地目录发布成一个工坊物品，返回新物品 ID（失败返回 0）。
 
         **阻塞直到上传完成**（内容大时可达十几分钟），必须放后台线程；`progress` 收到
-        (已处理字节, 总字节)。流程 CreateItem → 等 → StartItemUpdate → 设字段 → 提交 → 等。
+        (已处理字节, 总字节)。        流程 CreateItem → 等 → StartItemUpdate → 设字段 → 提交 → 等。
+
+        发行构建只消费工坊内容，上传由发行方工具完成（该工具不带 --steam）。
         """
+        if is_steam_build():
+            logger.debug("发行构建不提供工坊上传能力")
+            return 0
         if not self.workshop_available():
             return 0
         try:
@@ -419,11 +424,15 @@ class SteamIntegration:
                         description: str | None = None, tags=(),
                         preview: str = "", content: str = "",
                         change_note: str = "", progress=None,
-                        timeout_s: float = 900.0) -> bool:
+                        timeout_s: float = 900.0,
+                        title_zh: str | None = None,
+                        description_zh: str | None = None) -> bool:
         """更新一个**已存在**的工坊物品（成功返回 True）。
 
         **没传的字段一律不设**（Steam UGC 只改显式设置的项，未设置保持线上原值）；preview 非图片
         时 Steam 返回 true 但静默不出封面，故先校验存在；**阻塞**须后台线程；改标签/补封面只能走这条。
+
+        `title_zh` / `description_zh` 只用于简体中文槽，不传则两槽同文。
         """
         if not self.workshop_available():
             return False
@@ -447,14 +456,25 @@ class SteamIntegration:
             if not handle:
                 logger.warning("开启工坊物品更新失败：%s", item_id)
                 return False
-            if title or description:
-                for lang in (_WS_LANG_ENGLISH, _WS_LANG_SCHINESE):
-                    self._workshop.set_item_language(handle, lang)
-                    if title and not self._workshop.set_item_title(handle, title):
-                        logger.warning("设置工坊物品标题失败：%s", item_id)
-                        return False
-                    if description:
-                        self._workshop.set_item_description(handle, description)
+            # 两个语言槽分开赋值：给了中文文案就写中文槽，没给则沿用英文那份
+            # （历史行为）。Steam 不跨语言回退，只填一个槽会让另一种语言的用户
+            # 在物品页看到空标题。
+            slots = (
+                (_WS_LANG_ENGLISH, title, description),
+                (_WS_LANG_SCHINESE, title_zh or title,
+                 description_zh or description),
+            )
+            for lang, slot_title, slot_description in slots:
+                if not (slot_title or slot_description):
+                    continue
+                self._workshop.set_item_language(handle, lang)
+                if slot_title and not self._workshop.set_item_title(
+                        handle, slot_title):
+                    logger.warning("设置工坊物品标题失败：%s", item_id)
+                    return False
+                if slot_description:
+                    self._workshop.set_item_description(
+                        handle, slot_description)
             if content:
                 self._workshop.set_item_content(
                     handle, str(Path(content).resolve()))

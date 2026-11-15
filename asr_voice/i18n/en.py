@@ -77,7 +77,6 @@ MESSAGES: dict[str, str] = {
     "set.workshop.select_folder": "Select folder to publish",
     "set.workshop.folder_missing_manifest": "The selected folder has no ori_workshop.json and cannot be published as a workshop item",
     "set.workshop.readonly": "{count} content pack(s) loaded (offline mode: content works, subscribing and publishing require launching through Steam)",
-    "set.workshop.kind.models": "models",
     "set.workshop.kind.themes": "themes",
     "set.workshop.kind.fonts": "fonts",
     "set.workshop.kind.phrases": "phrases",
@@ -271,6 +270,7 @@ MESSAGES: dict[str, str] = {
     "theme.pixel": "Pixel",
     "theme.celtic": "Celtic",
     "theme.cyberpunk": "Cyberpunk",
+    "theme.vinyl": "Vinyl",
 
     # ---- Realtime voice dialog (core/dialog.py) ----
     # err.* = blocking errors needing user action; hint.* = transient status
@@ -401,6 +401,7 @@ MESSAGES: dict[str, str] = {
     "hint.hold_llm_correcting": "Released, correcting with AI...",
     "hint.phrase_inserted": "Custom phrase inserted",
     "hint.no_last_sentence": "No just-dictated sentence",
+    "hint.delete_focus_moved": "Focus moved; deletion cancelled",
     "hint.ai_need_key":
         "AI processing needs an API key first (right-click -> Settings)",
     "hint.ai_processing": "AI processing...",
@@ -937,7 +938,9 @@ MESSAGES: dict[str, str] = {
         "set.about.help_btn_tip": "Open the offline guide bundled with this app",
         "set.about.help_btn_online": "Online docs",
         "set.about.help_missing": "Bundled guide not found on this machine — see the online docs",
+        "set.about.help_missing_offline": "Bundled guide not found — verify the game files in Steam, then restart",
         "set.about.help_open_fail": "Failed to open the bundled guide — see the online docs or reinstall the app",
+        "set.about.help_open_fail_offline": "Failed to open the bundled guide — verify the game files in Steam, then restart",
         "set.about.doc_title": "User guide",
         "set.about.doc_find": "Find",
         "set.about.doc_find_next": "Next",
@@ -968,6 +971,7 @@ MESSAGES: dict[str, str] = {
         "set.textmenu.copy_link": "Copy Link Location",
         "set.cmdref.effect.enter": "Press Enter (send)",
         "set.cmdref.effect.delete_last": "Delete the text just dictated",
+        "set.cmdref.effect.delete_selection": "Delete the selected text; if nothing is selected, delete the text just dictated",
         "set.cmdref.effect.select_all": "Select all text in the input box",
         "set.cmdref.effect.undo": "Undo the last action",
         "set.cmdref.effect.backspace": "Delete one character",

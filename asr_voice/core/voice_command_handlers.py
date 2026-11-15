@@ -60,6 +60,7 @@ def register_handlers(
     voice_commands.register_handlers({
         "enter": lambda: app.injector.send_key("enter"),
         "delete_last": lambda: command_delete_last(app),
+        "delete_selection": lambda: command_delete_selection(app),
         "select_all": lambda: app.injector.send_key("ctrl+a"),
         "undo": lambda: app.injector.send_key("ctrl+z"),
         "backspace": lambda: app.injector.send_key("backspace"),
@@ -83,6 +84,42 @@ def command_delete_last(app) -> None:
     app._last_final_at = time.time()
     app.injector.replace(n, "")
     app._last_spoken_text = ""
+
+
+def command_delete_selection(app) -> None:
+    """「删除」：前台有选中文字则清空选中，没有选中退回到「删除那句」。
+
+    选中检测走注入线程的 read_selection（Ctrl+C 哨兵法，约 0.1s）；回调里
+    校验前台窗口未变再发 Delete 键，避免把按键打到切换后的窗口。读取时
+    哨兵覆盖了原剪贴板，删除命令没有结果需要保留，完成后一律恢复原内容。
+    """
+    hwnd_before = app.injector.current_window_hwnd()
+
+    def _after_read(selection):
+        if app.injector.current_window_hwnd() != hwnd_before:
+            app.bar.signals.transient_hint.emit(
+                t("hint.delete_focus_moved"), 2.0)
+            return
+        if selection:
+            # 删除会移动光标，取消在途修正的替换防误删
+            app._last_final_at = time.time()
+            app.injector.send_key("delete")
+            # 选中的若恰是刚上屏那句，同步清掉「删除那句」基准，防后续误删
+            if selection == app._last_spoken_text:
+                app._last_spoken_text = ""
+            prev = getattr(app.injector, "selection_prev_clip", None)
+            if prev is not None:
+                try:
+                    import pyperclip
+                    pyperclip.copy(prev)
+                except Exception:
+                    logger.debug("删除选中后恢复剪贴板失败", exc_info=True)
+            app.injector.selection_prev_clip = None
+            return
+        # 没有选中：退回「删除那句」语义（只删本程序刚上屏的文本）
+        command_delete_last(app)
+
+    app.injector.read_selection(done_callback=_after_read)
 
 
 def maybe_route_command(app, text: str) -> bool:

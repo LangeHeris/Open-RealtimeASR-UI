@@ -64,11 +64,8 @@ def _bundled_model_dir(model: str) -> Path | None:
     """随发行分发的模型目录（平台 depot 的 `models/<model>`；源码构建不随包）。
 
     只接受单一目录名（含分隔符/绝对路径/`.`/`..` 一律不命中）；源码构建不探测磁盘，
-    否则用户工作目录下同名目录会抢先命中。顺序：先查创意工坊再查随包 depot。
+    否则用户工作目录下同名目录会抢先命中。
     """
-    workshop_dir = _workshop_model_dir(model)
-    if workshop_dir is not None:
-        return workshop_dir
     try:
         from ..steam_integration import is_steam_build
         if not is_steam_build():
@@ -104,26 +101,6 @@ def _bundled_model_dir(model: str) -> Path | None:
         cand = root / "models" / name
         if cand.is_dir():
             return cand
-    return None
-
-
-def _workshop_model_dir(model: str) -> Path | None:
-    """在已安装的创意工坊物品里找同名模型目录。
-
-    名称校验（分隔符/`..`）已由 `workshop._safe_name` 挡掉，这里只按同名匹配；
-    多个同名物品排序取第一个，保证稳定（同刻订阅两份同名内容本身即冲突）。
-    """
-    name = (model or "").strip()
-    if (not name or name in (".", "..")
-            or "/" in name or "\\" in name or os.path.isabs(name)):
-        return None
-    try:
-        from ..workshop import model_dirs
-        for directory in sorted(model_dirs()):
-            if directory.name == name:
-                return directory
-    except Exception:
-        logger.debug("查询工坊模型失败", exc_info=True)
     return None
 
 

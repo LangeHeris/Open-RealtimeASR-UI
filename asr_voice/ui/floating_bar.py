@@ -151,6 +151,8 @@ class BarSignals(QObject):
     error_occurred = Signal(str)
     show_requested = Signal()
     hide_requested = Signal()
+    # 热键/菜单发起录音：非永久置顶时立即临时提起（不必等后续 ASR 状态）
+    summon_requested = Signal()
     toggle_requested = Signal()
     interrupt_requested = Signal()  # 左键打断（app 丢弃本会话未上屏文字后停止）
     exit_requested = Signal()
@@ -449,6 +451,15 @@ class FloatingBar(QWidget):
         """当前是否应保持置顶：永久开关打开，或热键会话期间的临时置顶。"""
         return self.is_always_on_top() or getattr(self, "_temp_topmost", False)
 
+    def _on_summon_requested(self) -> None:
+        """热键/菜单发起录音（主线程）：非永久置顶时立即临时提起。
+
+        不等 ASR 状态信号：连接/模型加载失败时也照样能把条和提示露出来。
+        """
+        if self.is_always_on_top():
+            return
+        self._enter_temp_topmost()
+
     def _enter_temp_topmost(self) -> None:
         """「永远置顶」关闭时，热键起的会话临时提到置顶组（不抢焦点）。
 
@@ -457,11 +468,15 @@ class FloatingBar(QWidget):
         """
         if self.is_always_on_top():
             return
+        first = not self._temp_topmost
         self._temp_topmost = True
         if not self._topmost_timer.isActive():
             self._topmost_timer.start()   # 会话期间保持置顶组顶部（500ms 保活）
-        self._assert_topmost()
+        ok = self._assert_topmost()
         self._restart_temp_topmost_linger()
+        if first:
+            logger.info("临时置顶：开启（%s）",
+                        "已生效" if ok else "SetWindowPos 未成功，500ms 保活会重试")
 
     def _restart_temp_topmost_linger(self) -> None:
         """按当前状态重置临时置顶的让位倒计时：会话中不放，回待机保留 linger。"""
@@ -478,6 +493,7 @@ class FloatingBar(QWidget):
             return
         self._temp_topmost = False
         self._temp_topmost_linger.stop()
+        logger.info("临时置顶：撤销，窗口回到普通层")
         if self.is_always_on_top():
             return
         if self._topmost_timer.isActive():
@@ -499,18 +515,19 @@ class FloatingBar(QWidget):
         else:
             self._restart_temp_topmost_linger()
 
-    def _assert_topmost(self) -> None:
+    def _assert_topmost(self) -> bool:
         """Windows：重新断言 WS_EX_TOPMOST，提回置顶组顶部（SWP_NOACTIVATE 不抢焦点）。
 
+        返回 SetWindowPos 是否真的成功（供临时置顶入口记日志/排查）。
         Qt 只在建窗时设一次 TOPMOST，隐藏后 show 会被 Windows 插到置顶组底部、被别的置顶窗压住；须走 set_window_topmost
         而非裸调 ctypes（64 位未声明 argtypes 时 HWND_TOPMOST(-1) 截成 0xFFFFFFFF 报 ERROR_INVALID_WINDOW_HANDLE、保活空转）。菜单/对话框开着不抢顶。
         永久置顶与临时置顶共用这一条保活路径。
         """
         if sys.platform != "win32":
-            return
+            return False
         if not self._is_topmost_active():
-            return
-        set_window_topmost(int(self.winId()))
+            return False
+        ok = set_window_topmost(int(self.winId()))
         # 附属顶层小窗（气泡 / 确认按钮条）同样在置顶组里，压住了也得提回来：它们只在 show 和内容更新时
         # reassert，静止期间被别的置顶窗口压住就再也回不来（极简主题内容只画在气泡里，压住=什么都看不见）。
         # 顺序固定「先本窗、后附属」：后提的在上，保证气泡始终盖在条之上。
@@ -519,6 +536,7 @@ class FloatingBar(QWidget):
                       getattr(self, "_confirm_btns", None)):
             if child is not None and child.isVisible():
                 reassert_topmost(child, force=self._temp_topmost)
+        return ok
 
     def _apply_no_activate(self) -> None:
         """Windows：设 WS_EX_NOACTIVATE，点击悬浮条不抢输入焦点，选中的文字不会被顶掉。"""
@@ -643,6 +661,7 @@ class FloatingBar(QWidget):
         self.signals.error_occurred.connect(self._set_error)
         self.signals.show_requested.connect(self.show)
         self.signals.hide_requested.connect(self.hide)
+        self.signals.summon_requested.connect(self._on_summon_requested)
         self.signals.transient_hint.connect(self._flash_hint)
         self.signals.model_loading_changed.connect(self.set_model_loading)
         self.signals.model_ready_changed.connect(self.set_model_ready)

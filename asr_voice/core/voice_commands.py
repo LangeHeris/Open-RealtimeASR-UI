@@ -73,7 +73,9 @@ def get_handler(action: str) -> Optional[Callable]:
 # 统一 lower：中文不受影响，英文命令不区分大小写）
 _SIMPLE_COMMANDS: list[tuple[tuple[str, ...], str]] = [
     (("发送", "回车", "press enter"), "enter"),
+    # 「删除那句」必须排在「删除」之前：匹配是子串包含，顺序决定优先级
     (("删除那句", "删掉那句", "删除刚听写", "delete that"), "delete_last"),
+    (("删除", "删掉", "delete"), "delete_selection"),
     (("全选", "选择全部", "select all"), "select_all"),
     (("撤销", "恢复上一步", "undo"), "undo"),
     (("退格", "删一个字", "backspace"), "backspace"),

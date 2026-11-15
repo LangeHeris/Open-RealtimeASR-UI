@@ -1,4 +1,4 @@
-r"""创意工坊内容层：物品目录 → 模型 / 主题 / 字体 / 短语 / 提示词 / 功能包能力。
+r"""创意工坊内容层：物品目录 → 主题 / 字体 / 短语 / 提示词 / 功能包能力。
 
 物品 = 一个普通目录（根下 `ori_workshop.json`，新类型扩 `_ALLOWED_KINDS` 与
 对应提取函数）。目录两条来源按 resolved path 去重：SDK provider（发行层注册）
@@ -36,7 +36,9 @@ CAPABILITY_EXTERNAL_SERVICES = "external_services"
 _KNOWN_CAPABILITIES = frozenset({CAPABILITY_EXTERNAL_SERVICES})
 
 # 允许的内容类型。新增类型必须同时补 `extract_*` 与 UI 侧的消费入口。
-ALLOWED_KINDS = ("models", "themes", "fonts", "phrases", "prompts")
+# 只收纯数据：主题/字体/短语/提示词都是声明式内容，解析后不进入任何代码执行路径。
+# 模型权重**不入工坊**——权重反序列化等于执行外部代码，工坊对外只报备纯数据物品。
+ALLOWED_KINDS = ("themes", "fonts", "phrases", "prompts")
 
 # 单个物品下每一类最多解析多少条目（防畸形清单把 UI 撑爆）
 _MAX_ENTRIES_PER_KIND = 256
@@ -196,17 +198,6 @@ def external_services_pack_installed(install_dirs=None) -> bool:
         if CAPABILITY_EXTERNAL_SERVICES in manifest.capabilities:
             return True
     return False
-
-
-def model_dirs() -> list[Path]:
-    """所有物品里的模型目录（`<物品>/models/<名>`），直接喂 funasr 的模型解析。"""
-    out: list[Path] = []
-    for manifest in iter_manifests(_installed_dirs()):
-        for name in manifest.list_of("models"):
-            candidate = manifest.item_dir / "models" / name
-            if candidate.is_dir():
-                out.append(candidate)
-    return out
 
 
 def theme_roots() -> list[Path]:

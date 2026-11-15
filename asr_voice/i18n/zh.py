@@ -77,7 +77,6 @@ MESSAGES: dict[str, str] = {
     "set.workshop.select_folder": "选择要发布的目录",
     "set.workshop.folder_missing_manifest": "所选目录缺少 ori_workshop.json，无法作为创意工坊物品发布",
     "set.workshop.readonly": "已加载 {count} 个内容包（离线模式：内容正常生效，订阅与发布需经 Steam 启动）",
-    "set.workshop.kind.models": "模型",
     "set.workshop.kind.themes": "主题",
     "set.workshop.kind.fonts": "字体",
     "set.workshop.kind.phrases": "短语",
@@ -280,6 +279,7 @@ MESSAGES: dict[str, str] = {
     "theme.pixel": "像素",
     "theme.celtic": "凯尔特风格",
     "theme.cyberpunk": "赛博朋克风",
+    "theme.vinyl": "黑胶唱片",
 
     # ---- 实时语音对话（core/dialog.py）----
     # err.* = 需要用户处理的错误（阻断式：弹提示/进错误态）；
@@ -393,6 +393,7 @@ MESSAGES: dict[str, str] = {
     "hint.hold_llm_correcting": "已松开，正在用 AI 修正...",
     "hint.phrase_inserted": "已插入自定义短语",
     "hint.no_last_sentence": "没有刚听写的句子",
+    "hint.delete_focus_moved": "焦点已转移，已取消删除",
     "hint.ai_need_key": "AI 处理需先配置接口密钥（右键 -> 设置）",
     "hint.ai_processing": "AI 处理中...",
     "hint.ai_need_selection": "请先选中要处理的文字",
@@ -920,7 +921,9 @@ MESSAGES: dict[str, str] = {
         "set.about.help_btn_tip": "打开随应用内置的离线文档",
         "set.about.help_btn_online": "在线文档",
         "set.about.help_missing": "本机未找到内置文档，请查看在线文档",
+        "set.about.help_missing_offline": "本机未找到内置文档，请在 Steam 中「验证游戏文件完整性」后重新启动",
         "set.about.help_open_fail": "内置文档打开失败，请查看在线文档或重新安装本应用",
+        "set.about.help_open_fail_offline": "内置文档打开失败，请在 Steam 中「验证游戏文件完整性」后重新启动",
         "set.about.doc_title": "使用文档",
         "set.about.doc_find": "查找内容",
         "set.about.doc_find_next": "下一处",
@@ -951,6 +954,7 @@ MESSAGES: dict[str, str] = {
         "set.textmenu.copy_link": "复制链接地址",
         "set.cmdref.effect.enter": "按回车（发送）",
         "set.cmdref.effect.delete_last": "删除刚听写的文本",
+        "set.cmdref.effect.delete_selection": "有选中文字则删除选中；否则删除刚听写的文本",
         "set.cmdref.effect.select_all": "全选输入框文字",
         "set.cmdref.effect.undo": "撤销上一步",
         "set.cmdref.effect.backspace": "删一个字",

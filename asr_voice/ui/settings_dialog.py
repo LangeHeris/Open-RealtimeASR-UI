@@ -456,7 +456,9 @@ _ABOUT_OSS = [
 # 关于页「联系方式」卡：B 站空间动态（文档阅读 / 版本更新发布渠道）
 _ABOUT_CONTACT_URL = "https://space.bilibili.com/3492318/dynamic"
 
-# 关于页「使用帮助」卡：仓库里的用户文档，按界面语言选中文/英文版
+# 关于页「使用帮助」卡：仓库里的用户文档，按界面语言选中文/英文版。
+# 只服务源码构建——发行构建的 Help 卡不建这个入口（链接指向的完整版说明书
+# 里讲的是云端引擎与密钥配置，发行版没有那些能力）。
 _ABOUT_DOC_URLS = {
     "zh": "https://github.com/LangeHeris/Open-RealtimeASR-UI/blob/main/docs/User_Doc_zh.md",
     "en": "https://github.com/LangeHeris/Open-RealtimeASR-UI/blob/main/docs/User_Doc_en.md",
@@ -576,7 +578,6 @@ def _workshop_community_url() -> str:
 # -> package。换图标只改这里 + 换 assets/workshop/ 里的 SVG 再跑
 # tools/render_workshop_icons.py，手绘回退映射（_WORKSHOP_GLYPH_DRAWN）跟着加一项。
 _WORKSHOP_KIND_GLYPH = {
-    "models": "cpu",
     "themes": "palette",
     "fonts": "type",
     "phrases": "list",
@@ -587,7 +588,6 @@ _WORKSHOP_KIND_GLYPH = {
 # 图标名 -> 手绘图形的分支名。只在 assets/workshop/ 资源缺失时生效（精简
 # 安装 / 手动删文件 / 打包漏投），保证界面不破；资源正常时永远走上面的 PNG。
 _WORKSHOP_GLYPH_DRAWN = {
-    "cpu": "chip",
     "palette": "drop",
     "type": "letter",
     "list": "lines",
@@ -671,12 +671,7 @@ def _workshop_glyph_pixmap(glyph: str, color: str, size: int = 20) -> QPixmap:
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.BrushStyle.NoBrush)
-    if drawn == "chip":                      # 模型：芯片
-        p.drawRoundedRect(QRectF(5.5, 5.5, 9.0, 9.0), 2.0, 2.0)
-        for x in (8.0, 12.0):
-            p.drawLine(x, 3.2, x, 5.5)
-            p.drawLine(x, 14.5, x, 16.8)
-    elif drawn == "drop":                    # 主题：一滴
+    if drawn == "drop":                      # 主题：一滴
         path = QPainterPath()
         path.moveTo(10.0, 3.0)
         path.cubicTo(15.0, 9.0, 15.0, 12.0, 13.2, 14.2)
@@ -1860,7 +1855,7 @@ class SettingsDialog(QDialog):
         cards.append(about)
 
         # 使用帮助：内置文档离线可读（不依赖网络 / 版本严格对应）
-        # 同时保留在线入口看最新版
+        # 源码构建另有在线入口看最新版；发行构建没有它，见下方 if
         help_card = AccordionCard(t("set.about.help_title"),
                                   t("set.about.help_desc"))
         v = QVBoxLayout(help_card.body_container())
@@ -1870,17 +1865,25 @@ class SettingsDialog(QDialog):
         row.setSpacing(8)
         doc_btn = QPushButton(t("set.about.help_btn"))
         if doc_path() is None:
-            # 这台机器上没有随包文档（干净克隆缺文件等）：只留在线入口
+            # 这台机器上没有随包文档（干净克隆缺文件、安装目录不完整等）。
+            # 提示语分构建：源码构建能跳在线文档，发行构建没有那个入口
+            # （见下方 if），只能引导去修安装。
             doc_btn.setEnabled(False)
-            doc_btn.setToolTip(t("set.about.help_missing"))
+            doc_btn.setToolTip(t("set.about.help_missing_offline" if is_steam_build()
+                                 else "set.about.help_missing"))
         else:
             doc_btn.setToolTip(t("set.about.help_btn_tip"))
         doc_btn.clicked.connect(self._open_bundled_doc)
         row.addWidget(doc_btn)
-        online_btn = QPushButton(t("set.about.help_btn_online"))
-        online_btn.setToolTip(self._doc_url())
-        online_btn.clicked.connect(self._open_doc_url)
-        row.addWidget(online_btn)
+        # 在线文档入口只在源码构建出现：链接指向仓库里的完整说明书，里面写着
+        # 云端引擎、密钥配置与 AI 功能的用法，而发行构建没有这些能力——点进去
+        # 等于给玩家讲不存在的功能。发行构建的说明书随包分发，与版本严格对应，
+        # 不需要在线兜底。
+        if not is_steam_build():
+            online_btn = QPushButton(t("set.about.help_btn_online"))
+            online_btn.setToolTip(self._doc_url())
+            online_btn.clicked.connect(self._open_doc_url)
+            row.addWidget(online_btn)
         row.addStretch(1)
         v.addLayout(row)
         cards.append(help_card)
@@ -1929,8 +1932,11 @@ class SettingsDialog(QDialog):
         from .doc_viewer import open_user_doc
         dlg = open_user_doc(parent=self, cfg=self.cfg)
         if dlg is None:
-            QMessageBox.warning(self, t("common.notice"),
-                                t("set.about.help_open_fail"))
+            # 失败提示同样不能指向在线文档：发行构建没有那个入口
+            QMessageBox.warning(
+                self, t("common.notice"),
+                t("set.about.help_open_fail_offline" if is_steam_build()
+                  else "set.about.help_open_fail"))
 
     def _open_doc_url(self) -> None:
         """用系统默认浏览器打开使用文档（关于页「使用帮助」卡）。"""
@@ -1963,6 +1969,7 @@ class SettingsDialog(QDialog):
         _CMD_EFFECT_KEYS = {
             "enter": "set.cmdref.effect.enter",
             "delete_last": "set.cmdref.effect.delete_last",
+            "delete_selection": "set.cmdref.effect.delete_selection",
             "select_all": "set.cmdref.effect.select_all",
             "undo": "set.cmdref.effect.undo",
             "backspace": "set.cmdref.effect.backspace",
@@ -3000,6 +3007,8 @@ class SettingsDialog(QDialog):
         btn_publish.setCursor(Qt.PointingHandCursor)
         btn_publish.setToolTip(t("set.workshop.publish_tip"))
         btn_publish.clicked.connect(self._on_workshop_publish)
+        # 发行构建只消费工坊内容，不提供上传入口
+        btn_publish.setVisible(not is_steam_build())
         for b in (btn_browse, btn_publish, btn_refresh):
             tools.addWidget(b)
         tools.addStretch(1)
@@ -3276,6 +3285,8 @@ class SettingsDialog(QDialog):
 
     def _on_workshop_publish(self) -> None:
         """选目录 → 后台线程上传。"""
+        if is_steam_build():
+            return
         from pathlib import Path
 
         from PySide6.QtWidgets import QFileDialog

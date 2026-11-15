@@ -94,12 +94,18 @@ jobs:
       # 与 README「解压后双击即用」口径一致。
       - name: Package onedir bundle as zip
         run: Compress-Archive -Path dist\ORI\* -DestinationPath "dist\ORI-${{ github.ref_name }}-win64.zip"
+      # README 的「下载」按钮指向 releases/latest/download/ORI-win64.zip。GitHub 的
+      # latest/download 只在**资产名固定**时才可用：带 tag 的名字每次发布都变，写死
+      # 的链接必然 404，只能退化成「先到 release 页再点一次」。故额外投一份固定名
+      # 副本；带版本号的原资产保留，归档与排查时仍能一眼看出对应版本。
+      - name: Add stable-name copy for latest/download link
+        run: Copy-Item "dist\ORI-${{ github.ref_name }}-win64.zip" "dist/ORI-win64.zip"
       # 未签名产物是杀软启发式误报的高发组合：SHA256SUMS 是用户核对「下载产物
       # 未被篡改」的唯一手段（核对方法见 README「下载途径」），必须随每个 Release
       # 发布。行尾用 LF——CRLF 会让 GNU sha256sum -c 报「improperly formatted」。
       - name: Generate SHA256 checksums
         run: |
-          $lines = Get-FileHash "dist/ORI-${{ github.ref_name }}-win64.zip", THIRD_PARTY_NOTICES.md -Algorithm SHA256 |
+          $lines = Get-FileHash "dist/ORI-${{ github.ref_name }}-win64.zip", "dist/ORI-win64.zip", THIRD_PARTY_NOTICES.md -Algorithm SHA256 |
             ForEach-Object { '{0}  {1}' -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) }
           [IO.File]::WriteAllText("$PWD/dist/SHA256SUMS.txt", ($lines -join "`n") + "`n")
           Get-Content dist/SHA256SUMS.txt
@@ -107,6 +113,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/ORI-win64.zip
             dist/ORI-${{ github.ref_name }}-win64.zip
             THIRD_PARTY_NOTICES.md
             dist/SHA256SUMS.txt

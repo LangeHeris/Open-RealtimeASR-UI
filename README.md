@@ -20,6 +20,12 @@
 
 </div>
 
+<div align="center">
+
+[![下载 Windows 版](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![最新版本](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
+
+</div>
+
 ***
 
 <div align="center">
@@ -41,7 +47,7 @@
 ### 环境要求
 
 - Windows 10 / 11
-- 打包版（Releases 的 zip）：解压后双击 `ORI.exe` 即用，无需任何环境（`_internal\` 目录须与 exe 同在）
+- 打包版（[直接下载最新版](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)）：解压后双击 `ORI.exe` 即用，无需任何环境（`_internal\` 目录须与 exe 同在）
 - 源码版：Python 3.10+
 
 ### 三步跑起来
@@ -155,9 +161,9 @@ docs/               # 文档
 
 ## 下载途径
 
-- **源码**：克隆本仓库，按[快速上手](#快速上手)运行；本地 FunASR 模型由用户自行下载
+- **打包版（zip，推荐）**：**[点此直接下载最新版 ORI-win64.zip](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)** —— 该链接恒指向最新正式 Release，点开即开始下载；历史版本、发布说明与校验和见 [Releases](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases) 页。下载后解压到任意目录，双击其中的 `ORI.exe` 运行。**当前发布尚未代码签名**（SignPath 开源签名接入中，CI 凭据配置完成后自动签名）：Windows SmartScreen 或杀软可能提示风险——PyInstaller 打包叠加全局热键、文本注入类行为容易触发启发式误报；可用 [SHA256SUMS.txt](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/SHA256SUMS.txt) 核对 zip 哈希（`certutil -hashfile ORI-win64.zip SHA256`），或改用源码方式运行
 
-- **打包版（zip）**：见 Releases。下载后解压到任意目录，双击其中的 `ORI.exe` 运行。**当前发布尚未代码签名**（SignPath 开源签名接入中，CI 凭据配置完成后自动签名）：Windows SmartScreen 或杀软可能提示风险——PyInstaller 打包叠加全局热键、文本注入类行为容易触发启发式误报；可用 Release 资产 `SHA256SUMS.txt` 核对 zip 哈希（`certutil -hashfile ORI-<版本>-win64.zip SHA256`），或改用源码方式运行
+- **源码**：克隆本仓库，按[快速上手](#快速上手)运行；本地 FunASR 模型由用户自行下载
 
 ## 隐私声明
 

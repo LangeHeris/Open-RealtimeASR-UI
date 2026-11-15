@@ -986,6 +986,12 @@ class VoiceApp(QObject):
     # ---- 会话控制 ----
 
     def _on_toggle(self) -> None:
+        # 临时置顶入口：非永久置顶模式下，热键/菜单一发起就把悬浮 UI 提上来，
+        # 不等 ASR 状态（连接失败/模型未就绪时也能看到条与提示）。信号跨线程安全。
+        # getattr 兜底：测试替身的 signals 未必带这个新信号
+        _summon = getattr(getattr(self.bar, "signals", None), "summon_requested", None)
+        if _summon is not None:
+            _summon.emit()
         # 两模式互斥：对话中忽略录音热键（忽略+提示，不抢占——抢占会丢正在
         # 进行的对话，代价不对称，spec「两模式互斥」小节）
         if self.dialog is not None and self.dialog.is_active():
@@ -1365,6 +1371,9 @@ class VoiceApp(QObject):
         """对话热键触发（keyboard 线程）：悬浮条隐藏时先呼出，再切对话。
 
         toggle 自带线程化与录音互斥（忽略+提示），这里不做状态判断。"""
+        _summon = getattr(getattr(self.bar, "signals", None), "summon_requested", None)
+        if _summon is not None:
+            _summon.emit()
         if self.bar and not self.bar.isVisible():
             self.bar.signals.show_requested.emit()
         self.dialog.toggle()
