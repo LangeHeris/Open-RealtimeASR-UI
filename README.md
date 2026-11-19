@@ -21,6 +21,7 @@
 </div>
 
 <div align="center">
+
 [![下载 Windows 版](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![Steam 商店页](https://img.shields.io/badge/Steam-ORI--Voice-1b2838?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/app/5295220/) [![最新版本](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
 
 </div>
