@@ -1,4 +1,4 @@
-# Open-RealtimeASR-UI User Manual
+# Open-RealtimeASR-UI (ORI Voice) User Manual
 
 > [简体中文](User_Doc_zh.md) | **English**
 
@@ -123,14 +123,17 @@
 Notes:
 
 - Engine availability depends on **API key configuration** and **network connectivity**; engines without configured keys are hidden from the menu by default
-- The packaged build (exe) **does not include the local FunASR engine** (funasr + torch are too large to bundle); install it yourself if you need offline recognition.
+- The GitHub Release packaged build (exe) **does not include the local FunASR engine** (funasr + torch are too large to bundle); install it yourself if you need offline recognition. The Steam edition ships with an offline Chinese recognition engine — see §1.3.
 
 ### 1.3 Deployment Forms and Usage
 
-ORI can be launched in two ways:
+ORI is available in three forms:
 
-- **Packaged build (zip)**: download the Release zip and extract it; double-click `ORI.exe` (keep the `_internal\` folder next to it).
 - **Source build**: run `pip install -r requirements.txt`, then start via `python -m asr_voice.main` or `start.bat`.
+- **Packaged build (zip)**: download the Release zip and extract it; double-click `ORI.exe` (keep the `_internal\` folder next to it).
+- **Steam edition**: **[View ORI Voice on Steam](https://store.steampowered.com/app/5295220/)** — Steam handles installation and updates for you; ships with the offline Chinese recognition engine and all its dependencies, ready to use with no account sign-up or API keys. Also includes Steam Workshop content (supporting the same feature extensions as the open-source build), Steam Cloud, Stats and an exclusive pixel-art theme.
+
+> The Steam edition is a paid release: one way to support the developer, with the added conveniences of the Steam platform.
 
 ### 1.4 Feature Overview
 
@@ -198,7 +201,13 @@ To ensure the installation and first use go smoothly, complete the following pre
 
 Steps:
 
-1. Clone the repository and enter the project directory
+1. Clone the repository and enter the project directory:
+
+   ```bash
+   git clone https://github.com/LangeHeris/Open-RealtimeASR-UI.git
+   cd Open-RealtimeASR-UI
+   ```
+
 2. Install dependencies: `pip install -r requirements.txt`
 3. Launch the program: `python -m asr_voice.main`, or double-click `start.bat`
 
@@ -222,7 +231,7 @@ To build it yourself:
 build.bat  
 ```
 
-Note: the packaged build does not currently include the local FunASR engine
+Note: the GitHub Release packaged build does not currently include the local FunASR engine
 
 ### 3.3 Installing the Local FunASR Engine (Optional)
 
@@ -517,7 +526,7 @@ Both switches take effect at the start of each recording according to their curr
 
 > Cloud engines must be activated at your own expense in each vendor's console; the local FunASR engine is completely free and offline.
 >
-> **The packaged build (exe) currently does not include the local FunASR engine**; choosing FunASR prompts you to use a cloud engine or run from source instead.
+> **The GitHub Release packaged build (exe) currently does not include the local FunASR engine**; choosing FunASR prompts you to use a cloud engine or run from source instead.
 
 ### 6.2 Engine Switching
 
@@ -644,7 +653,7 @@ Notes:
 
 - Install dependencies: `pip install funasr torch torchaudio` (for GPU versions see §3.3)
 - On first use the model is automatically downloaded from ModelScope to `~/.cache/modelscope/`; for offline use, download it in advance
-- The packaged build does not include this engine; run from source to use it
+- The GitHub Release packaged build does not include this engine; run from source to use it
 
 ## 7. AI Correction
 
@@ -1050,7 +1059,7 @@ Accordion card layout; the order follows the engine order setting:
 - **Volcengine** (Doubao 1.0 / 2.0): billing mode for each generation (Billed by duration / Billed by concurrency), disfluency removal, secondary recognition
 - **FunASR local**: model, device (Auto / CPU / GPU CUDA), recognition window (Default 600 ms / Low latency 480 ms / High accuracy 720 ms), hotwords, local model directory (path to weights you downloaded yourself; the advanced fields `funasr.model_hub` / `funasr.model_revision` are only available in the config file)
 
-> The packaged build (exe) does not include the local engine dependencies, so this card only shows a single "unavailable" note; run from source for local recognition.
+> The GitHub Release packaged build (exe) does not include the local engine dependencies, so this card only shows a single "unavailable" note; run from source for local recognition.
 
 ### 10.4 AI Correction
 
@@ -1331,7 +1340,7 @@ Troubleshoot in the following order:
 
 ### 13.8 FunASR-related issues
 
-- **FunASR cannot be selected in the packaged build**: the packaged build does not include the local engine; run from source instead (see §3.3)
+- **FunASR cannot be selected in the GitHub Release packaged build**: that build does not include the local engine; run from source instead (see §3.3)
 - **Dependencies not installed**: the right-click menu shows "(not installed)"; run `pip install funasr torch torchaudio`
 - **First recognition is slow**: the model is downloaded automatically on first use (`~/.cache/modelscope/`); download it in advance in offline environments
 - **Slow startup**: `preheat=true` warms up the model at startup (3–8 seconds on CPU); turn it off to load the model only at the first recording instead

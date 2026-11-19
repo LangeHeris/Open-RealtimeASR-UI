@@ -1,4 +1,4 @@
-# Open-RealtimeASR-UI 用户说明书
+# Open-RealtimeASR-UI (ORI Voice) 用户说明书
 
 > **简体中文** | [English](User_Doc_en.md)
 
@@ -123,14 +123,17 @@
 说明：
 
 - 不同引擎的可用性取决于**密钥配置**与**网络连通性**，未配置密钥的引擎默认从菜单中隐藏
-- 打包版（exe）**不含本地 FunASR 引擎**（funasr + torch 体积过大未打包），如需离线识别请自行安装。
+- GitHub Release 打包版（exe）**不含本地 FunASR 引擎**（funasr + torch 体积过大未打包），如需离线识别请自行安装；Steam 版内置离线中文识别引擎，见 1.3 节。
 
 ### 1.3 部署形态与使用方式
 
-ORI 支持两种启动方式：
+ORI 支持三种部署形态：
 
-- **打包版（zip）**：下载 Release 的 zip 解压后双击 `ORI.exe` 即用（`_internal\` 目录须与 exe 同在）。
 - **源码版**：`pip install -r requirements.txt` 后通过 `python -m asr_voice.main` 或 `start.bat` 启动。
+- **打包版（zip）**：下载 Release 的 zip 解压后双击 `ORI.exe` 即用（`_internal\` 目录须与 exe 同在）。
+- **Steam 版**：**[在 Steam 上查看 ORI Voice](https://store.steampowered.com/app/5295220/)** —— 由 Steam 自动管理安装与更新，内置离线中文识别引擎及依赖，装好即用、无需注册账号或配置密钥；另含创意工坊内容（支持开源版的功能扩展）、云存档、统计与独占像素主题。
+
+> Steam 版为付费版，可视为资助开发者的一种方式，额外提供 Steam 平台自带的便利。
 
 ### 1.4 功能体系概览
 
@@ -200,7 +203,13 @@ ORI 支持两种启动方式：
 
 操作流程：
 
-1. 克隆仓库并进入项目目录
+1. 克隆仓库并进入项目目录：
+
+   ```bash
+   git clone https://github.com/LangeHeris/Open-RealtimeASR-UI.git
+   cd Open-RealtimeASR-UI
+   ```
+
 2. 安装依赖：`pip install -r requirements.txt`
 3. 启动程序：`python -m asr_voice.main`，或双击 `start.bat`
 
@@ -224,7 +233,7 @@ ORI 支持两种启动方式：
 build.bat  
 ```
 
-注意：打包版目前不含本地 FunASR 引擎
+注意：GitHub Release 打包版目前不含本地 FunASR 引擎
 
 ### 3.3 本地 FunASR 引擎安装（可选）
 
@@ -521,7 +530,7 @@ VAD 相关参数（设置 → 录音检测 → 语音检测）：
 
 > 云端引擎需在各厂商控制台自费开通对应服务；本地 FunASR 引擎完全免费离线。
 >
-> **打包版（exe）目前不含本地 FunASR 引擎**，选 FunASR 会提示改用云端引擎或源码方式运行。
+> **GitHub Release 打包版（exe）目前不含本地 FunASR 引擎**，选 FunASR 会提示改用云端引擎或源码方式运行。
 
 ### 6.2 引擎切换
 
@@ -648,7 +657,7 @@ VAD 相关参数（设置 → 录音检测 → 语音检测）：
 
 - 安装依赖：`pip install funasr torch torchaudio`（GPU 版本见 3.3 节）
 - 模型首次使用自动从 ModelScope 下载到 `~/.cache/modelscope/`，离线使用需提前下载
-- 打包版不含此引擎，需源码方式运行
+- GitHub Release 打包版不含此引擎，需源码方式运行
 
 ## 7. AI 修正
 
@@ -1054,7 +1063,7 @@ Hermes 的输入文字来自 ORI 自己的 ASR 引擎，「对话专属识别」
 - **火山引擎**（豆包 1.0 / 2.0）：两代各自计费方式（按时长/按并发）、口语顺滑、二次识别
 - **FunASR 本地**：模型、运行设备（自动/CPU/GPU CUDA）、识别窗口（默认 600ms/低延迟 480ms/高准确 720ms）、热词、本地模型目录（用户自行下载的权重路径；高级项 `funasr.model_hub` / `funasr.model_revision` 仅配置文件可用）
 
-> 打包版（exe）不含本地引擎依赖，此卡片仅显示一句不可用说明；本地识别请以源码方式运行。
+> GitHub Release 打包版（exe）不含本地引擎依赖，此卡片仅显示一句不可用说明；本地识别请以源码方式运行。
 
 ### 10.4 AI 修正
 
@@ -1335,7 +1344,7 @@ Hermes 的输入文字来自 ORI 自己的 ASR 引擎，「对话专属识别」
 
 ### 13.8 FunASR 相关异常
 
-- **打包版选不了 FunASR**：打包版不含本地引擎，需源码方式运行（见 3.3 节）
+- **GitHub Release 打包版选不了 FunASR**：该版本不含本地引擎，需源码方式运行（见 3.3 节）
 - **依赖未安装**：右键菜单显示"（需安装）"，执行 `pip install funasr torch torchaudio`
 - **首次识别慢**：模型首次使用自动下载（`~/.cache/modelscope/`），离线环境请提前下载
 - **启动变慢**：`preheat=true` 启动即预热模型（CPU 3~8 秒），可关闭改为首次录音才加载

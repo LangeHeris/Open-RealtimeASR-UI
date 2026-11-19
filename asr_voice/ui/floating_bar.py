@@ -66,6 +66,49 @@ def _save_window_state(x: int, y: int, w: int, h: int) -> None:
     except Exception:
         logger.debug("保存窗口状态失败", exc_info=True)
 
+
+# 窗口至少露出的边长：小于此值视为实际上看不见
+_VISIBLE_MIN = 40
+
+
+def _screen_rects() -> list[tuple[int, int, int, int]]:
+    """当前所有屏幕的可用区，元素为 (left, top, right, bottom) 逻辑坐标。"""
+    try:
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            rects = []
+            for screen in app.screens():
+                g = screen.availableGeometry()
+                rects.append((g.left(), g.top(), g.right() + 1, g.bottom() + 1))
+            return rects
+    except Exception:
+        logger.debug("读取屏幕可用区失败", exc_info=True)
+    return []
+
+
+def _visible_position(x: int, y: int, w: int, h: int,
+                      screens: list[tuple[int, int, int, int]]) -> tuple[int, int]:
+    """把窗口左上角约束到可见区：已露出足够面积则保留原位，否则移到重叠最多的屏幕中央。
+
+    无屏幕信息时保持原值（离屏环境不做无谓移动）。窗口比屏幕大时左上角仍落在屏内。
+    """
+    if not screens:
+        return x, y
+    rects = []
+    for left, top, right, bottom in screens:
+        overlap_w = min(right, x + w) - max(left, x)
+        overlap_h = min(bottom, y + h) - max(top, y)
+        if overlap_w >= min(w, _VISIBLE_MIN) and overlap_h >= min(h, _VISIBLE_MIN):
+            return x, y
+        rects.append((max(0, overlap_w) * max(0, overlap_h),
+                      left, top, right, bottom))
+    _, left, top, right, bottom = max(rects, key=lambda r: r[0])
+    sw, sh = right - left, bottom - top
+    new_x = max(left, left + (sw - w) // 2)
+    new_y = max(top, top + (sh - h) // 2)
+    return new_x, new_y
+
 # 状态
 UI_IDLE = "idle"
 UI_ARMED = "armed"          # 长按已按下、未达阈值：准备中（可能被撤销）
@@ -231,6 +274,11 @@ class FloatingBar(QWidget):
                 except Exception:
                     logger.debug("计算默认窗口位置失败，回落左上角", exc_info=True)
                     self._saved_x, self._saved_y = 100, 100
+
+        # 保存位置可能落在已拔掉的显示器 / 缩小后的屏幕之外，可见性检查兜底
+        self._saved_x, self._saved_y = _visible_position(
+            self._saved_x, self._saved_y, self._saved_w, self._saved_h,
+            _screen_rects())
 
         self._state = UI_IDLE
         self._level = 0.0

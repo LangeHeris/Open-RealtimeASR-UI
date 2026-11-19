@@ -4,7 +4,7 @@
 
 <div align="center">
 
-# Open-RealtimeASR-UI (ORI)
+# Open-RealtimeASR-UI (ORI Voice)
 
 </div>
 
@@ -21,8 +21,7 @@
 </div>
 
 <div align="center">
-
-[![Download for Windows](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![Latest release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
+[![Download for Windows](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![Steam store page](https://img.shields.io/badge/Steam-ORI--Voice-1b2838?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/app/5295220/) [![Latest release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
 
 </div>
 
@@ -47,15 +46,15 @@ Its core design is **no engine lock-in, dictation behavior is yours to define**:
 ### Requirements
 
 - Windows 10 / 11
-- Packaged build ([download the latest `ORI-win64.zip`](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)): extract and double-click `ORI.exe`, no environment needed (keep the `_internal\` directory next to the exe)
+- Packaged build ([download the latest `ORI-win64.zip`](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)): extract and double-click `ORI.exe`, no environment needed
 - Source build: Python 3.10+
 
 ### Run in Three Steps
 
 ```bash
 # 1. Clone the repo
-git clone <repo-url>
-cd <repo-dir>
+git clone https://github.com/LangeHeris/Open-RealtimeASR-UI.git
+cd Open-RealtimeASR-UI
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -90,7 +89,7 @@ Four cloud engines plus one local engine, grouped by tier in the right-click men
 
 > Cloud engines must be activated at your own expense in each provider's console (all offer free trial quotas); local FunASR is completely free and offline.
 >
-> **The packaged build (exe) currently does not include the local FunASR engine**: funasr + torch are too large to bundle, so selecting FunASR prompts you to use a cloud engine or run from source.
+> **The packaged build (exe) does not include the local FunASR engine**: funasr + torch are too large to bundle, so selecting FunASR prompts you to use a cloud engine or run from source.
 >
 > Per-engine parameter configuration: see Chapter 6 of the [User Manual](docs/User_Doc_en.md).
 
@@ -159,12 +158,40 @@ docs/               # documentation
 
 ## Downloads
 
-- **Packaged build (zip, recommended)**: **[download the latest `ORI-win64.zip`](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)** — this link always resolves to the newest stable Release and starts the download immediately; past versions, release notes and checksums are on the [Releases](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases) page. Extract to any directory and double-click `ORI.exe` inside to run. **Releases are not yet code-signed** (SignPath integration in progress; CI signs automatically once its credentials are configured): Windows SmartScreen or antivirus software may flag it — PyInstaller packaging combined with global-hotkey and text-injection behavior easily triggers heuristic false positives. You can verify the zip against [SHA256SUMS.txt](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/SHA256SUMS.txt) (`certutil -hashfile ORI-win64.zip SHA256`), or run from source instead
-
 - **Source**: clone this repo and follow the [Quick Start](#quick-start); local FunASR models are downloaded by the user
+
+- **Packaged build**: **[download the latest](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)** — past versions, release notes and checksums are on the [Releases](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases) page; does not include the local engine or its dependencies.
+
+- **Steam edition**: **[View ORI Voice on Steam](https://store.steampowered.com/app/5295220/)** — Steam handles installation and updates for you, with the offline Chinese recognition engine and its dependencies built in. Also includes Steam Workshop content (supporting the same feature extensions as the open-source build), Steam Cloud, Stats and an exclusive pixel-art theme.
+
+  > The Steam edition is a paid release: one way to support the developer, with the added conveniences of the Steam platform.
 
 ## Privacy
 
 - Cloud recognition engines: recorded audio and recognition results are sent to the cloud provider you configured (Alibaba Cloud / Tencent Cloud / iFLYTEK / Volcengine); please review each provider's privacy policy yourself
 
 - Local FunASR engine: audio and recognition stay entirely on your machine; nothing is uploaded
+
+- AI correction / AI commands: recognized text is sent to the LLM endpoint you configured (OpenAI-compatible); please assess this yourself
+
+- Real-time voice conversation: Doubao / Alibaba Cloud Qwen send audio and text to their respective cloud providers; Hermes sends them to the server you host yourself (recognition still uses the engine you configured)
+
+- History, custom phrases and prompt versions are stored only in the local state directory (`~/.asr_voice/`, or `.asr_voice/` next to the exe)
+
+## Contact
+
+[![Bilibili](https://img.shields.io/badge/Bilibili-Profile-00A1D6?logo=bilibili&logoColor=white&style=for-the-badge)](https://space.bilibili.com/3492318/dynamic)
+
+## Support the Project
+
+| Alipay | WeChat Pay |
+| --- | --- |
+| <img src="docs/alipay.jpg" alt="Alipay" style="zoom: 33%;" /> | <img src="docs/wxpay.png" alt="WeChat Pay" style="zoom:50%;" /> |
+
+## License and Disclaimer
+
+This project is open source under the [Apache License 2.0](LICENSE).
+
+- The cloud recognition engines (Alibaba Cloud Model Studio / Tencent Cloud / iFLYTEK / Volcengine Doubao) are official services of their respective vendors: you must supply your own keys and **activate them at your own expense** under each vendor's billing rules, and you bear all resulting costs and compliance responsibilities.
+- This project calls these services through their official APIs; vendor API changes may temporarily make the corresponding engine unavailable — refer to each vendor's latest documentation.
+- Channel builds and locally packaged builds bundle [Alibaba PuHuiTi 3.0](https://www.iconfont.cn/fonts/detail?cnid=adI1E7HF7yme) (55 Regular / 65 Medium / 85 Bold) as the default UI font; the GitHub Release CI artifact **does not bundle any font** (the `fonts/` directory is not committed) and the UI falls back to system fonts. The font is published by Alibaba Group, which retains copyright, and is **permanently free for commercial use** for everyone (individuals and enterprises alike, no attribution required). This project distributes the official font files verbatim, with no modification, conversion or sublicensing. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the license notes and the official statement link.
