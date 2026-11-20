@@ -165,7 +165,7 @@ docs/               # documentation
 
 - **Steam edition**: **[View ORI Voice on Steam](https://store.steampowered.com/app/5295220/)** — Steam handles installation and updates for you, with the offline Chinese recognition engine and its dependencies built in. Also includes Steam Workshop content (supporting the same feature extensions as the open-source build), Steam Cloud, Stats and an exclusive pixel-art theme.
 
-  > The Steam edition is a paid release: one way to support the developer, with the added conveniences of the Steam platform.
+  > The Steam edition is a paid release: one way to support the developer, with the added conveniences of the Steam platform. Cloud engines and AI features are enabled by a Workshop feature pack.
 
 ## Privacy
 
