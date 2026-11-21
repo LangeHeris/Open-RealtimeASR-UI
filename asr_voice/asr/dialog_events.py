@@ -19,7 +19,7 @@ AI_TURN_START = "ai_turn_start"        # AI 本轮开始，开音频闸门 {repl
 AI_TRANSCRIPT = "ai_transcript"        # AI 回复文本（供上屏） {text}
 BARGE_IN = "barge_in"                  # 用户打断 → 清播放 + 关闸门 {}
 AI_TURN_END = "ai_turn_end"            # AI 本轮结束 → 排空判定 {exit_intent}
-AI_FULL_TEXT = "ai_full_text"          # 整轮完整文本（豆包 550）：本轮无 350 文本时兜底上屏 {text}
+AI_FULL_TEXT = "ai_full_text"          # AI 回复正文（豆包 550 流式片段累积后的全量）：本轮无 350 文本时兜底上屏 {text}
 
 
 class DialogError(Exception):

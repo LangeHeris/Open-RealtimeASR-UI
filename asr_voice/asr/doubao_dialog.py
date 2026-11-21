@@ -253,6 +253,11 @@ class DoubaoDialogClient:
         self._stop_event = None
         self._ws = None
         self._stop_requested = False       # 一次性 loop.stop 投递标志（见 _cleanup_loop）
+        # 550（ChatResponse）正文累积：服务端按流式片段下发，一条回复会来很多帧，
+        # 每帧只有几个字。中立事件要求 AI_FULL_TEXT 是「本轮到目前的全量」，累积
+        # 责任在本类（与 Qwen 的 transcript delta 同构）。
+        self._chat_reply_id = ""            # 该缓冲所属的 AI 轮
+        self._chat_text_buf = ""
 
     @property
     def state(self) -> str:
@@ -340,22 +345,47 @@ class DoubaoDialogClient:
                      {"text": text,
                       "is_final": not bool(last.get("is_interim", True))})]
         if event_id == SERVER_ASR_ENDED:               # 459
+            # 用户这句说完了：下一条 AI 回复的正文从空开始（若 550 先于该轮的
+            # 350 到达，也不至于接在上一轮的文字后面）
+            self._chat_reply_id = ""
+            self._chat_text_buf = ""
             return [(USER_TURN_END, {})]
         if event_id == SERVER_TTS_SENTENCE_START:      # 350
+            reply_id = str(payload.get("reply_id", ""))
+            if reply_id and reply_id != self._chat_reply_id:
+                # 换了 reply_id = 换了一条 AI 回复：正文累积从头开始。同一轮里
+                # 每个句子都会再发 350（reply_id 不变），不能就地清空。
+                self._chat_reply_id = reply_id
+                self._chat_text_buf = ""
             out: list[tuple[str, dict]] = [
-                (AI_TURN_START, {"reply_id": str(payload.get("reply_id", ""))})]
+                (AI_TURN_START, {"reply_id": reply_id})]
             text = str(payload.get("text", ""))
             if text:
                 out.append((AI_TRANSCRIPT, {"text": text}))
             return out
         if event_id == SERVER_ASR_INFO:                # 450
+            # 用户开口打断：本轮正文作废，下一轮从空开始
+            self._chat_reply_id = ""
+            self._chat_text_buf = ""
             return [(BARGE_IN, {})]
         if event_id == SERVER_TTS_ENDED:               # 359
             return [(AI_TURN_END,
                      {"exit_intent":
                       str(payload.get("status_code", "")) == _EXIT_INTENT_STATUS})]
         if event_id == SERVER_CHAT_RESPONSE:           # 550
-            return [(AI_FULL_TEXT, {"text": str(payload.get("content", ""))})]
+            chunk = str(payload.get("content", ""))
+            reply_id = str(payload.get("reply_id", ""))
+            if reply_id and reply_id != self._chat_reply_id:
+                self._chat_reply_id = reply_id
+                self._chat_text_buf = ""
+            if not chunk:
+                return []                    # 服务端会发空块，不上屏
+            if self._chat_text_buf and chunk.startswith(self._chat_text_buf):
+                # 整段重发（快照式）：直接用新的，不做追加，否则同一段会翻倍
+                self._chat_text_buf = chunk
+            else:
+                self._chat_text_buf += chunk
+            return [(AI_FULL_TEXT, {"text": self._chat_text_buf})]
         # 未匹配任何已知 wire 事件（50/152/351/559/154 等轮末类，不驱动状态机）：
         # 记 INFO 留痕供生产排障（承接旧 dialog.py else 分支；DEBUG 默认不开）。
         # 451/350 等已知事件的空内容在上方各自 return []，不落这里、不误记。

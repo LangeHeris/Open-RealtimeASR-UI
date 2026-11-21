@@ -1754,10 +1754,14 @@ class FloatingBar(QWidget):
         return super().eventFilter(obj, event)
 
     def _restart_auto_hide(self) -> None:
-        """录音中或未启用时不隐藏；其余情况重置倒计时。"""
+        """录音中、语音对话中或未启用时不隐藏；其余情况重置倒计时。
+
+        对话整场都要求条可见（退出走按钮/热键，不靠「消失」表达）：空闲计时把条
+        藏进托盘后，用户会以为对话已经断了，还得再找托盘呼出。
+        """
         if self._auto_hide_ms <= 0:
             return
-        if self._state in (UI_LISTENING, UI_RECOGNIZING):
+        if self._state in (UI_LISTENING, UI_RECOGNIZING) or self._state in _DIALOG_STATES:
             self._auto_hide_timer.stop()
             return
         if self._mouse_inside:
@@ -1926,25 +1930,27 @@ class FloatingBar(QWidget):
     def _sync_bubble(self) -> None:
         """声纹主题气泡内容同步：错误 > 临时提示 > 识别文本 > 聆听提示；待机隐藏。
 
-        非声纹主题为空操作；错误/临时提示待机时也可短暂弹出。"""
+        非声纹主题的普通内容留在条内；错误详情只由多行气泡展示，避免两处重复。"""
         import time
         bubble = getattr(self, "_bubble", None)
         if bubble is None:
             return
-        # 非声纹主题：录音文本/错误/提示都画在条上，气泡只在语音模式出场
-        #（语音模式下所有主题统一用气泡承载内容，见 _draw_text 的分流）
-        if not self._voice_mode and self._state not in _DIALOG_STATES:
+        now = time.time()
+        error_active = bool(self._error_msg and now < self._error_until)
+        # 非声纹主题：识别文本和普通提示画在条上；错误额外弹出多行气泡，
+        # 让长详情有完整展示位置，不再只留在条内被单行省略。
+        if (not self._voice_mode and self._state not in _DIALOG_STATES
+                and not error_active):
             if bubble.isVisible():
                 bubble.hide()
             return
-        now = time.time()
         # 确认提示优先级最高；极简主题小方块放不下文字，完整显示在气泡里
         if self._llm_wait_active and self._llm_wait_text:
             # marquee=True：长确认文本在气泡内循环滚动（极简主题小方块放不下）
             bubble.show_message(self._llm_wait_text, self._text_color, marquee=True)
             return
-        if self._error_msg and now < self._error_until:
-            bubble.show_message(self._error_msg, QColor("#e8a83c"))
+        if error_active:
+            bubble.show_message(self._error_msg, QColor("#e8a83c"), wrap=True)
             return
         # 语音模式：两行字幕式卡片（上=上一轮，角色不限；下=当前轮）。
         # 刻意排在临时提示之前：对话内容不该被一条瞬时提示清屏
@@ -2149,18 +2155,11 @@ class FloatingBar(QWidget):
         if self._flash_msg and time.time() >= self._flash_until:
             self._flash_msg = ""
 
-        if self._error_msg and time.time() < self._error_until:
-            painter.setPen(QColor("#e8a83c"))
-            elided = elide_right(metrics, self._error_msg, max_width)
-            painter.drawText(
-                left, 0, max_width, self.height(),
-                Qt.AlignVCenter | Qt.AlignLeft, elided,
-            )
-            return
-
         if self._error_msg and time.time() >= self._error_until:
             self._error_msg = ""
 
+        # 错误详情只由上方气泡承载：条内再画一遍会和完整气泡重复，
+        # 也仍受单行宽度限制。条内继续显示当前状态提示。
         painter.setPen(self._text_color)
         text = self._text if self._text else self._hint
         if not text:

@@ -201,7 +201,22 @@ def wrap_lines(metrics, text: str, max_w: int) -> list[str]:
 
     CJK 逐字断行；ASCII 单词内不硬断（回退到最近空格），
     避免 "realtime" 被切成 "realti/me" 这种难读的断法。
+
+    文本自带的换行是硬断：每段单独折行、空段丢弃。调用方按「一行 = 一行高」
+    画字，若把换行符留在行内，绘制时会变成多行塞进一行的高度 —— 后面几行被裁掉
+    （用户看到缺字），或被 Qt 的段内行距推到相邻行上（两行重叠）。
     """
+    lines: list[str] = []
+    normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    for para in normalized.split("\n"):
+        if not para.strip():
+            continue                      # markdown 段落间空行不占行高
+        lines.extend(_wrap_paragraph(metrics, para, max_w))
+    return lines
+
+
+def _wrap_paragraph(metrics, text: str, max_w: int) -> list[str]:
+    """单个段落（不含换行）按宽度折行。"""
     lines: list[str] = []
     cur = ""
     cur_w = 0
@@ -311,6 +326,8 @@ class SpeechBubble(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self._text = ""
         self._elided = ""
+        self._wrap = False
+        self._wrapped_lines: list[str] = []
         # loading 专用内容标记：悬浮条收起 loading 气泡前据此判断是否会吞其他提示
         self._loading = False
         self._spinner_angle = 0.0
@@ -432,7 +449,7 @@ class SpeechBubble(QWidget):
         两个条件都要满足：光标被取消（语音模式）时不必为空转的闪烁跑重绘，
         气泡隐藏/无文本同理（气泡只在方窗布局出现，不外溢到条内主题）。
         """
-        want = (self.isVisible() and bool(self._text)
+        want = (self.isVisible() and bool(self._text) and not self._wrap
                 and not self._cursor_cancelled())
         if want and not self._blink_timer.isActive():
             self._blink_on = True
@@ -441,14 +458,16 @@ class SpeechBubble(QWidget):
             self._blink_timer.stop()
 
     def show_message(self, text: str, color: QColor, marquee: bool = False,
-                     elide: str = "right") -> None:
+                     elide: str = "right", wrap: bool = False) -> None:
         """更新内容并显示（同步位置到悬浮窗正上方）。常规内容，清除 loading 标记。
 
         marquee=True：文本超长时在气泡内循环滚动（用于长确认文本），
+        wrap=True：按可用宽度折行并完整显示（用于错误详情），
         否则按 elide 方向静态省略："right" 保留头部（录音累积全文，默认），
         "left" 保留尾部（语音模式流式回复，最新说出的话在尾部）。"""
         self._loading = False
         self._marquee = marquee
+        self._wrap = wrap
         self._elide_mode = "left" if str(elide).lower() == "left" else "right"
         self._card = False
         self._rows_spec = []
@@ -461,6 +480,7 @@ class SpeechBubble(QWidget):
     def show_loading(self, text: str, color: QColor, angle: float) -> None:
         """loading 模式：前导转圈 + 提示文字（angle 由悬浮条 tick 驱动旋转）。"""
         self._loading = True
+        self._wrap = False
         self._elide_mode = "right"   # loading 提示短且从头读，固定右截断
         self._card = False
         self._rows_spec = []
@@ -481,6 +501,7 @@ class SpeechBubble(QWidget):
         """
         self._loading = False
         self._marquee = False
+        self._wrap = False
         self._card = True
         self._elide_mode = "right"
         self._rows_spec = [dict(r) for r in rows]
@@ -553,10 +574,10 @@ class SpeechBubble(QWidget):
         self.repaint()
 
     def _relayout(self) -> None:
-        """按文本长度自适应宽度（超出 MAX_W 省略），重算窗口尺寸。
+        """按文本长度自适应尺寸，重算窗口。
 
-        跑马灯模式：保留完整文本、窗口固定 MAX_W，靠滚动读全；
-        否则右侧静态省略。卡片模式（语音模式）走多行折行分支。"""
+        跑马灯模式保留完整文本并循环滚动；折行模式完整排出所有行；
+        默认单行模式按方向静态省略。卡片模式走多行对话分支。"""
         size = int(getattr(self._bar.cfg, "font_size_bar", 13) or 13)
         font = bubble_font(self, size)
         metrics = QFontMetrics(font)
@@ -565,6 +586,31 @@ class SpeechBubble(QWidget):
             return
         # loading 模式前导转圈占用宽度
         extra = (self.LOADING_SPINNER_D + self.LOADING_GAP) if self._loading else 0
+        self._wrapped_lines = []
+        if self._wrap and not self._loading:
+            logical_lines = self._text.split("\n")
+            natural_w = max((metrics.horizontalAdvance(line) for line in logical_lines),
+                            default=0)
+            w = min(self.MAX_W, max(self.MIN_W, natural_w + 2 * self.PAD_X))
+            try:
+                screen = self._bar.screen()
+                if screen is not None:
+                    avail_w = int(screen.availableGeometry().width())
+                    if avail_w > 0:
+                        w = max(self.MIN_W, min(
+                            w, avail_w - 2 * self.CARD_SCREEN_MARGIN))
+            except Exception:
+                pass
+            text_w = max(1, w - 2 * self.PAD_X)
+            for logical in logical_lines:
+                wrapped = wrap_lines(metrics, logical.rstrip("\r"), text_w)
+                self._wrapped_lines.extend(wrapped or [""])
+            self._elided = self._text
+            h = (len(self._wrapped_lines) * metrics.lineSpacing()
+                 + 2 * self.PAD_Y + self._tail_h_px)
+            self.resize(w, h)
+            self._stop_marquee()
+            return
         # 文本尾部未定稿标记的宽度预留：像素主题金色 ▼（用主题 MARKER_EXTRA）、其他主题
         # 竖线光标，两者都必须预留 —— 否则气泡宽度正好包住文字、标记永远放不下。语音模式
         # 不画光标（见 _cursor_cancelled），自然也不预留。
@@ -900,8 +946,17 @@ class SpeechBubble(QWidget):
                 self.PAD_X, int(top + (body_h - self.LOADING_SPINNER_D) / 2), pix
             )
             text_x = self.PAD_X + self.LOADING_SPINNER_D + self.LOADING_GAP
-        # 文本绘制：跑马灯模式裁剪到气泡体后循环滚动，否则静态单行
-        if self._marquee and not self._loading:
+        # 文本绘制：错误详情逐行完整绘制；跑马灯裁剪滚动；其余静态单行
+        if self._wrap and not self._loading:
+            line_h = QFontMetrics(painter.font()).lineSpacing()
+            y = top + self.PAD_Y
+            for line in self._wrapped_lines:
+                painter.drawText(
+                    text_x, int(y), w - text_x - self.PAD_X, int(line_h),
+                    Qt.AlignVCenter | Qt.AlignLeft, line,
+                )
+                y += line_h
+        elif self._marquee and not self._loading:
             painter.save()
             clip_left = text_x
             clip_w = w - text_x - self.PAD_X
@@ -1009,9 +1064,12 @@ class SpeechBubble(QWidget):
             tx = band_x + self._who_w() + self.WHO_GAP
             ty = y + self.ROW_PAD_Y
             for line in row["lines"]:
+                # TextSingleLine：行内容由 wrap_lines 切好，禁止 Qt 在行内再折/换行——
+                # 多出来的行只会被这一行的高度裁掉（缺字）或压到下一行（重叠）
                 painter.drawText(int(tx), int(ty), int(w - tx - self.ROW_PAD_X),
                                  int(row["lh"]),
-                                 Qt.AlignLeft | Qt.AlignVCenter, line)
+                                 Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine,
+                                 line)
                 ty += row["lh"]
             y += row["h"]
         if self._thinking:

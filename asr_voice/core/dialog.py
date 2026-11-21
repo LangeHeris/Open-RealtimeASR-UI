@@ -84,6 +84,17 @@ LEVEL_NORMALIZE = 3000.0
 # SPEAKING → LISTENING 排空轮询间隔（spec：50ms 对 UI 足够）
 DRAIN_INTERVAL_MS = 50
 
+# ---- 半双工闸门「防回声尾」静默期 ----
+# pending_ms 归零只说明应用侧缓冲空了，设备侧还压着一段：播放流缓冲里是 AI 的
+# 最后几百毫秒，采集流缓冲则是同样一段音频在麦克风侧的回传。闸门在这个时刻重开，
+# 这些帧正好落在「已采集、未递出」的窗口里，照样会被送进服务端；服务端把它们当成
+# 用户提问，就表现为 AI 用自己的句尾自问自答。
+# 静默期 = 播放设备延迟 + 采集设备延迟 + 余量（按实际流延迟动态算，见
+# _echo_guard_seconds），上下钳制避免异常设备把闸门关死或形同关闭。
+ECHO_TAIL_MARGIN_S = 0.15
+ECHO_TAIL_GUARD_MIN_S = 0.25
+ECHO_TAIL_GUARD_MAX_S = 0.70
+
 # dialog_id 跨进程续接文件（state_dir 下的 JSON）
 _CONTEXT_FILE = state_dir() / "dialog_context.json"
 
@@ -210,6 +221,9 @@ class DialogController(QObject):
         self._hold_gate = False
         self._hold_client_gate = False
         self._tts_ended = False              # 359 已到（排空判定的一半）
+        # 本地播放真正结束的时刻（monotonic）；0 = 没有刚结束的播报。半双工闸门
+        # 重开后的防回声尾静默期从这里起算，见 _echo_guard_seconds
+        self._speak_end_ts = 0.0
         # 本轮 AI 回复是否已开始（AI_TURN_START 置位 / USER_TURN_END 清空）：
         # THINKING 自动收尾的轮次门槛，挡住上一轮迟到的事件
         self._ai_turn_started = False
@@ -370,15 +384,18 @@ class DialogController(QObject):
                     "本轮 AI 没有任何文本上屏（350 未带 text、550 也未带 content）"
                     "—— 若出现「有声音没文字」，请查该 provider 的文本事件")
         elif neutral == AI_FULL_TEXT:
-            # D1：豆包这一版的 AI 正文在 550（ChatResponse）的 content 里，350 到了
-            # 但没有 text。旧实现这里只写 DEBUG 日志（生产日志级别 INFO ⇒ 看不见）
-            # 文本也永不上屏，用户看到的就是「只有我说的话」。
+            # 豆包这一版的 AI 正文只在 550（ChatResponse）里，350 不带 text。服务端
+            # 把正文按片段流式下发，客户端累积后推「本轮到目前的全量」，这里每次都用
+            # 全量覆盖同一 AI 轮（轮次号不变 ⇒ UI 覆盖当前行），历史里留下的就是全文。
             text = str(payload.get("text", ""))
-            # 可观测：提到 INFO，打出长度 + 前 40 字（下次真机排障靠这行确认）
-            logger.info("AI 整轮完整文本（AI_FULL_TEXT）：len=%d 前 40 字=%s",
-                        len(text), text[:40])
             if not text:
                 return                       # 空 content 不上屏（简报要求）
+            if not self._ai_full_text_seen:
+                # 可观测：整轮只打一条，避免流式片段把 INFO 日志刷满
+                logger.info("AI 正文开始（AI_FULL_TEXT）：len=%d 前 40 字=%s",
+                            len(text), text[:40])
+            else:
+                logger.debug("AI 正文累积刷新：len=%d", len(text))
             if self._audio_gate_closed:
                 # barge-in 作废轮的迟到 550：闸门只由新 reply_id 的 AI_TURN_START
                 # 重开，此刻还关着就说明这条属于被打断的旧轮。上屏会凭空开一个 AI
@@ -520,7 +537,36 @@ class DialogController(QObject):
         if self._state == DIALOG_STATE_THINKING and not self._ai_turn_started:
             return  # 本轮回复尚未开始：来的只可能是上一轮的迟到事件
         if self._player.pending_ms <= 0:
+            if self._state == DIALOG_STATE_SPEAKING:
+                # 记「播放真的结束了」：半双工闸门的防回声尾静默期从这一刻起算
+                self._speak_end_ts = time.monotonic()
             self._enter_listening()
+
+    def _echo_guard_seconds(self) -> float:
+        """半双工闸门重开前的静默长度（秒）：两侧设备延迟之和 + 余量。
+
+        播放侧延迟决定扬声器还要响多久，采集侧延迟决定这段声音多久之后才被
+        递到本方法；两者重叠的音频全部落在闸门重开之后，必须一并盖掉。
+        设备不提延迟（替身/未开流）时按最小值兜底。
+        """
+        out = getattr(self._player, "latency_s", 0.0) or 0.0
+        inp = getattr(self._capture, "latency_s", 0.0) or 0.0
+        try:
+            total = float(out) + float(inp) + ECHO_TAIL_MARGIN_S
+        except (TypeError, ValueError):
+            total = ECHO_TAIL_GUARD_MIN_S
+        return min(ECHO_TAIL_GUARD_MAX_S, max(ECHO_TAIL_GUARD_MIN_S, total))
+
+    def _uplink_muted(self) -> bool:
+        """半双工闸门：AI 播报中，或播报刚结束、仍处在防回声尾静默期内。
+
+        跑在采集回调线程：只读本对象字段与流延迟，不加锁、不抛异常。
+        """
+        if self._state == DIALOG_STATE_SPEAKING:
+            return True
+        if not self._speak_end_ts:
+            return False
+        return (time.monotonic() - self._speak_end_ts) < self._echo_guard_seconds()
 
     # ---- 采集回调（PortAudio 线程）----
 
@@ -547,8 +593,10 @@ class DialogController(QObject):
             # 半双工闸门动态读配置（每次一块，属性读取开销可忽略；配置热改即时生效）
             half_duplex = bool(getattr(getattr(self._app.cfg, "dialog", None),
                                         "half_duplex", False))
-            if half_duplex and self._state == DIALOG_STATE_SPEAKING:
-                return  # AI 播报中暂停上行（外放用户防自我打断）
+            if half_duplex and self._uplink_muted():
+                # AI 播报中、或播报刚结束还在静默期：暂停上行（外放防自我打断，
+                # 也挡掉设备缓冲里那段 AI 句尾的回声）
+                return
         if self._client is not None and self._client.is_connected():
             self._client.send_audio(block.tobytes())
 
@@ -883,6 +931,7 @@ class DialogController(QObject):
         self._hold_tracker = None
         self._tts_ended = False
         self._ai_turn_started = False
+        self._speak_end_ts = 0.0             # 会话结束：清掉待用的静默期基准
         self._ai_text_shown = False          # D1：会话结束，门闩一并复位
         self._ai_full_text_seen = False
         self._current_reply_id = ""

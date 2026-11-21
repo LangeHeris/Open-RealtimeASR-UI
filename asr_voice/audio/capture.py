@@ -78,6 +78,17 @@ class AudioCapture:
     def is_running(self) -> bool:
         return self._stream is not None
 
+    @property
+    def latency_s(self) -> float:
+        """当前输入流的设备延迟（秒）。未开流返回 0。
+
+        麦克风收到的声音要过这么久才进回调，闸门判断「这段声音属于哪一刻」
+        必须把它算进去。
+        """
+        stream = self._stream
+        latency = getattr(stream, "latency", None) if stream is not None else None
+        return float(latency) if isinstance(latency, (int, float)) else 0.0
+
     def _callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
         if status:
             logger.debug("音频状态：%s", status)

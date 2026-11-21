@@ -113,6 +113,17 @@ class AudioPlayer:
     def is_running(self) -> bool:
         return self._stream is not None
 
+    @property
+    def latency_s(self) -> float:
+        """当前输出流的设备延迟（秒，PortAudio 缓冲+设备缓冲）。未开流返回 0。
+
+        缓冲排空（`pending_ms == 0`）之后扬声器还会响这么久，半双工闸门的
+        防回声尾静默期要把它算进去。
+        """
+        stream = self._stream
+        latency = getattr(stream, "latency", None) if stream is not None else None
+        return float(latency) if isinstance(latency, (int, float)) else 0.0
+
     # ---- 数据 ----
 
     def write(self, pcm: bytes) -> None:
