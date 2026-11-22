@@ -39,6 +39,8 @@ class HermesDialogClient:
                  asr_factory, hermes_factory=None,
                  vad_cfg=None, model: str = "hermes-agent",
                  session_title: str = "ORI 语音对话", system_hint: str = "",
+                 resume_session_id: str = "",
+                 max_context_turns: int = 0,
                  connect_timeout_ms: int = 5000,
                  turn_timeout_ms: int = 60000,
                  on_state=None, on_event=None, on_audio=None, on_error=None):
@@ -64,6 +66,8 @@ class HermesDialogClient:
         self._client = factory(
             base_url=base_url, api_key=api_key, model=model,
             session_title=session_title, system_hint=system_hint,
+            resume_session_id=resume_session_id,
+            max_context_turns=max_context_turns,
             connect_timeout_ms=connect_timeout_ms,
             turn_timeout_ms=turn_timeout_ms,
             on_state=self._on_client_state,

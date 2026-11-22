@@ -48,6 +48,7 @@ class AudioPlayer:
         self._downsample = False            # True=需 24k→16k 重采样
         self._written = 0                   # 累计写入字节（日志用）
         self._underruns = 0                 # 累计补零次数（缓冲不足）
+        self._played_bytes = 0              # 累计交付给设备的字节（跟读进度用）
 
     # ---- 生命周期 ----
 
@@ -164,6 +165,16 @@ class AudioPlayer:
         denom = self.sample_rate * self.channels * BYTES_PER_SAMPLE
         return nbytes * 1000 // denom if denom else 0
 
+    @property
+    def played_ms(self) -> int:
+        """累计已交付设备的音频毫秒数（单调递增，跨轮不清零）。
+
+        只算真实音频字节，补零段不计：文本跟读按「已播了多少」推进游标，
+        把静音间隙算进去会让文字跑到语音前面。调用方减自己的基准值取差值。
+        """
+        denom = self.sample_rate * self.channels * BYTES_PER_SAMPLE
+        return self._played_bytes * 1000 // denom if denom else 0
+
     # ---- 内部 ----
 
     def _resample(self, pcm: bytes) -> bytes:
@@ -201,6 +212,7 @@ class AudioPlayer:
                 else:
                     chunks.append(chunk)
             self._buf_bytes -= got
+            self._played_bytes += got
             data = b"".join(chunks)
         if len(data) < need:
             self._underruns += 1

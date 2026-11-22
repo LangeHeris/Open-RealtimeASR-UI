@@ -493,11 +493,12 @@ class SpeechBubble(QWidget):
 
     def show_dialog(self, rows: list[dict], expanded: bool = False,
                     streaming: bool = False, toast: str = "",
-                    thinking: bool = False) -> None:
+                    thinking: bool = False, status: str = "") -> None:
         """语音模式多行字幕式卡片（上=上一轮，下=当前轮）。
 
         rows = [{"role","text","struck","current","final"}]，最多两行：上一轮压暗小一号，当前轮角色色带 +
         标签；宽度随悬浮条、超长折行（当前轮留尾 / 上一轮留头）。toast / thinking 是底部独立行，不进 _rows。
+        status 非空时顶替 thinking 的文案（工具进展这类"此刻在做什么"，两者不同时出现）。
         """
         self._loading = False
         self._marquee = False
@@ -509,7 +510,8 @@ class SpeechBubble(QWidget):
         self._streaming = bool(streaming)
         self._toast = str(toast or "")
         # ：思考行，独立字段（非极简主题的调用方传 False ⇒ 行为不变）
-        self._thinking = t(SpeechBubble.THINKING_TEXT_KEY) if thinking else ""
+        self._thinking = (str(status or "")
+                          or (t(SpeechBubble.THINKING_TEXT_KEY) if thinking else ""))
         # _text 只作为"内容变了"的判定与复制兜底，卡片排版不走它
         self._text = "\n".join(str(r.get("text", "")) for r in self._rows_spec)
         self._relayout()
@@ -1073,18 +1075,25 @@ class SpeechBubble(QWidget):
                 ty += row["lh"]
             y += row["h"]
         if self._thinking:
-            # ：思考行。左对齐（跟正文同一起读线），字号同 note、略亮一点
-            # 位置在正文之后、省略标记之前。窄卡片时不省略（"思考中…" 只有 4 字
-            # 且宽度已由 CARD_MIN_AVAIL_W 保底）。
+            # ：思考行（工具进展也走这里）。左对齐（跟正文同一起读线），字号同 note、
+            # 略亮一点。位置在正文之后、省略标记之前。窄卡片时不省略（"思考中…" 只有
+            # 4 字且宽度已由 CARD_MIN_AVAIL_W 保底）—— 但进展文案可能很长（工具名 +
+            # 命令行），必须右截断，否则直接被卡片边缘切掉，看起来像"缺字"。
             if self._rows:
                 y += self.SEP_H
+            kfm = QFontMetrics(bubble_font(self, self._thinking_size))
             painter.setFont(bubble_font(self, self._thinking_size))
             kc = QColor(ink)
             kc.setAlpha(200)
             painter.setPen(kc)
-            painter.drawText(self.ROW_PAD_X, int(y), w - 2 * self.ROW_PAD_X,
+            k_text = self._thinking
+            avail = w - 2 * self.ROW_PAD_X
+            if kfm.horizontalAdvance(k_text) > avail:
+                k_text = elide_right(kfm, k_text, avail)
+            painter.drawText(self.ROW_PAD_X, int(y), avail,
                              int(self._thinking_h),
-                             Qt.AlignLeft | Qt.AlignVCenter, self._thinking)
+                             Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine,
+                             k_text)
             y += self._thinking_h + self.SEP_H
         if self._note:
             # 截断不再静默 —— 卡片底部一行小字说明少了几行、怎么看到全部
@@ -1126,8 +1135,18 @@ class SpeechBubble(QWidget):
             logger.debug("复制提示 emit 失败，忽略", exc_info=True)
 
     def _on_single_click(self) -> None:
-        """单击 = 展开/收起全文（纯显示动作，无副作用）。"""
+        """单击：翻上去了就先回到最新，否则展开/收起全文（纯显示动作，无副作用）。
+
+        滚轮翻看长回复后，回到底部要一格一格滚（每格 3 行，几十行就得拨十来下）；
+        单击一次直达尾部，比让用户自己滚回去更符合"看最新的"这个当下意图。
+        """
         if not self._card:
+            return
+        if self._expanded and self._scroll_skip > 0:
+            self._scroll_skip = 0
+            self._relayout()
+            self._sync_pos()
+            self._force_full_repaint()
             return
         try:
             self._bar.toggle_dialog_expand()

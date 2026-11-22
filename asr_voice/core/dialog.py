@@ -22,11 +22,13 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from ..asr.doubao_dialog_codec import DIALOG_BLOCK_FRAMES
 from ..asr.dialog_events import (
     AI_FULL_TEXT,
+    AI_PROGRESS,
     AI_TRANSCRIPT,
     AI_TURN_END,
     AI_TURN_START,
     BARGE_IN,
     SESSION_READY,
+    SESSION_ROTATED,
     USER_TRANSCRIPT,
     USER_TURN_END,
     DialogError,
@@ -94,6 +96,19 @@ DRAIN_INTERVAL_MS = 50
 ECHO_TAIL_MARGIN_S = 0.15
 ECHO_TAIL_GUARD_MIN_S = 0.25
 ECHO_TAIL_GUARD_MAX_S = 0.70
+
+# 回声自检窗口：AI 说完后这么多秒内识别到的用户文本，才可能是它自己的回声
+# （超出窗口的重复是用户在真的复述，提示反而多余）。只在窗口内提示一次。
+ECHO_DETECT_WINDOW_S = 2.0
+
+# ---- 文本跟读（按已播音频揭示 AI 文本）----
+# 文本比语音先到（豆包 550 / Qwen delta 都是秒级推完，语音要播十几秒），
+# 直接上屏等于把还没听到的答案先摊开。这里按「已播音频时长 × 语速」逐字揭示，
+# 听完即全文；语速逐轮用实测校准（本轮字数 / 本轮音频秒数），首轮用缺省值。
+REVEAL_INTERVAL_MS = 100
+REVEAL_DEFAULT_CPS = 5.0             # 中文播报约 4~6 字/秒
+REVEAL_MIN_CPS = 1.5
+REVEAL_MAX_CPS = 12.0
 
 # dialog_id 跨进程续接文件（state_dir 下的 JSON）
 _CONTEXT_FILE = state_dir() / "dialog_context.json"
@@ -177,10 +192,16 @@ class DialogController(QObject):
     level_changed = Signal(float)        # 声纹电平 0~1
     error_occurred = Signal(str)         # 中文错误提示（单行）
     transient_hint = Signal(str, float)  # 一次性提示
+    # 长任务进展（Hermes 的 tool.progress）：气泡底部状态行文案，空串=清除。
+    # 与 transient_hint 分开：进展要一直挂着直到工具结束，提示是几秒即走。
+    progress_changed = Signal(str)
     # 内部信号：请求在主线程启停排空轮询。worker 线程直调 QTimer.start()
     # 会被 Qt 拒绝（见 _apply_drain_poll）；主线程 emit = 直连同步
     # worker 线程 emit = 排队到主线程执行
     _drain_poll = Signal(bool)
+    # 内部信号：请求在主线程启停「文本跟读」定时器。理由同 _drain_poll：
+    # 事件来自 asyncio 线程，QTimer 只能在主线程启停
+    _reveal_poll = Signal(bool)
     # 内部信号：请求在主线程建长按采样表。热键回调在工作线程，而 QTimer 的线程亲和性
     # 是「创建它的那个线程」——就地建表拿到的是 isActive() 恒假、永不触发的定时器，
     # 压着不放也永远越不过阈值、闸门打不开。与 app 侧 hold_press_requested 同路数。
@@ -233,6 +254,21 @@ class DialogController(QObject):
         # 复位，供 AI_TURN_END 判断本轮有没有字上屏，没有就打 WARNING。
         self._ai_text_shown = False
         self._ai_full_text_seen = False
+        # ---- 轮次指标（每轮结束打一行 INFO，见 _log_turn_metrics）----
+        self._turn_started_ts = 0.0          # AI_TURN_START 时刻
+        self._first_audio_ts = 0.0           # 本轮首个音频帧时刻
+        self._text_frames = 0                # 本轮收到的文本帧数
+        self._turn_bargein = False           # 本轮是否被用户打断
+        self._audio_base_ms = 0              # 本轮开始时播放器的累计播放量
+        # ---- 文本跟读（按已播音频揭示，见 _feed_ai_text / _reveal_tick）----
+        self._ai_full_text = ""              # 本轮 AI 正文全量（揭示源）
+        self._ai_reveal_chars = 0            # 已揭示字数
+        self._reveal_cps = REVEAL_DEFAULT_CPS   # 字/秒，逐轮用实测校准
+        self._reveal_timer = QTimer(self)
+        self._reveal_timer.setInterval(REVEAL_INTERVAL_MS)
+        self._reveal_timer.timeout.connect(self._reveal_tick)
+        # ---- 回声自检（一次性提示，见 _looks_like_echo）----
+        self._echo_hinted = False
         self._reconnect_used = False         # 本轮对话已用过一次自动重连
         self._start_thread = None
         self._stop_thread = None
@@ -241,6 +277,7 @@ class DialogController(QObject):
         self._drain_timer.setInterval(DRAIN_INTERVAL_MS)
         self._drain_timer.timeout.connect(self._check_drain)
         self._drain_poll.connect(self._apply_drain_poll)
+        self._reveal_poll.connect(self._apply_reveal_poll)
         self._hold_press_queued.connect(self._start_hold_watch)
 
     # ---- 生命周期查询 ----
@@ -268,6 +305,10 @@ class DialogController(QObject):
         状态提示由 UI 侧的 _apply_state 按状态渲染，不占用 dialog_turn——那条通道
         专供对话内容，否则状态会把刚显示的内容顶掉（气泡内容闪烁）。
         """
+        # 回到聆听 = 上一轮已经结束：工具进展不再成立，必须清掉。走错路也会到这里
+        # （不可重连的错误回退、服务端会话就绪），留着会让气泡底部永远挂着
+        # 「正在使用 …」——那正是用户以为"卡死了"的样子。
+        self.progress_changed.emit("")
         self._set_state(DIALOG_STATE_LISTENING)
 
     def _begin_turn(self, role: str) -> int:
@@ -320,9 +361,18 @@ class DialogController(QObject):
             self._dialog_id = str(payload.get("dialog_id", ""))
             self._persist_dialog_id()
             self._enter_listening()
+        elif neutral == SESSION_ROTATED:
+            # 上下文攒满轮数上限、客户端换了个新会话：只换持久化句柄。这里不能走
+            # _enter_listening —— 它会把状态机拉回聆听、重开麦克风，而此刻正是一轮
+            # 提问的开场（用户刚说完），重进聆听会把这一轮自己顶掉。
+            self._dialog_id = str(payload.get("dialog_id", ""))
+            self._persist_dialog_id()
         elif neutral == USER_TRANSCRIPT:
             text = str(payload.get("text", ""))
             if text:
+                # 先自检再上屏：_begin_turn(ROLE_USER) 会覆盖 _last_text，而
+                # _looks_like_echo 需要 AI 那一句的原文来比对
+                self._maybe_hint_echo(text, bool(payload.get("is_final", False)))
                 # is_final：用户中间结果 False、最终 True（客户端翻译层算好）
                 self._begin_turn(ROLE_USER)
                 self._emit_turn(text, bool(payload.get("is_final", False)))
@@ -344,10 +394,13 @@ class DialogController(QObject):
             if reply_id and reply_id != self._current_reply_id:
                 # D1：换 reply_id = 换了一轮 AI 回复（豆包每个 350 句子都发
                 # AI_TURN_START，同一 reply_id 的后续句子不算新一轮）⇒ 复位文本
-                # 门闩。这里刻意不能无条件复位：最后一句 350 没带 text 时
+                # 门闩与指标。这里刻意不能无条件复位：最后一句 350 没带 text 时
                 # 无条件复位会抹掉"前面已经上过屏"的事实，AI_TURN_END 会误报。
                 self._ai_text_shown = False
                 self._ai_full_text_seen = False
+                self._begin_turn_metrics()
+            elif not self._turn_started_ts:
+                self._begin_turn_metrics()
             self._current_reply_id = reply_id
             # 本轮回复已开始：THINKING 的自动收尾以它为轮次门槛
             self._ai_turn_started = True
@@ -361,13 +414,14 @@ class DialogController(QObject):
                 logger.info("音频闸门重开（新 reply_id=%s）",
                             self._current_reply_id)
         elif neutral == AI_TRANSCRIPT:
-            # gap 1：文本显示直接由 AI_TRANSCRIPT 驱动（累积责任在客户端）
-            # 不再等首个音频帧。豆包每句 350 刷新一次、Qwen 流式 delta 刷新
+            # gap 1：文本上屏由 AI_TRANSCRIPT 驱动（累积责任在客户端）。
+            # 豆包每句 350 刷新一次、Qwen 流式 delta 刷新
             text = str(payload.get("text", ""))
             if text:
-                self._ai_text_shown = True       # D1：本轮有 350 文本上过屏
-                self._begin_turn(ROLE_AI)
-                self._emit_turn(text, True)      # 客户端已累积，每次都是全量
+                self._feed_ai_text(text)
+        elif neutral == AI_PROGRESS:
+            # 长任务进展（Hermes 工具调用）：挂在气泡状态行，正文照旧
+            self.progress_changed.emit(self._format_progress(payload))
         elif neutral == BARGE_IN:
             self._handle_barge_in(payload)
         elif neutral == AI_TURN_END:
@@ -376,6 +430,8 @@ class DialogController(QObject):
                 self._begin_stop()
                 return
             self._tts_ended = True
+            self._reveal_flush()          # 播完了：剩下的字一次性放开
+            self.progress_changed.emit("")   # 工具进展随本轮结束清掉
             logger.info("AI_TURN_END：服务端本轮播报结束，等本地缓冲排空")
             if not self._ai_text_shown and not self._ai_full_text_seen:
                 # 可观测性：这一轮两条文本通道都没内容 —— 真机上就是「有声音
@@ -383,6 +439,7 @@ class DialogController(QObject):
                 logger.warning(
                     "本轮 AI 没有任何文本上屏（350 未带 text、550 也未带 content）"
                     "—— 若出现「有声音没文字」，请查该 provider 的文本事件")
+            self._log_turn_metrics()
         elif neutral == AI_FULL_TEXT:
             # 豆包这一版的 AI 正文只在 550（ChatResponse）里，350 不带 text。服务端
             # 把正文按片段流式下发，客户端累积后推「本轮到目前的全量」，这里每次都用
@@ -403,11 +460,7 @@ class DialogController(QObject):
                 logger.info("AI_FULL_TEXT 属 barge-in 作废轮（音频闸门关闭），不上屏")
                 return
             self._ai_full_text_seen = True
-            # 兜底上屏：本轮还没上过 AI 文本就用它开一轮；已有 350 文本则用整轮全文
-            # 覆盖同一 AI 轮（_begin_turn(ROLE_AI) 角色没变 ⇒ 轮次号不自增，UI 按
-            # "同一轮"覆盖当前行，属改进不是重复）。
-            self._begin_turn(ROLE_AI)
-            self._emit_turn(text, True)
+            self._feed_ai_text(text)
         else:
             logger.info("未消费的中立事件 %s：%s", neutral, str(payload)[:100])
 
@@ -422,9 +475,16 @@ class DialogController(QObject):
         self._audio_gate_closed = True
         self._invalidated_reply_id = self._current_reply_id
         self._tts_ended = False
+        # 用户接管：旧轮的工具进展到此为止（不起新轮就再没人清它）
+        self.progress_changed.emit("")
         # 被打断的那条 AI 文本原样重发一次并带 interrupted=True：UI 据此划线。
         # 不另开信号——一个通道承载全部显示语义，UI 少一条并行状态。
         if self._last_role == ROLE_AI and self._last_text:
+            self._turn_bargein = True
+            # 打断后不会再有 AI_TURN_END 收尾，跟读必须在这里放开：气泡不能永远
+            # 停在被切掉的半句话上。放开后按"本轮收到的整段正文"划线——文字是
+            # 已经到手的，静默丢掉半段才是更糟的体验（用户会当成缺字）。
+            self._reveal_flush()
             self._emit_turn(self._last_text, True, interrupted=True)
         if self._state == DIALOG_STATE_SPEAKING:
             self._set_state(DIALOG_STATE_LISTENING)
@@ -438,6 +498,9 @@ class DialogController(QObject):
             # 音频是「真的开始播报」的硬证据（AI_TURN_START 不是：无音频的
             # 异常路径会永久卡 SPEAKING）
             self._set_state(DIALOG_STATE_SPEAKING)
+        if not self._first_audio_ts:
+            # 本轮首个音频帧：轮次指标里的「思考延迟」以它为终点
+            self._first_audio_ts = time.monotonic()
         if self._player is not None:
             self._player.write(pcm)
 
@@ -567,6 +630,155 @@ class DialogController(QObject):
         if not self._speak_end_ts:
             return False
         return (time.monotonic() - self._speak_end_ts) < self._echo_guard_seconds()
+
+    # ---- 文本跟读（按已播音频揭示 AI 正文）----
+
+    def _apply_reveal_poll(self, active: bool) -> None:
+        """启停跟读定时器（必在主线程执行，理由同 _apply_drain_poll）。"""
+        if active:
+            if not self._reveal_timer.isActive():
+                self._reveal_timer.start()
+        else:
+            self._reveal_timer.stop()
+
+    def _pacing_active(self) -> bool:
+        """本轮能不能按播放进度揭示文本 —— 两个条件缺一不可。
+
+        1. provider 有音频：Hermes 纯文本回复，跟读只会让用户盯着永远不增长的
+           一两个字，等一段永远不会响的语音。
+        2. 输出流真的开着：没有开着的流就没有播放时钟，`played_ms` 永远不动，
+           跟读会退化成"只显示第一个字"。宁可先给全文，也不装一个假节奏。
+        """
+        if str(getattr(self, "_session_provider", "") or "") == "hermes":
+            return False
+        player = self._player
+        running = getattr(player, "is_running", None) if player is not None else None
+        return bool(running()) if callable(running) else False
+
+    def _played_ms(self) -> int:
+        """播放器累计播放毫秒数（取不到当 0：跟读与指标都不该因播放器实现崩）。"""
+        player = self._player
+        return int(getattr(player, "played_ms", 0) or 0) if player is not None else 0
+
+    def _feed_ai_text(self, text: str) -> None:
+        """收 AI 正文（客户端已累积成全量）：记下来，按需揭示。"""
+        self._ai_full_text = text
+        self._text_frames += 1
+        if not self._pacing_active():
+            self._ai_reveal_chars = len(text)
+            self._show_ai_text(text)
+            return
+        self._reveal_poll.emit(True)
+        self._reveal_tick()
+
+    def _reveal_tick(self) -> None:
+        """主线程定时器：按「已播音频秒数 × 语速」推进揭示游标。"""
+        full = self._ai_full_text
+        if not full:
+            return
+        if not self._first_audio_ts:
+            # 本轮还没有音频帧：没有播放进度可依据。此刻拿到的通常只有开头的
+            # 一两个片段，先给全量；等音频起来再按 played_ms 继续推进。
+            if self._ai_reveal_chars < len(full):
+                self._ai_reveal_chars = len(full)
+                self._show_ai_text(full)
+            return
+        played_ms = max(0, self._played_ms() - self._audio_base_ms)
+        target = min(len(full), 1 + int(played_ms * self._reveal_cps / 1000.0))
+        if target <= self._ai_reveal_chars:
+            return
+        self._ai_reveal_chars = target
+        self._show_ai_text(full[:target])
+
+    def _reveal_flush(self) -> None:
+        """放开剩余文字并停表（本轮说完 / 被打断 / 退出会话）。"""
+        self._reveal_poll.emit(False)
+        full = self._ai_full_text
+        if full and self._ai_reveal_chars < len(full):
+            self._ai_reveal_chars = len(full)
+            self._show_ai_text(full)
+
+    def _show_ai_text(self, text: str) -> None:
+        """把（可能是前缀的）AI 文本推上屏：同一轮内覆盖当前行。"""
+        if not text:
+            return
+        self._ai_text_shown = True
+        self._begin_turn(ROLE_AI)
+        self._emit_turn(text, True)
+
+    # ---- 轮次指标 ----
+
+    def _format_progress(self, payload: dict) -> str:
+        """进展载荷 → 状态行一行文案（provider 只给工具名/摘要，措辞归 i18n）。
+
+        兼容直接给 text 的 provider：有 text 且没有结构化字段时原样用。
+        """
+        tool = str(payload.get("tool", "") or "").strip()
+        detail = str(payload.get("detail", "") or "").strip()
+        if not tool:
+            return str(payload.get("text", "") or "").strip()[:60]
+        label = t("dialog.progress.tool", tool=tool)
+        text = f"{label} · {detail}" if detail else label
+        return text[:60]
+
+    def _begin_turn_metrics(self) -> None:
+        """新一轮 AI 回复：复位指标与揭示游标。"""
+        self._turn_started_ts = time.monotonic()
+        self._first_audio_ts = 0.0
+        self._text_frames = 0
+        self._turn_bargein = False
+        self._audio_base_ms = self._played_ms()
+        self._ai_reveal_chars = 0
+        self._ai_full_text = ""
+
+    def _log_turn_metrics(self) -> None:
+        """本轮结束打一行 INFO：延迟、文本量、音频量、是否被打断。
+
+        真机排障只靠日志回传，没有这些数字就只能靠"感觉慢"。顺带用本轮实测
+        「字数/音频秒数」校准语速，下一轮的跟读节奏更贴。
+        """
+        audio_ms = max(0, self._played_ms() - self._audio_base_ms)
+        first = (int((self._first_audio_ts - self._turn_started_ts) * 1000)
+                 if self._first_audio_ts and self._turn_started_ts else -1)
+        logger.info(
+            "对话轮次指标：provider=%s 首音频=%s 文本帧=%d 正文=%d字 音频=%dms 打断=%s",
+            str(getattr(self, "_session_provider", "") or "?"),
+            f"{first}ms" if first >= 0 else "无",
+            self._text_frames, len(self._ai_full_text), audio_ms,
+            "是" if self._turn_bargein else "否")
+        if audio_ms >= 800 and self._ai_full_text:
+            cps = len(self._ai_full_text) * 1000.0 / audio_ms
+            self._reveal_cps = min(REVEAL_MAX_CPS, max(REVEAL_MIN_CPS, cps))
+        self._turn_started_ts = 0.0
+        self._first_audio_ts = 0.0
+
+    # ---- 回声自检 ----
+
+    def _looks_like_echo(self, text: str) -> bool:
+        """这句用户文本是否就是 AI 自己的句尾（外放回声被服务端当成了提问）。"""
+        ai = self._ai_full_text or self._last_text
+        if not ai or not text:
+            return False
+        norm = "".join(ch for ch in text if ch.isalnum())
+        if not 2 <= len(norm) <= 12:
+            return False
+        tail = "".join(ch for ch in ai[-40:] if ch.isalnum())
+        return norm in tail
+
+    def _maybe_hint_echo(self, text: str, is_final: bool) -> None:
+        """首次识别到回声时提示一次「戴耳机或开半双工」。
+
+        只提示、不改行为：误判成本是一条三秒提示，比静默丢用户话安全。
+        """
+        if self._echo_hinted or not is_final or not self._speak_end_ts:
+            return
+        if time.monotonic() - self._speak_end_ts > ECHO_DETECT_WINDOW_S:
+            return
+        if not self._looks_like_echo(text):
+            return
+        self._echo_hinted = True
+        logger.info("疑似回声：用户文本与 AI 句尾重合（%s）", text)
+        self.transient_hint.emit(t("dialog.hint.echo_detected"), 4.0)
 
     # ---- 采集回调（PortAudio 线程）----
 
@@ -937,6 +1149,13 @@ class DialogController(QObject):
         self._current_reply_id = ""
         self._invalidated_reply_id = ""
         self._session_provider = ""
+        # 跟读游标一并清空：定时器同样只能由主线程停，走信号转过去
+        self._ai_full_text = ""
+        self._ai_reveal_chars = 0
+        self._audio_base_ms = 0
+        self._turn_bargein = False
+        self._reveal_poll.emit(False)
+        self.progress_changed.emit("")
         self._drain_poll.emit(False)
         self._set_state(DIALOG_STATE_IDLE)
         logger.info("语音模式已结束（dialog_id=%s）", self._dialog_id or "(无)")
@@ -1018,7 +1237,8 @@ class DialogController(QObject):
         """创建 HermesDialogClient（组合型：本地 VAD + ASR 引擎 + HTTP）。
 
         ASR 引擎用 asr_factory 延迟构造：对话专属引擎与听写引擎可能不是同一家，而各引擎构造参数不同，故把「按
-        dialog_asr_engine 造一个引擎」交给工厂闭包。dialog_id 只保留形参（Hermes 会话 id 不跨连接续接，与 Qwen session.id 同）。
+        dialog_asr_engine 造一个引擎」交给工厂闭包。dialog_id 形参不用（Hermes 的续接句柄是服务端
+        session_id，由客户端自己校验后复用，见 _load_saved_hermes_session）。
         """
         from ..asr.hermes_dialog import HermesDialogClient
         from ..config.loader import (
@@ -1039,6 +1259,8 @@ class DialogController(QObject):
             model=str(getattr(h, "model", "hermes-agent")),
             session_title=str(getattr(h, "session_title", t("dialog.session_title"))),
             system_hint=str(getattr(h, "system_hint", "")),
+            resume_session_id=self._load_saved_hermes_session(),
+            max_context_turns=int(getattr(h, "max_context_turns", 0) or 0),
             connect_timeout_ms=int(getattr(h, "connect_timeout_ms", 5000)),
             turn_timeout_ms=int(getattr(h, "turn_timeout_ms", 60000)),
         )
@@ -1065,18 +1287,34 @@ class DialogController(QObject):
     # ---- dialog_id 持久化（跨进程续接，spec「连接生命周期」）----
 
     def _persist_dialog_id(self) -> None:
-        """150 返回后写入状态目录；keep_context=False 不写（下次全新会话）。"""
+        """150 返回后写入状态目录；keep_context=False 不写（下次全新会话）。
+
+        两家分键存：豆包的 dialog_id 与 Hermes 的 session_id 语义不同（前者是服务端
+        续接句柄、后者是服务端会话主键），共用一个键会互相顶掉——切回豆包时被
+        Hermes 的 id 误续接，反过来也是。
+        """
         d = getattr(self._app.cfg, "dialog", None)
         if not bool(getattr(d, "keep_context", True)):
             return
-        if dialog_provider(self._app.cfg) != "doubao":
-            # Qwen 的 session.id 仅单次连接标识（gap 2），不提供跨进程续接；
-            # 落盘反而会覆盖豆包的 dialog_id，切回豆包时被误续接
+        provider = dialog_provider(self._app.cfg)
+        if provider == "doubao":
+            key = "dialog_id"
+        elif provider == "hermes":
+            key = "hermes_session_id"
+        else:
+            # Qwen 的 session.id 仅单次连接标识（gap 2），不提供跨进程续接
             return
         try:
             _CONTEXT_FILE.parent.mkdir(parents=True, exist_ok=True)
-            _CONTEXT_FILE.write_text(
-                json.dumps({"dialog_id": self._dialog_id}), encoding="utf-8")
+            data = {}
+            try:
+                loaded = json.loads(_CONTEXT_FILE.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                data = {}                 # 文件缺失/损坏：重建，不丢本次写入
+            data[key] = self._dialog_id
+            _CONTEXT_FILE.write_text(json.dumps(data), encoding="utf-8")
         except Exception:
             logger.debug("dialog_id 持久化失败（不影响对话）", exc_info=True)
 
@@ -1090,6 +1328,23 @@ class DialogController(QObject):
         try:
             data = json.loads(_CONTEXT_FILE.read_text(encoding="utf-8"))
             return str(data.get("dialog_id", ""))
+        except Exception:
+            return ""
+
+    def _load_saved_hermes_session(self) -> str:
+        """上次 Hermes 会话 id；不可用时返回空（客户端会退回新建会话）。
+
+        只读不校验：会话是否还能续由 HermesClient 用 `GET /api/sessions/{id}` 判定，
+        控制器不认识 provider 的会话语义。
+        """
+        d = getattr(self._app.cfg, "dialog", None)
+        if not bool(getattr(d, "keep_context", True)):
+            return ""
+        if dialog_provider(self._app.cfg) != "hermes":
+            return ""
+        try:
+            data = json.loads(_CONTEXT_FILE.read_text(encoding="utf-8"))
+            return str(data.get("hermes_session_id", ""))
         except Exception:
             return ""
 

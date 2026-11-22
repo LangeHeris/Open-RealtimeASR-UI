@@ -18,6 +18,7 @@ import hmac
 import json
 import logging
 import random
+import re
 import threading
 import time
 import uuid
@@ -54,6 +55,15 @@ CUT_MAX_WAIT_MS = 2000
 # final 仅在 end 冲刷时返回。
 V2_ENGINES = {"16k_zh_en_2.0", "16k_zh_en_speaker_2.0"}
 PREVIEW_ENGINES = {"Hy-ASR-3.0-preview"}
+
+# filter_punc 口径（与服务端一致）：0 不过滤；1 去掉句末标点；2 去掉全部标点。
+# 2.0 / preview 分支的服务端结果不保证按此过滤（实测每句末尾仍带句号），
+# 故在客户端按同一口径兜底，保证设置项对这些引擎同样生效。
+_TRAILING_PUNC = "。．.！!？?；;，,、：:…~～·"
+_CJK_PUNC_RE = re.compile(r"[。，、；：？！…—～·「」『』（）【】《》〈〉〔〕“”‘’]")
+_ASCII_PUNC_RE = re.compile(r"[!?;:'\"()\[\]{}<>@#$%^&*_+=|\\/~`-]")
+# 数字中间的 . 与 , 不算标点（保住 3.14、1,000 这类写法）
+_NUM_SEP_RE = re.compile(r"(?<!\d)[.,]|[.,](?!\d)")
 
 
 class ASRError(Exception):
@@ -163,8 +173,10 @@ class TencentRealtimeASR:
         nonce = random.randint(1, 9999999999)
 
         # 三分支参数集按各自接口文档设计（发不支持的参数可能被拒或忽略）：
-        # - v1：完整参数（filter_punc / vad_silence_time 系引擎仅 v1 文档列出）
-        # - v2：无 filter_punc（v2 文档未列），其余过滤/热词参数同 v1
+        # - v1：完整参数；filter_punc 服务端只定义 0/1（去句末句号），且仅
+        #   中文普通话引擎支持，故按 0/1 下发，「过滤所有标点」由客户端完成
+        # - v2：2.0 握手参数表未定义 filter_punc（该参数只出现在 v1 示例里），
+        #   标点过滤由客户端兜底（见 _apply_punc_filter），不额外带未知参数
         # - preview：仅基础参数（官方声明不支持 vad/热词/词汇替换/噪音阈值）
         branch = self._engine_branch()
         params = {
@@ -180,7 +192,7 @@ class TencentRealtimeASR:
             params.update(
                 {
                     "needvad": self.needvad,
-                    "filter_punc": self.filter_punc,
+                    "filter_punc": self._server_punc_flag(),
                     "convert_num_mode": self.convert_num_mode,
                     "filter_dirty": self.filter_dirty,
                     "filter_modal": self.filter_modal,
@@ -231,7 +243,39 @@ class TencentRealtimeASR:
             except Exception:
                 logger.exception("on_state 回调异常")
 
+    def _server_punc_flag(self) -> int:
+        """下发给服务端的 filter_punc：只认 0/1（去句末句号）。"""
+        try:
+            return 1 if int(self.filter_punc or 0) >= 1 else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _apply_punc_filter(self, text: str) -> str:
+        """按 filter_punc 口径处理标点（final 帧上统一兜底）。
+
+        服务端能力有限：v1 的 filter_punc 只定义 0/1（去句末句号）且仅中文
+        普通话引擎支持，2.0 / preview 接口干脆没有该参数。三档语义统一由
+        本方法在 final 帧落实，中间帧不动（避免逐字上屏时把尾部逗号删掉又
+        补回来）。
+        """
+        try:
+            mode = int(self.filter_punc or 0)
+        except (TypeError, ValueError):
+            mode = 0
+        if mode <= 0 or not text:
+            return text
+        if mode == 1:
+            return text.rstrip(_TRAILING_PUNC + " \t\r\n")
+        out = _ASCII_PUNC_RE.sub("", _CJK_PUNC_RE.sub("", text))
+        out = _NUM_SEP_RE.sub("", out)
+        return re.sub(r"[ \t]{2,}", " ", out).strip()
+
     def _notify_result(self, text: str, slice_type: int, index: int) -> None:
+        if slice_type == SLICE_FINAL:
+            text = self._apply_punc_filter(text)
+            if not text:
+                # 整句只有标点（如单独的"。"）且已过滤为空：不上屏
+                return
         logger.debug("识别结果 slice_type=%s index=%s text=%s", slice_type, index, text)
         if self.on_result:
             try:

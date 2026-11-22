@@ -10,7 +10,7 @@
 
 <div align="center">
 
-![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg) ![GUI](https://img.shields.io/badge/GUI-PySide6-41CD52.svg)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg) [![Release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?label=Release&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
 
 </div>
 
@@ -34,7 +34,7 @@
 
 ## About
 
-**Open-RealtimeASR-UI (ORI) is a real-time speech-to-text dictation tool for Windows**: press a global hotkey, start talking, and your words appear at the cursor in real time — in any text field, games included. It is an open-source alternative to Windows built-in Voice Typing (Win+H).
+**Open-RealtimeASR-UI (ORI) is a real-time voice input method for Windows**: press a global hotkey, start talking, and your words appear at the cursor in real time — in any text field, games included. It is an open-source alternative to Windows built-in Voice Typing (Win+H).
 
 Its core design is **no engine lock-in, dictation behavior is yours to define**: four high-accuracy real-time streaming cloud recognition engines, plus the offline local FunASR engine (Paraformer-zh-streaming) — switch them and the text injection method freely from the right-click menu. Around the dictation pipeline it offers AI features, voice commands and AI real-time voice conversation, each toggleable on demand.
 
@@ -47,10 +47,11 @@ Its core design is **no engine lock-in, dictation behavior is yours to define**:
 ### Requirements
 
 - Windows 10 / 11
-- Packaged build ([download the latest `ORI-win64.zip`](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)): extract and double-click `ORI.exe`, no environment needed
 - Source build: Python 3.10+
 
 ### Run in Three Steps
+
+The steps below run from source. For the packaged build, extract the archive and double-click `ORI.exe`; no environment setup is needed.
 
 ```bash
 # 1. Clone the repo
@@ -90,11 +91,15 @@ Four cloud engines plus one local engine, grouped by tier in the right-click men
 
 > Cloud engines must be activated at your own expense in each provider's console (all offer free trial quotas); local FunASR is completely free and offline.
 >
-> **The packaged build (exe) does not include the local FunASR engine**: funasr + torch are too large to bundle, so selecting FunASR prompts you to use a cloud engine or run from source.
+> **The GitHub Release packaged build (exe) does not include the local FunASR engine**: funasr + torch are too large to bundle. The Steam edition bundles it, and the source build can install it (see below).
 >
 > Per-engine parameter configuration: see Chapter 6 of the [User Manual](docs/User_Doc_en.md).
 
 ### Local Engine: FunASR
+
+> **The Steam edition includes the FunASR engine, model weights and dependencies**: offline recognition works right after installation, with no Python environment, pip install or model download required.
+
+The `pip` steps below apply to the source build:
 
 ```bash
 # CPU
@@ -107,7 +112,7 @@ pip install funasr
 
 - Model weights are neither bundled nor distributed in this repo: they download automatically from ModelScope on first use (~900 MB, cached in `~/.cache/modelscope/`). You can also point `funasr.local_dir` at a model directory you downloaded yourself; the download channel `funasr.model_hub` can be `ms` (ModelScope) or `hf` (HuggingFace)
 - The model warms up in the background at launch and the floating bar notifies you when it is ready; recognition window options: default 600 ms / low-latency 480 ms / high-accuracy 720 ms
-- The local engine is available in the source build only (the packaged exe excludes funasr + torch); for offline use, download the model in advance
+- The local engine is available in the source build and the Steam edition; the GitHub Release packaged build (exe) does not include funasr + torch. For offline use in the source build, download the model in advance
 
 Details: [User Manual](docs/User_Doc_en.md) §3.3.
 
@@ -125,7 +130,8 @@ Conversation behavior:
 
 - **Enter / exit**: press the dialog hotkey, or tick "Voice chat" in the right-click menu; saying "exit / goodbye" to the AI also ends it
 - **Interruption**: Doubao / Qwen are full-duplex by default — just start talking while the AI speaks to interrupt it; Hermes is turn-based (always half-duplex)
-- **Memory**: Doubao supports cross-session memory (resumes the last 20 turns); Qwen remembers within a single session; the Hermes server remembers per session
+- **Text**: with Doubao / Qwen the text follows the spoken audio, appearing as it is spoken; Hermes has no audio and shows text as it is generated
+- **Memory**: Doubao supports cross-session memory (resumes the last 20 turns); Qwen remembers within a single session; Hermes resumes the same session across runs by default, and the server compresses the context as the window fills (you can also switch to a new session every N turns in Settings)
 - **Billing**: Doubao / Qwen are billed by each provider's rules; Hermes is self-hosted for your own use, with no billing
 
 Provider keys, models, personas and behavior differences: see Chapter 9 of the [User Manual](docs/User_Doc_en.md).
@@ -163,7 +169,7 @@ docs/               # documentation
 
 - **Packaged build**: **[download the latest](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)** — past versions, release notes and checksums are on the [Releases](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases) page; does not include the local engine or its dependencies.
 
-- **Steam edition**: **[View ORI Voice on Steam](https://store.steampowered.com/app/5295220/)** — Steam handles installation and updates for you, with the offline Chinese recognition engine and its dependencies built in. Also includes Steam Workshop content (supporting the same feature extensions as the open-source build), Steam Cloud, Stats and an exclusive pixel-art theme.
+- **Steam edition**: **[View ORI Voice on Steam](https://store.steampowered.com/app/5295220/)** — Steam handles installation and updates for you, with the offline Chinese recognition engine FunASR and its dependencies built in. Also includes Steam Workshop content (supporting the same feature extensions as the open-source build), Steam Cloud, Stats and an exclusive pixel-art theme.
 
   > The Steam edition is a paid release: one way to support the developer, with the added conveniences of the Steam platform. Cloud engines and AI features are enabled by a Workshop feature pack.
 

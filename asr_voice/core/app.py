@@ -511,6 +511,7 @@ class VoiceApp(QObject):
         # 文本通道——角色由 UI 画成色带，前缀字符串已彻底退场
         self.dialog.state_changed.connect(self.bar.signals.state_changed)
         self.dialog.dialog_turn.connect(self.bar.signals.dialog_turn)
+        self.dialog.progress_changed.connect(self.bar.signals.dialog_progress)
         self.dialog.level_changed.connect(self.bar.signals.level_changed)
         self.dialog.error_occurred.connect(self.bar.signals.error_occurred)
         self.dialog.transient_hint.connect(self.bar.signals.transient_hint)

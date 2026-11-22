@@ -289,6 +289,8 @@ MESSAGES: dict[str, str] = {
     "dialog.hint.reconnecting": "Connection lost, reconnecting...",
     "dialog.hint.reconnected": "Connection restored",
     "dialog.hint.headphone": "Speakers may cause echo; headphones recommended",
+    "dialog.hint.echo_detected": "That sounded like the AI's own echo; use headphones or enable half-duplex",
+    "dialog.progress.tool": "Using {tool}",
     "dialog.session_title": "ORI Voice Dialog",
 
     # ---- Main app (core/app.py): tray, console, errors ----
@@ -551,6 +553,7 @@ MESSAGES: dict[str, str] = {
         "set.group.qwen_behavior": "Qwen session behavior",
         "set.group.hermes_in": "Hermes connection",
         "set.group.hermes_timeout": "Hermes tolerance and timeout",
+        "set.group.hermes_behavior": "Hermes session behavior",
         "set.group.dialog_asr": "Dialog-specific recognition",
         "set.sec.menu_models": "Right-click menu categories · models",
         "set.sec.filtering": "Recognition behavior",
@@ -696,6 +699,9 @@ MESSAGES: dict[str, str] = {
         "set.dialog_hermes.model.desc": "Reserved field: not sent with the request in the current version, so changing it has no effect",
         "set.dialog_hermes.model": "Model name",
         "set.dialog_hermes.model.tip": "Whether the server accepts model has not been tested yet, so this is a config placeholder only",
+        "set.dialog_hermes.max_context_turns.desc": "Start a new session once this many turns are reached (0 = keep chatting and let Hermes compress)",
+        "set.dialog_hermes.max_context_turns": "Context turns",
+        "set.dialog_hermes.max_context_turns.tip": "0 = the session is never switched: Hermes compresses automatically when the context is half full, the session is not interrupted and archived turns stay searchable on the server. A number starts a new session once reached; the old one is kept, not deleted",
         "set.dialog_hermes.session_title.desc": "Session title created on the Hermes side each time you enter a conversation; only used to identify it on the server",
         "set.dialog_hermes.session_title": "Session title",
         "set.dialog_hermes.session_title.tip": "Empty = server session has no title, which does not affect the conversation itself",

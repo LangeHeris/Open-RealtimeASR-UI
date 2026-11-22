@@ -962,6 +962,9 @@ _FIELDS = [
     ("dialog.hermes", "session_title", "set.dialog_hermes.session_title", "str", None,
      "set.dialog_hermes.session_title.desc",
      "set.dialog_hermes.session_title.tip"),
+    ("dialog.hermes", "max_context_turns", "set.dialog_hermes.max_context_turns", "slider",
+     (0, 100, 1, "set.unit.turn"), "set.dialog_hermes.max_context_turns.desc",
+     "set.dialog_hermes.max_context_turns.tip"),
     ("dialog.hermes", "system_hint", "set.dialog_hermes.system_hint", "text", None,
      "set.dialog_hermes.system_hint.desc",
      "set.dialog_hermes.system_hint.tip"),
@@ -3525,6 +3528,8 @@ class SettingsDialog(QDialog):
             ("set.group.hermes_timeout",
              pick("dialog.hermes", ("system_hint", "connect_timeout_ms",
                                     "turn_timeout_ms"))),
+            ("set.group.hermes_behavior",
+             pick("dialog.hermes", ("max_context_turns",))),
             ("set.group.dialog_asr",
              pick("dialog.asr", ("engine", "model", "lang", "hotword"))),
         ])

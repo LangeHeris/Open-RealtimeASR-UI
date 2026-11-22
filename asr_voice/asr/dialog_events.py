@@ -20,6 +20,8 @@ AI_TRANSCRIPT = "ai_transcript"        # AI 回复文本（供上屏） {text}
 BARGE_IN = "barge_in"                  # 用户打断 → 清播放 + 关闸门 {}
 AI_TURN_END = "ai_turn_end"            # AI 本轮结束 → 排空判定 {exit_intent}
 AI_FULL_TEXT = "ai_full_text"          # AI 回复正文（豆包 550 流式片段累积后的全量）：本轮无 350 文本时兜底上屏 {text}
+AI_PROGRESS = "ai_progress"            # AI 侧工作进展（工具调用等）：只更新气泡底部状态行，不进正文 {tool, detail}
+SESSION_ROTATED = "session_rotated"    # 服务端会话换了新的（上下文到达轮数上限）：只更新持久化句柄，不动状态 {dialog_id}
 
 
 class DialogError(Exception):

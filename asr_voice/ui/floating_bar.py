@@ -208,6 +208,7 @@ class BarSignals(QObject):
     font_file_changed = Signal(str)    # 字体文件切换（绝对路径，空字符串=恢复默认）
     transient_hint = Signal(str, float)  # 临时提示（文本，秒数）
     dialog_turn = Signal(int, str, str, bool, bool)  # 语音模式一轮文本（结构化）
+    dialog_progress = Signal(str)      # 语音模式进展状态行（工具调用等；空串=清除）
     inject_requested = Signal(str)     # 主线程注入请求（final 文本）
     model_loading_changed = Signal(bool)  # 本地模型加载状态（加载中时 IDLE 提示替换热键提示）
     model_ready_changed = Signal(bool)    # 本地模型预热完成（就绪后回到默认提示，不再额外宣告）
@@ -369,6 +370,8 @@ class FloatingBar(QWidget):
         self._dialog_cur_role: str = ""
         self._dialog_cur_final: bool = False
         self._dialog_cur_struck: bool = False  # 这条被打断（划线）
+        # 进展状态行（工具调用等）：画在气泡底部状态位，顶替「思考中…」；空串=没有进展
+        self._dialog_progress: str = ""
         # 默认自动展开（按屏高反算），点击变成"收起"（3 行紧凑视图）。
         # 用户诉求是"超长自动弹开、不用手点"，所以默认值从 False 翻成 True。
         self._dialog_expanded: bool = True     # 卡片处于自动展开态（点击收起/再展开）
@@ -704,6 +707,7 @@ class FloatingBar(QWidget):
     def _connect_signals(self) -> None:
         self.signals.state_changed.connect(self._set_state)
         self.signals.dialog_turn.connect(self._on_dialog_turn)
+        self.signals.dialog_progress.connect(self._on_dialog_progress)
         self.signals.level_changed.connect(self._set_level)
         self.signals.text_updated.connect(self._set_text)
         self.signals.error_occurred.connect(self._set_error)
@@ -1399,6 +1403,20 @@ class FloatingBar(QWidget):
         self._dialog_dirty = True
         self._schedule_dialog_refresh()
 
+    def _on_dialog_progress(self, text: str) -> None:
+        """进展状态行（工具调用等）：画在气泡底部状态位，顶替「思考中…」。
+
+        不画条内：条内文本区只有约 200px，工具名 + 命令一行就截成"正在使用
+        termi…"，信息量归零；也不进两行字幕——那会打断轮次语义。
+        """
+        text = (text or "").strip()
+        if text == self._dialog_progress:
+            return
+        self._dialog_progress = text
+        if self._state in _DIALOG_STATES:
+            self._sync_bubble()
+            self.update()
+
     def _schedule_dialog_refresh(self) -> None:
         """按帧合并对话文本刷新：已有在途定时器就不再重启（尾帧不会被推迟）。"""
         if self._dialog_refresh_timer is None:
@@ -1472,6 +1490,7 @@ class FloatingBar(QWidget):
         self._dialog_cur_final = False
         self._dialog_cur_struck = False
         self._dialog_expanded = False
+        self._dialog_progress = ""
 
     def _set_error(self, message: str) -> None:
         import time
@@ -1968,11 +1987,19 @@ class FloatingBar(QWidget):
                     streaming=self._state == DIALOG_UI_SPEAKING,
                     toast=self._active_flash(now),
                     thinking=thinking,
+                    # 进展画在气泡状态位（条内那个文本区太窄，一行只容得下
+                    # "正在使用 termi…"）
+                    status=self._dialog_progress,
                 )
                 return
-            # 本轮还没有任何内容：临时提示 > 思考态 > 状态提示
+            # 本轮还没有任何内容：临时提示 > 进展 > 思考态 > 状态提示
             if self._flash_msg and now < self._flash_until:
                 bubble.show_message(self._flash_msg, self._text_color)
+            elif self._dialog_progress:
+                # 还没有轮次文本可挂靠：进展单独占一行
+                hint_color = QColor(self._text_color)
+                hint_color.setAlpha(190)
+                bubble.show_message(self._dialog_progress, hint_color)
             elif thinking:
                 # 还没有任何轮次文本可挂靠时，思考态单独占一行气泡。
                 # 文案键取气泡侧常量（THINKING_TEXT_KEY），与卡片里的思考行同源；

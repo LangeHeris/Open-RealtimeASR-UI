@@ -16,15 +16,25 @@ import secrets
 import socket
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime
 
 from .dialog_events import (
-    AI_FULL_TEXT, AI_TRANSCRIPT, AI_TURN_END, AI_TURN_START,
-    SESSION_READY, DialogError, DialogErrorEvent,
+    AI_FULL_TEXT, AI_PROGRESS, AI_TRANSCRIPT, AI_TURN_END, AI_TURN_START,
+    SESSION_READY, SESSION_ROTATED, DialogError, DialogErrorEvent,
 )
 
 logger = logging.getLogger(__name__)
+
+# 服务端把「模型内心推理」也做成一条 tool 事件（tool_name=_thinking），它的 delta
+# 是正文/思考流的片段。拿它当工具进展显示，等于把还没播到的答案提前泄一句，故一律跳过。
+_THINKING_TOOL = "_thinking"
+
+# 数轮数时一页取多少条消息。服务端只有 limit/offset 分页、没有 role 过滤，
+# 要数「用户轮」只能把消息列表拉回来自己数，故一次取满（上限即此值）；
+# 拉不满一页就是全部，拉满则只可能更多（只会更早换会话，不会更晚）。
+_TURN_COUNT_PAGE = 500
 
 # 与各引擎/客户端模块的取值保持一致，便于控制器侧统一判断
 STATE_CONNECTING = "connecting"
@@ -157,7 +167,27 @@ class HermesFrameMapper:
             # 同上：取消本轮 ≠ 退出对话；抛真值会让「能重说」被直接挂断
             self._text_buf = ""
             return [(AI_TURN_END, {"exit_intent": False})]
-        # tool.progress 及其余事件不进正文（见类 docstring 的重复累积陷阱）
+        if event == "tool.started":
+            # 工具调用是这一层唯一值得上屏的「进展」：真机上 agent 跑一条命令要
+            # 十几秒，不给反馈用户会以为卡死。preview 是服务端给的简短摘要（如
+            # 命令原文），原样交给控制器排版。
+            name = str(payload.get("tool_name", "") or "")
+            if not name or name == _THINKING_TOOL:
+                return []
+            detail = " ".join(str(payload.get("preview", "") or "").split())
+            return [(AI_PROGRESS, {"tool": name, "detail": detail})]
+        if event == "tool.completed":
+            # 工具跑完就把状态行清掉：接下来是模型在写回答（思考中…）。留着
+            # 「正在使用 …」会让人以为命令还在跑，而它早就结束了。
+            name = str(payload.get("tool_name", "") or "")
+            if not name or name == _THINKING_TOOL:
+                return []
+            return [(AI_PROGRESS, {"tool": "", "detail": ""})]
+        if event == "tool.progress":
+            # 同为进展类，但它的 delta 是 _thinking 的推理/正文片段（见 _THINKING_TOOL）：
+            # 上状态行等于把还没播到的答案先摆出来，比不上屏更糟
+            return []
+        # 其余事件不进正文（见类 docstring 的重复累积陷阱）
         return []
 
 
@@ -172,6 +202,8 @@ class HermesClient:
                  model: str = "hermes-agent",
                  session_title: str = "ORI 语音对话",
                  system_hint: str = "",
+                 resume_session_id: str = "",
+                 max_context_turns: int = 0,
                  connect_timeout_ms: int = 5000,
                  turn_timeout_ms: int = 60000,
                  on_state=None, on_event=None, on_audio=None, on_error=None):
@@ -180,6 +212,12 @@ class HermesClient:
         self.model = model
         self._session_title = session_title
         self._system_hint = system_hint
+        # 上次会话 id：能续就续（跨进程保留上下文），续不上再新建
+        self._resume_session_id = (resume_session_id or "").strip()
+        # 上下文轮数上限：0 = 不主动触发（一直聊，交给 Hermes 自己按窗口压缩）；
+        # 攒满则换新会话，旧的留在服务端不删（还能在服务端翻记录）。
+        self._max_context_turns = max(0, int(max_context_turns or 0))
+        self._turns_used = 0             # 当前会话已用的用户轮数（续接时从服务端数出来）
         self._connect_timeout_s = max(0.5, connect_timeout_ms / 1000.0)
         self._turn_timeout_s = max(1.0, turn_timeout_ms / 1000.0)
 
@@ -256,7 +294,7 @@ class HermesClient:
     # ---- 生命周期 ----
 
     def start(self) -> None:
-        """健康检查 + 建会话。阻塞至就绪；失败抛 DialogError。
+        """健康检查 + 续接或新建会话。阻塞至就绪；失败抛 DialogError。
 
         先探 /health 再建会话，两步**各自**捕获 HTTPError：合在一起时 /health 的
         HTTP 错误会被误报成「建会话失败」。
@@ -271,13 +309,110 @@ class HermesClient:
         except OSError as exc:
             raise DialogError(f"Hermes 连不上：{exc}") from exc
 
-        body = self._create_session()
-        sid = str((body.get("session") or {}).get("id", "") or "")
+        sid = self._resume_session()
+        if sid:
+            logger.info("Hermes 续用上次会话（%s）", sid)
+        else:
+            body = self._create_session()
+            sid = str((body.get("session") or {}).get("id", "") or "")
         if not sid:
             raise DialogError("Hermes 建会话失败：响应里没有 session.id")
         self._session_id = sid
         self._set_state(STATE_SESSION_READY)
         self._notify_event(SESSION_READY, {"dialog_id": sid})
+
+    def _resume_session(self) -> str:
+        """校验上次的 session_id 还能不能续，返回可续的 id（不可续回空串）。
+
+        续接的前提是服务端那条会话还在：`GET /api/sessions/{id}` 返回 200 且
+        `ended_at` 为空。校验失败（服务端清理过、换了服务器、没配 key 读到脏值）
+        只意味着「这次续不上」，一律回退新建——不能让一次续接尝试挡住整场对话。
+
+        配了轮数上限时还要看这条会话已经用掉多少轮：攒满即视为不可续，
+        由调用方建新会话，这就是「上下文按轮数换新」的落点。
+        """
+        sid = self._resume_session_id
+        if not sid:
+            return ""
+        try:
+            with self._open(f"/api/sessions/{urllib.parse.quote(sid, safe='')}",
+                            timeout_s=self._connect_timeout_s) as resp:
+                body = self._read_json(resp)
+        except Exception as exc:
+            logger.info("Hermes 上次会话不可续（%s），改用新会话", exc)
+            return ""
+        session = body.get("session")
+        if not isinstance(session, dict):
+            logger.info("Hermes 续接响应里没有 session，改用新会话")
+            return ""
+        if str(session.get("id", "") or "") != sid:
+            logger.info("Hermes 续接响应的会话 id 不匹配，改用新会话")
+            return ""
+        if session.get("ended_at") is not None:
+            logger.info("Hermes 上次会话已结束（ended_at=%s），改用新会话",
+                        session.get("ended_at"))
+            return ""
+        if self._max_context_turns > 0:
+            used = self._count_user_turns(sid)
+            if used >= self._max_context_turns:
+                logger.info("Hermes 上次会话已用 %d 轮（上限 %d），改用新会话",
+                            used, self._max_context_turns)
+                return ""
+            self._turns_used = used
+        return sid
+
+    def _count_user_turns(self, sid: str) -> int:
+        """数会话里已经有多少个「用户轮」（role=user 的消息条数）。
+
+        服务端不给按角色过滤，只能连消息列表一起拉回来自己数。数不到或读失败
+        一律按 0 处理并留日志：数不清就继续续接（等于没配上限的旧行为），
+        不能让一次统计失误把用户正在依赖的上下文清掉。
+        """
+        path = (f"/api/sessions/{urllib.parse.quote(sid, safe='')}/messages"
+                f"?limit={_TURN_COUNT_PAGE}")
+        try:
+            with self._open(path, timeout_s=self._connect_timeout_s) as resp:
+                body = self._read_json(resp)
+        except Exception as exc:
+            logger.info("Hermes 数不出会话轮数（%s），按未超限处理", exc)
+            return 0
+        rows = body.get("data")
+        if not isinstance(rows, list):
+            return 0
+        turns = sum(1 for row in rows
+                    if isinstance(row, dict) and row.get("role") == "user")
+        if len(rows) >= _TURN_COUNT_PAGE:
+            # 一页没装完：只可能比数出来的更多，换会话只会更早、不会更晚
+            logger.info("Hermes 会话消息超过一页（%d 条），用户轮数按 %d 计（下限）",
+                        len(rows), turns)
+        return turns
+
+    def _context_expired(self) -> bool:
+        """当前会话的用户轮数是否已达上限（未配上限恒 False）。"""
+        return self._max_context_turns > 0 and self._turns_used >= self._max_context_turns
+
+    def _rotate_session(self) -> bool:
+        """把接下来的轮次换到新会话，成功返回 True。
+
+        换会话只是换一个服务端会话 id，对话状态机不受影响：控制器只更新持久化句柄，
+        不重进聆听、不重开麦克风。建会话失败就继续用旧会话（一轮对话不该因为
+        「想清上下文」而开不了口），下一轮再试。
+        """
+        try:
+            body = self._create_session()
+        except Exception as exc:
+            logger.warning("Hermes 换新会话失败（%s），继续用当前会话", exc)
+            return False
+        sid = str((body.get("session") or {}).get("id", "") or "")
+        if not sid:
+            logger.warning("Hermes 换新会话失败：响应里没有 session.id，继续用当前会话")
+            return False
+        self._session_id = sid
+        self._turns_used = 0
+        logger.info("Hermes 上下文已达 %d 轮，换新会话（%s）",
+                    self._max_context_turns, sid)
+        self._notify_event(SESSION_ROTATED, {"dialog_id": sid})
+        return True
 
     def _build_session_title(self) -> str:
         """配置标题 + 唯一后缀（月日-时分秒-序号-随机）。配置为空则只用后缀。
@@ -380,6 +515,10 @@ class HermesClient:
         # 本轮是否已经把 AI_TURN_END 交给控制器了（mapper 对 assistant.completed
         # 与 run.cancelled 都会发）：读循环正常结束时靠它判断「是不是还欠一句收场」
         turn_ended = False
+        # 上下文攒满上限：本轮开场先换新会话。放在 worker 里而不是 start_turn，
+        # 是因为建会话要发 HTTP，不能在调用方线程（控制器）上等。
+        if self._context_expired():
+            self._rotate_session()
         message = (f"{self._system_hint}\n\n{text}"
                    if self._system_hint else text)
         try:
@@ -393,6 +532,7 @@ class HermesClient:
             self._finish_turn()          # 没跑起来的轮次也要清闩，否则泄漏到下一轮
             return
         self._stream_resp = resp         # 挂出来：stop() 要靠它关流唤醒本线程
+        self._turns_used += 1            # 请求已被服务端受理 = 会话里多了一条用户消息
         try:
             if self._stopped:
                 return                   # 与 stop() 擦肩而过（它没来得及关流）：直接收尾

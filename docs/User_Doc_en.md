@@ -105,7 +105,7 @@
 
 ### 1.1 Software Overview
 
-> **Open-RealtimeASR-UI (ORI for short) is a Windows desktop voice dictation tool for Chinese-speaking users, positioned as an open-source alternative to the native Windows 11 `Win+H` voice input**: press a global hotkey to start talking, your speech is transcribed into text in real time by a cloud or local recognition engine, and the text is injected directly at the current cursor position.
+> **Open-RealtimeASR-UI (ORI for short) is a Windows desktop voice input method for Chinese-speaking users, positioned as an open-source alternative to the native Windows 11 `Win+H` voice input**: press a global hotkey to start talking, your speech is transcribed into text in real time by a cloud or local recognition engine, and the text is injected directly at the current cursor position.
 
 - **Five recognition engines, hot-swappable via the right-click menu** — four cloud providers (Alibaba Cloud Model Studio / Tencent Cloud / iFLYTEK / Volcengine Doubao) with bring-your-own keys + fully offline local FunASR; switching requires no restart;
 - **Every stage of the dictation chain is adjustable** — injection method, sentence-segmentation pacing, live typing, interrupt method, and noise-floor calibration are all configurable, with dedicated adaptations for scenarios such as games and windows running with administrator privileges;
@@ -131,7 +131,7 @@ ORI is available in three forms:
 
 - **Source build**: run `pip install -r requirements.txt`, then start via `python -m asr_voice.main` or `start.bat`.
 - **Packaged build (zip)**: download the Release zip and extract it; double-click `ORI.exe` (keep the `_internal\` folder next to it).
-- **Steam edition**: **[View ORI Voice on Steam](https://store.steampowered.com/app/5295220/)** — Steam handles installation and updates for you, with the offline Chinese recognition engine and its dependencies built in. Also includes Steam Workshop content (supporting the same feature extensions as the open-source build), Steam Cloud, Stats and an exclusive pixel-art theme.
+- **Steam edition**: **[View ORI Voice on Steam](https://store.steampowered.com/app/5295220/)** — Steam handles installation and updates for you, with the offline Chinese recognition engine FunASR and its dependencies built in. Also includes Steam Workshop content (supporting the same feature extensions as the open-source build), Steam Cloud, Stats and an exclusive pixel-art theme.
 
 > The Steam edition is a paid release: one way to support the developer, with the added conveniences of the Steam platform. Cloud engines and AI features are enabled by a Workshop feature pack.
 
@@ -235,6 +235,8 @@ Note: the GitHub Release packaged build does not currently include the local Fun
 
 ### 3.3 Installing the Local FunASR Engine (Optional)
 
+> **The Steam edition needs no installation**: the engine, model weights and dependencies are bundled, so offline recognition works right after install — no Python environment, no `pip`, no model download. The steps below apply only to the source build.
+
 ```bash
 # CPU
 pip install funasr torch torchaudio
@@ -246,13 +248,13 @@ pip install funasr
 
 Notes:
 
-- On first use, models are downloaded automatically from ModelScope to `~/.cache/modelscope/`
+- On first use, models are downloaded automatically from ModelScope to `~/.cache/modelscope/` (the Steam edition ships the weights, so this step does not apply)
 - The program warms up in the background as soon as it starts (about 3–8 seconds on CPU / about 1–3 seconds on GPU); the floating bar shows a notification when it is ready
 - For offline use, download the `paraformer-zh-streaming` model in advance and place it in that cache directory
-- The local engine is only available in the source build
-- The repository does not bundle or distribute model weights — you need to download them yourself. Three ways:
-  1. Auto download: leave `funasr.local_dir` empty, and the program downloads automatically from the selected channel on first use
-  2. Local directory: after downloading the weights yourself, set `funasr.local_dir` to the absolute path of the weights directory (loaded directly from local disk, no network access)
+- The local engine is available in the source build and the Steam edition; the GitHub Release packaged build (exe) does not include funasr + torch
+- The repository does not bundle or distribute model weights — you need to download them yourself. Two ways:
+    1. Auto download: leave `funasr.local_dir` empty, and the program downloads automatically from the selected channel on first use
+    2. Local directory: after downloading the weights yourself, set `funasr.local_dir` to the absolute path of the weights directory (loaded directly from local disk, no network access)
 
 ### 3.4 First Launch and Initialization
 
@@ -335,7 +337,7 @@ The floating bar reports the app state through the status dot and the text previ
 | --- | --- |
 | Idle | Status dot is a dim dot in the theme color |
 | Listening / recognizing | Red dot with a breathing glow; the text preview scrolls intermediate results in real time |
-| Error | Orange status dot; the text preview shows the error message for about 5 seconds |
+| Error | Orange status dot; the **full error text is shown in the bubble and wrapped to the width** (long errors are no longer cut off, so diagnostics such as `request_id` / `logid` stay readable), and the same error is not repeated inside the bar |
 | Transient hint | The text preview shows a short-lived hint (e.g. AI correction results, engine switched successfully), disappearing after 1–2 seconds |
 
 With AI correction enabled, each corrected sentence shows a three-state hint (see §7.6).
@@ -601,6 +603,10 @@ Related configuration (`config.yaml` → `tencent`):
 | `filter_modal` | `2` | Filler-word filtering: 0 no filtering / 1 partial / 2 strict, filter all |
 | `hotword_id` / `customization_id` | empty | Hotword list / self-learning model ID (optional) |
 
+> Punctuation filtering follows the table above and is applied uniformly to each sentence's final result: the v1 API only strips a trailing full stop on the server side (Mandarin engine only), so the full effect of "strip trailing punctuation" / "strip all punctuation" is completed locally; the Large Model 2.0 and Hy-ASR 3.0 APIs have no such parameter and are handled locally as well.
+>
+> For the v1 API the docs mark `filter_dirty` / `filter_modal` / `convert_num_mode` as "currently supported for Mandarin engines", so these three may have no effect on multilingual 1.0 engines such as `16k_zh_en`; the Large Model 2.0 API supports them as documented.
+
 ### 6.5 iFLYTEK
 
 The [iFLYTEK Open Platform](https://console.xfyun.cn/) provides two independent editions with separate keys (`config.yaml` → `xfyun`):
@@ -651,9 +657,9 @@ Related configuration (`config.yaml` → `funasr`):
 
 Notes:
 
-- Install dependencies: `pip install funasr torch torchaudio` (for GPU versions see §3.3)
-- On first use the model is automatically downloaded from ModelScope to `~/.cache/modelscope/`; for offline use, download it in advance
-- The GitHub Release packaged build does not include this engine; run from source to use it
+- Install dependencies: `pip install funasr torch torchaudio` (for GPU versions see §3.3); the Steam edition bundles the engine and dependencies, so nothing to install
+- On first use the model is automatically downloaded from ModelScope to `~/.cache/modelscope/`; for offline use, download it in advance (the Steam edition ships the weights)
+- The GitHub Release packaged build does not include this engine; run from source to use it. Available in the source build and the Steam edition
 
 ## 7. AI Correction
 
@@ -836,7 +842,7 @@ How it differs from dictation mode (Chapter 5):
 | Reply | None | Doubao/Qwen reply with AI speech; Hermes replies in plain text (TTS is reserved in the architecture but not yet wired up) |
 | Interruption | Esc / Delete key | Simply start speaking to interrupt the AI's playback |
 
-- The conversation is shown in a bubble card on the floating bar, with "You / AI" role color bands distinguishing the two parties (teal = you, purple = AI); AI replies stream in line by line and become final when the AI finishes speaking — click the bubble to expand/collapse the full text
+- The conversation is shown in a bubble card on the floating bar, with "You / AI" role color bands distinguishing the two parties (teal = you, purple = AI); the AI's text is revealed word by word along with its speech and becomes the full text as soon as it finishes speaking (it never lays out what you have not heard yet; Hermes has no audio, so its text appears as it is generated); long replies can be scrolled with the wheel — click the bubble once to jump back to the latest line, and when you are already at the latest line a click expands/collapses the full text
 - The conversation and recording are mutually exclusive: pressing the dialog hotkey while recording is ignored with a notice; pressing the recording hotkey during a conversation is likewise ignored with a notice — neither side preempts the other
 - Billing follows the server-side rules: one complete conversation (from entering to exiting) counts as one query — Doubao is billed per the Volcengine console invoice, Qwen per the Alibaba Cloud Model Studio invoice; Hermes is self-hosted and not billed
 
@@ -893,6 +899,14 @@ Interruption (barge-in): full-duplex by default — while the AI is speaking, si
 
 Hermes has no voice reply, so the "AI speaking" state never appears: once thinking completes and the reply text becomes final, it goes straight back to listening (the state machine is shared — Doubao/Qwen use all four states, Hermes only three of them).
 
+**When the text appears**
+
+With Doubao / Qwen the text follows the audio — it appears as it is spoken (see §9.1); Hermes has no audio, so its text appears as the server streams it.
+
+**Echo check**
+
+With speakers, the microphone may pick up the AI's own voice and the server treats it as one of your questions. When that happens the app shows one hint — "what I just heard sounds like my own echo; headphones or half-duplex recommended" — and **only hints, it does not change behaviour** (a false alarm costs far less than silently dropping your words). To avoid it entirely: use headphones, or turn on half-duplex under session behaviour.
+
 > §9.5–§9.7 cover **Doubao S2S**-only fields; for the corresponding Alibaba Cloud Qwen fields see §9.9, and for Hermes see §9.10.
 
 ### 9.5 Model and Persona
@@ -918,7 +932,7 @@ Persona fields take effect per version — one set or the other:
 | Setting | Default | Description |
 | --- | --- | --- |
 | `dialog.enable_user_query_exit` | `true` | Saying "exit" / "goodbye" ends the conversation automatically |
-| `dialog.keep_context` | `true` | The next conversation continues from the most recent 20 turns of context (the server remembers by dialog_id) |
+| `dialog.keep_context` | `true` | The next conversation continues from the previous context: Doubao by `dialog_id`, Hermes by the server-side session id; Qwen's session.id is valid only for a single connection, so it has no cross-conversation continuation |
 | `dialog.auto_reconnect` | `true` | Automatically rebuilds the session after long idle periods or service errors; at most 1 reconnect per conversation |
 | `dialog.strict_audit` | `true` | Server-side safety review level (the default value in the Volcengine docs) |
 
@@ -931,11 +945,12 @@ Persona fields take effect per version — one set or the other:
 - **Connection failures / frequent errors**: run "Test connection" first to self-check and note the logid; match against the error message (e.g. "dialog configuration error" → check the model and persona; "no interaction for a long time" is a normal release and auto-reconnect takes over)
 - **Voice/persona changes not taking effect**: some parameters are sent when the session is created; exit the conversation and re-enter
 - **Settings don't line up after switching providers**: after switching provider, the field groups on the Settings → Voice Mode page show or hide accordingly (the Doubao / Qwen / Hermes groups are mutually exclusive) — this is normal; some parameters are sent at session creation, so re-enter the conversation for them to take effect
-- **Qwen context not continued**: Qwen has no cross-connection continuation (reconnecting starts a new session); cross-conversation memory is supported only by Doubao (`keep_context`); within a single session the number of history turns is controlled by `max_history_turns`
+- **Qwen context not continued**: Qwen has no cross-connection continuation (reconnecting starts a new session); cross-conversation memory is supported only by Doubao and Hermes (`keep_context`); within a single session the number of history turns is controlled by `max_history_turns`
 - **Hermes says not configured when entering a conversation**: `dialog.hermes.base_url` / `api_key` not filled in (api_key is the `API_SERVER_KEY` in `~/.hermes/.env` on the server); an authentication failure shows "Hermes authentication failed: check the API Key"
 - **No sound from Hermes**: normal — Hermes provides no audio (audio_api=false); replies are shown as text in the floating-bar bubble; TTS is reserved for later
 - **Hermes answers slowly**: model generation time on your self-hosted server (measured 5.5–7.9 s for a plain-text single turn); you can adjust `turn_timeout_ms`, but do not set it too low; to cancel the current turn while thinking, press the dialog hotkey once
-- **Sessions piling up on the Hermes server**: Hermes sessions only accumulate on the server side — the client never closes or deletes them (each conversation creates a new session, with a unique suffix added to the title automatically to avoid duplicates); this is a server-side characteristic, and you can clean them up on the Hermes side yourself
+- **Hermes forgets things said long ago**: normal — the server compresses the context as the window fills (older turns are summarised and archived), so early details become a summary; roughly the last 20 messages stay verbatim and the original wording is still searchable in the server-side session record
+- **Sessions piling up on the Hermes server**: Hermes sessions only accumulate on the server side — the client never closes or deletes them (a new session is created only when there is nothing to continue, with a unique suffix added to the title automatically to avoid duplicates); this is a server-side characteristic, and you can clean them up on the Hermes side yourself
 
 ### 9.9 Alibaba Cloud Qwen-Audio Realtime (Provider #2)
 
@@ -1018,12 +1033,15 @@ Typical usage: dictation with a Chinese engine, conversation with a mixed Chines
 
 | Item | Behavior |
 | --- | --- |
-| Session | Each time you enter a conversation, a new session is created on the server (title = `session_title` + a unique suffix, to avoid the server-side "title already taken" 400); the conversation log is visible on the Hermes side and can be shared with the console / CLI as the same session record |
+| Session | The first time you enter a conversation, a session is created on the server (title = `session_title` + a unique suffix, to avoid the server-side "title already taken" 400); after that it reuses the same session as long as `dialog.keep_context` is on — if that server-side session still exists you carry on chatting, and if it has been cleaned up a new one is created automatically; the conversation log is visible on the Hermes side and can be shared with the console / CLI as the same session record |
 | Turns | Serial, turn by turn: while a request is in flight, **no audio is captured** (the "Half-duplex" switch has no effect on Hermes — it is always on); reply text streams into the floating-bar bubble, and after the final result it returns to listening |
+| Progress | When the agent calls a tool (runs a command, reads/writes memory, …), the bottom line of the bubble shows what it is doing (e.g. "Using terminal · date"); once the tool finishes the line is withdrawn and it goes back to "Thinking…", so it never sits there looking stuck |
 | Cancellation | While thinking, press the dialog hotkey once to cancel the current turn (the server truly stops via `/stop` and does not keep running in the background); press it twice to exit the conversation |
 | Tolerance | `system_hint` declares with every turn that "the input comes from speech recognition and may contain homophone typos or missing punctuation", leaving the LLM to tolerate it itself — saving one round trip compared with adding another layer of AI correction |
 | Timeout | `connect_timeout_ms` (health check and session creation, default 5000 ms) / `turn_timeout_ms` (upper limit for a single-turn reply, default 60000 ms; the agent may run tools — measured plain-text turns still take 5.5–7.9 s, so do not set it too low) |
-| Memory | Multiple turns are continuous within the same session (the server remembers by session); after exiting, the session is not reused — cross-conversation memory (Doubao's `keep_context`) does not apply |
+| Context | `max_context_turns` (default 0 = keep chatting): at 0 everything is left to Hermes, which **compresses automatically** once the context is half full (older turns are summarised and archived under the same session and stay searchable) so the conversation is never interrupted; with a number set, a new session starts once that many turns are reached (the old one is kept and stays searchable) |
+| Memory | Multiple turns are continuous within the same session (the server remembers by session); with `keep_context` on, a later conversation continues the same session as well — with it off, every conversation starts a brand-new session. Context length is compressed by Hermes itself; a session is only switched when you give `max_context_turns` a concrete number |
+
 
 ## 10. Settings Reference
 
@@ -1034,7 +1052,7 @@ Typical usage: dictation with a Chinese engine, conversation with a mixed Chines
 | Behavior | Always start as administrator | Action button pinned at the top of the page (UAC shield icon): creates a logon scheduled task so the app starts as administrator at boot without a UAC prompt |
 | Hotkeys | Recording hotkey | Default `Ctrl+G`; recorded in the hotkey capture box (Esc cancels, Backspace clears). A restart is required for changes to take effect |
 | Output | Paste delay | 10–1000 ms, default 50 |
-| Interface | Auto-hide delay | 0–3600 seconds, 0 = never hide |
+| Interface | Auto-hide delay | 0–3600 seconds, 0 = never hide; the countdown is **not running while recording or for the whole AI conversation** (so the bar cannot vanish and make you think recording / the conversation ended) |
 | Interface | Floating bar opacity | 0–100%, 0 = follow the theme default, previewed live |
 | Interface | Settings theme | Card selection: Minimal Dark / Fluent Light, previewed instantly on selection |
 | Engine order | Visibility switches + ↑↓ reordering | 5 groups (Tencent Cloud / Alibaba Cloud Model Studio / iFLYTEK / Volcengine / FunASR local); each group expands to per-model switches (hide a whole vendor group or individual models). Controls the group order and visibility in the right-click Recognition Engine menu |
@@ -1059,7 +1077,7 @@ Accordion card layout; the order follows the engine order setting:
 - **Volcengine** (Doubao 1.0 / 2.0): billing mode for each generation (Billed by duration / Billed by concurrency), disfluency removal, secondary recognition
 - **FunASR local**: model, device (Auto / CPU / GPU CUDA), recognition window (Default 600 ms / Low latency 480 ms / High accuracy 720 ms), hotwords, local model directory (path to weights you downloaded yourself; the advanced fields `funasr.model_hub` / `funasr.model_revision` are only available in the config file)
 
-> The GitHub Release packaged build (exe) does not include the local engine dependencies, so this card only shows a single "unavailable" note; run from source for local recognition.
+> The GitHub Release packaged build (exe) does not include the local engine dependencies, so this card only shows a single "unavailable" note; use the Steam edition or run from source for local recognition.
 
 ### 10.4 AI Correction
 
@@ -1123,7 +1141,7 @@ Settings grouped by section (see Chapter 9 for detailed usage and examples). The
 | Voice and playback | Playback device | Dropdown that enumerates output devices live (which device the AI voice plays from); shared by Doubao and Qwen |
 | Audio in and turn detection | Turn-detection window | 500–5000 ms, default 800 (larger values can be set by editing the config file directly) (Doubao) |
 | Audio in and turn detection | Half-duplex mode | Pauses audio input while the AI is speaking (prevents self-interruption on speakers); shared by Doubao and Qwen (Hermes is always half-duplex) |
-| Session behavior | Voice exit / Cross-session memory / Auto-reconnect / Strict review | 4 switches, all on by default (Cross-session memory applies to Doubao only) |
+| Session behavior | Voice exit / Cross-session memory / Auto-reconnect / Strict review | 4 switches, all on by default (Cross-session memory applies to Doubao and Hermes) |
 
 **Field group when provider = Alibaba Cloud (Qwen)** (`dialog.qwen`; shows or hides mutually exclusively with the Doubao group above):
 
@@ -1134,7 +1152,7 @@ Settings grouped by section (see Chapter 9 for detailed usage and examples). The
 
 **Field group when provider = Hermes (self-hosted)** (`dialog.hermes` + `dialog.asr`; shows or hides mutually exclusively with the two groups above):
 
-- **Hermes connection**: server address (`http://host:port`; a /v1 suffix entered by mistake is stripped automatically), API Key (the `API_SERVER_KEY` in `~/.hermes/.env` on the server), model name (reserved field, not sent with the request in the current version), session title (empty = the server session has no title), recognition tolerance hint (system_hint), connection timeout, turn timeout
+- **Hermes connection**: server address (`http://host:port`; a /v1 suffix entered by mistake is stripped automatically), API Key (the `API_SERVER_KEY` in `~/.hermes/.env` on the server), model name (reserved field, not sent with the request in the current version), session title (empty = the server session has no title), recognition tolerance hint (system_hint), connection timeout, turn timeout, context turns (default 0 = keep chatting and let Hermes compress; a number starts a new session once reached)
 - **Dialog-specific recognition**: dialog recognition engine (empty = follow the top-level "Recognition Engine"; Tencent Cloud / Alibaba Cloud available), dialog model tier, language, hotwords (see §9.10 for what these fields mean)
 
 ### 10.8 About
@@ -1273,6 +1291,7 @@ For the complete field list and comments see [config/config.example.yaml](../con
 | `dialog.qwen.enable_search` | `false` | Qwen web search (plus/flash models only) |
 | `dialog.hermes.base_url` | empty | Address of the self-hosted Hermes API server (e.g. http://192.168.1.10:8642, without /v1) |
 | `dialog.hermes.api_key` | empty | This is the `API_SERVER_KEY` in `~/.hermes/.env` on the server |
+| `dialog.hermes.max_context_turns` | `0` | Context turns: `0` = keep chatting (Hermes compresses the context as the window fills); N = start a new session every N turns (the old one is kept) |
 | `dialog.asr.engine` | empty | Dialog-specific recognition engine: empty = follow the top-level `engine`; `tencent` / `aliyun` are available (consumed only by the Hermes dialog path) |
 | `ui.engine_show_*` | `true` | Shows or hides a whole vendor group in the right-click Recognition Engine menu (e.g. `engine_show_tencent: false` hides the entire Tencent Cloud group) |
 | `ui.engine_hidden_models` | empty | Comma-separated engine IDs to hide individually from the right-click menu (empty = show all) |
@@ -1340,7 +1359,7 @@ Troubleshoot in the following order:
 
 ### 13.8 FunASR-related issues
 
-- **FunASR cannot be selected in the GitHub Release packaged build**: that build does not include the local engine; run from source instead (see §3.3)
+- **FunASR cannot be selected in the GitHub Release packaged build**: that build does not include the local engine; use the Steam edition or run from source instead (see §3.3)
 - **Dependencies not installed**: the right-click menu shows "(not installed)"; run `pip install funasr torch torchaudio`
 - **First recognition is slow**: the model is downloaded automatically on first use (`~/.cache/modelscope/`); download it in advance in offline environments
 - **Slow startup**: `preheat=true` warms up the model at startup (3–8 seconds on CPU); turn it off to load the model only at the first recording instead

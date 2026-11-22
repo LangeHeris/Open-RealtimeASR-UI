@@ -10,7 +10,7 @@
 
 <div align="center">
 
-![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg) ![GUI](https://img.shields.io/badge/GUI-PySide6-41CD52.svg)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg) [![Release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?label=Release&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
 
 </div>
 
@@ -34,7 +34,7 @@
 
 ## 项目简介
 
-**Open-RealtimeASR-UI（ORI）是一款面向 Windows 的实时语音听写工具**：按下全局热键开口说话，文字实时出现在光标所在位置——任何输入框都行，游戏里也行；它是 Windows 原生语音输入（Win+H）的开源替代方案。
+**Open-RealtimeASR-UI（ORI）是一款面向 Windows 的实时语音输入法**：按下全局热键开口说话，文字实时出现在光标所在位置——任何输入框都行，游戏里也行；它是 Windows 原生语音输入（Win+H）的开源替代方案。
 
 它的核心设计是**不锁定引擎、自定义听写行为**：云端四家高精度实时流式识别引擎，外加离线本地引擎 FunASR（Paraformer-zh-streaming），右键菜单里自由切换文本注入方式，听写链路上的 AI 功能、语音命令与 AI 实时语音对话，每项都能按需开关。
 
@@ -47,10 +47,11 @@
 ### 环境要求
 
 - Windows 10 / 11
-- 打包版（[直接下载最新版](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)）：解压后双击 `ORI.exe` 即用，无需任何环境
 - 源码版：Python 3.10+
 
 ### 三步跑起来
+
+以下步骤用于源码版；打包版解压后双击 `ORI.exe` 即用，无需安装环境。
 
 ```bash
 # 1. 克隆仓库
@@ -69,7 +70,7 @@ python run.py
 ### 首次配置
 
 1. 首次启动自动生成 `config.yaml`（打包版在 exe 同目录，源码版在 `config/` 下）
-2. 默认引擎为阿里云百炼：在 设置 → 引擎密钥 填入至少一家云厂商的密钥**（各厂商均有免费体验额度）**，或右键切换为本地 FunASR（需先安装 funasr，见下文）
+2. 默认引擎为阿里云百炼：在 设置 → 引擎密钥 填入至少一家云厂商的密钥（**各厂商均有免费体验额度**），或右键切换为本地 FunASR（需先安装 funasr，见下文）
 3. 聚焦任意输入框，按 `Ctrl+G` 说话，再按一次停止，文字自动上屏
 
 完整的首次配置流程见 [用户说明书](docs/User_Doc_zh.md) 第 3 章；全部配置字段与注释见 [config/config.example.yaml](config/config.example.yaml)。
@@ -90,11 +91,15 @@ python run.py
 
 > 云端引擎需在各厂商控制台自费开通（均有免费体验额度）；本地 FunASR 完全免费离线。
 >
-> **打包版（exe）不含本地 FunASR 引擎**：funasr + torch 体积过大未打包，选 FunASR 会提示改用云端引擎或源码方式运行。
+> **GitHub Release 打包版（exe）不含本地 FunASR 引擎**：funasr + torch 体积过大未打包；Steam 版已内置该引擎，源码版可自行安装（见下文）。
 >
 > 各引擎的参数配置见 [用户说明书](docs/User_Doc_zh.md) 第 6 章。
 
 ### 本地引擎  FunASR 
+
+> **Steam 版已内置 FunASR 引擎、模型权重及依赖**：安装后即可离线使用，无需 Python 环境、pip 安装或模型下载。
+
+以下 `pip` 步骤适用于源码版：
 
 ```bash
 # CPU
@@ -107,7 +112,7 @@ pip install funasr
 
 - 模型权重本仓库不内置、不分发：首次使用时自动从 ModelScope 下载（约 900MB，缓存到 `~/.cache/modelscope/`），也可用 `funasr.local_dir` 指向自行下载好的本地模型目录；下载渠道 `funasr.model_hub` 可选 `ms`（ModelScope）/ `hf`（HuggingFace）
 - 启动即后台预热模型，就绪后悬浮条提示；识别窗口可选默认 600ms / 低延迟 480ms / 高准确 720ms
-- 本地引擎仅源码版可用（打包版 exe 不含 funasr + torch）；离线使用请提前下载好模型
+- 本地引擎在源码版与 Steam 版可用；GitHub Release 打包版（exe）不含 funasr + torch。源码版离线使用请提前下载好模型
 
 详见 [用户说明书](docs/User_Doc_zh.md) 3.3 节。
 
@@ -125,7 +130,8 @@ pip install funasr
 
 - **进入 / 退出**：按对话热键，或右键菜单「语音模式」；对 AI 说「退出 / 再见」也能结束
 - **打断**：豆包 / Qwen 默认全双工，AI 播报中直接开口即可打断；Hermes 按轮串行（恒半双工）
-- **记忆**：豆包支持跨次记忆（续接最近 20 轮）；Qwen 为单会话内记忆；Hermes 服务端按会话记忆
+- **文字**：豆包 / Qwen 的文字跟着语音逐步出现（说到哪显示到哪）；Hermes 无语音，按生成进度即时上屏
+- **记忆**：豆包支持跨次记忆（续接最近 20 轮）；Qwen 为单会话内记忆；Hermes 默认跨次续接同一会话，上下文由服务端按窗口自动压缩（设置里也可改成攒满 N 轮换新会话）
 - **计费**：豆包 / Qwen 按厂商规则计费；Hermes 自建自用，无计费
 
 各提供商的密钥、模型、人设与行为差异见 [用户说明书](docs/User_Doc_zh.md) 第 9 章。
@@ -166,7 +172,7 @@ docs/               # 文档
 
 - **打包版**：**[下载最新版](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip)** —— 历史版本、发布说明与校验和见 [Releases](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases) 页，不包含本地引擎及依赖。
 
-- **Steam 版**：**[在 Steam 上查看 ORI Voice](https://store.steampowered.com/app/5295220/)** —— 由 Steam 自动管理安装与更新，内置离线中文识别引擎及依赖，另含创意工坊内容（支持开源版的功能扩展）、云存档、统计与独占像素主题。
+- **Steam 版**：**[在 Steam 上查看 ORI Voice](https://store.steampowered.com/app/5295220/)** —— 由 Steam 自动管理安装与更新，内置离线中文识别引擎FunASR及依赖，另含创意工坊内容（支持开源版的功能扩展）、云存档、统计与独占像素主题。
 
   > Steam 版为付费版，可视为资助开发者的一种方式，额外提供 Steam 平台自带的便利。云端引擎、AI功能需通过创意工坊功能包启用。
 

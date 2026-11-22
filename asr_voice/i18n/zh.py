@@ -297,6 +297,8 @@ MESSAGES: dict[str, str] = {
     "dialog.hint.reconnecting": "连接中断，正在重连...",
     "dialog.hint.reconnected": "连接已恢复",
     "dialog.hint.headphone": "外放可能有回声，建议戴耳机",
+    "dialog.hint.echo_detected": "刚听到的像 AI 的回声，建议戴耳机或开启半双工",
+    "dialog.progress.tool": "正在使用 {tool}",
     "dialog.session_title": "ORI 语音对话",
 
     # ---- 主程序（core/app.py）：托盘、控制台、错误 ----
@@ -535,6 +537,7 @@ MESSAGES: dict[str, str] = {
         "set.group.qwen_behavior": "Qwen 会话行为",
         "set.group.hermes_in": "Hermes 接入",
         "set.group.hermes_timeout": "Hermes 容错与超时",
+        "set.group.hermes_behavior": "Hermes 会话行为",
         "set.group.dialog_asr": "对话专属识别",
         "set.sec.menu_models": "右键菜单分类 · 调用模型",
         "set.sec.filtering": "识别效果",
@@ -680,6 +683,9 @@ MESSAGES: dict[str, str] = {
         "set.dialog_hermes.model.desc": "保留字段：当前版本不随请求发出，改它不生效",
         "set.dialog_hermes.model": "模型名",
         "set.dialog_hermes.model.tip": "服务端是否接受 model 尚未实测，故先只留配置位",
+        "set.dialog_hermes.max_context_turns.desc": "攒满这么多轮就换一个新会话（0 = 一直聊，交给 Hermes 自己压）",
+        "set.dialog_hermes.max_context_turns": "上下文轮数",
+        "set.dialog_hermes.max_context_turns.tip": "0 = 不换会话：Hermes 默认在上下文用到一半时自动压缩，会话不中断、旧轮次仍可在服务端搜到；填数值则攒满即换新会话，旧会话保留不删",
         "set.dialog_hermes.session_title.desc": "每轮进入对话在 Hermes 侧建的会话标题，仅用于在服务端辨认",
         "set.dialog_hermes.session_title": "会话标题",
         "set.dialog_hermes.session_title.tip": "留空 = 服务端会话无标题，不影响对话本身",
