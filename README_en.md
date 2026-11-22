@@ -10,7 +10,7 @@
 
 <div align="center">
 
-![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg) [![Release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?label=Release&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg) [![Release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?label=Release&labelColor=555555&color=2ea44f)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
 
 </div>
 
@@ -22,7 +22,7 @@
 
 <div align="center">
 
-[![Download for Windows](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![Steam store page](https://img.shields.io/badge/Steam-ORI--Voice-1b2838?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/app/5295220/) [![Latest release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
+[![Download for Windows](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![Steam store page](https://img.shields.io/badge/Steam-ORI--Voice-1b2838?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/app/5295220/) [![Latest release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&labelColor=555555&color=2ea44f)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
 
 </div>
 
@@ -130,7 +130,7 @@ Conversation behavior:
 
 - **Enter / exit**: press the dialog hotkey, or tick "Voice chat" in the right-click menu; saying "exit / goodbye" to the AI also ends it
 - **Interruption**: Doubao / Qwen are full-duplex by default — just start talking while the AI speaks to interrupt it; Hermes is turn-based (always half-duplex)
-- **Text**: with Doubao / Qwen the text follows the spoken audio, appearing as it is spoken; Hermes has no audio and shows text as it is generated
+- **Text**: with Doubao / Qwen the text is revealed at a fixed steady rate (base about 6 characters/second, following the speech-rate setting); Hermes has no audio and shows text as it is generated
 - **Memory**: Doubao supports cross-session memory (resumes the last 20 turns); Qwen remembers within a single session; Hermes resumes the same session across runs by default, and the server compresses the context as the window fills (you can also switch to a new session every N turns in Settings)
 - **Billing**: Doubao / Qwen are billed by each provider's rules; Hermes is self-hosted for your own use, with no billing
 

@@ -168,7 +168,7 @@ class HermesFrameMapper:
             self._text_buf = ""
             return [(AI_TURN_END, {"exit_intent": False})]
         if event == "tool.started":
-            # 工具调用是这一层唯一值得上屏的「进展」：真机上 agent 跑一条命令要
+            # 工具调用是这一层唯一值得上屏的「进展」：agent 跑一条命令要
             # 十几秒，不给反馈用户会以为卡死。preview 是服务端给的简短摘要（如
             # 命令原文），原样交给控制器排版。
             name = str(payload.get("tool_name", "") or "")
@@ -322,14 +322,9 @@ class HermesClient:
         self._notify_event(SESSION_READY, {"dialog_id": sid})
 
     def _resume_session(self) -> str:
-        """校验上次的 session_id 还能不能续，返回可续的 id（不可续回空串）。
+        """校验上一条会话能否续接，返回可续的 id（不可续回空串）。
 
-        续接的前提是服务端那条会话还在：`GET /api/sessions/{id}` 返回 200 且
-        `ended_at` 为空。校验失败（服务端清理过、换了服务器、没配 key 读到脏值）
-        只意味着「这次续不上」，一律回退新建——不能让一次续接尝试挡住整场对话。
-
-        配了轮数上限时还要看这条会话已经用掉多少轮：攒满即视为不可续，
-        由调用方建新会话，这就是「上下文按轮数换新」的落点。
+        服务端会话不存在、已结束或已用满轮数上限都算不可续，由调用方新建。
         """
         sid = self._resume_session_id
         if not sid:
@@ -362,11 +357,9 @@ class HermesClient:
         return sid
 
     def _count_user_turns(self, sid: str) -> int:
-        """数会话里已经有多少个「用户轮」（role=user 的消息条数）。
+        """数会话里已有的用户轮数（role=user 的消息条数）。
 
-        服务端不给按角色过滤，只能连消息列表一起拉回来自己数。数不到或读失败
-        一律按 0 处理并留日志：数不清就继续续接（等于没配上限的旧行为），
-        不能让一次统计失误把用户正在依赖的上下文清掉。
+        服务端不支持按角色过滤，只能拉回消息列表自己数；读失败按 0 处理。
         """
         path = (f"/api/sessions/{urllib.parse.quote(sid, safe='')}/messages"
                 f"?limit={_TURN_COUNT_PAGE}")
@@ -394,9 +387,7 @@ class HermesClient:
     def _rotate_session(self) -> bool:
         """把接下来的轮次换到新会话，成功返回 True。
 
-        换会话只是换一个服务端会话 id，对话状态机不受影响：控制器只更新持久化句柄，
-        不重进聆听、不重开麦克风。建会话失败就继续用旧会话（一轮对话不该因为
-        「想清上下文」而开不了口），下一轮再试。
+        只换服务端会话 id，不改对话状态机；建会话失败继续用旧会话。
         """
         try:
             body = self._create_session()

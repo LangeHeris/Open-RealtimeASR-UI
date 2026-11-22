@@ -50,7 +50,7 @@ def check_microphone() -> bool:
         return True
     except Exception as exc:
         # ImportError（缺 sounddevice / PortAudio DLL）与「真的没设备」都录不了，
-        # 故弹同一句；但前者是打包事故，日志留 traceback 便于事后区分。
+        # 故弹同一句；但前者是打包失败，日志留 traceback 便于事后区分。
         # 本函数可能在 setup_logging 之前被调，故自取同名 logger。
         # 日志不 i18n（全项目日志都是中文，只验收界面文案）。
         logging.getLogger("asr_voice").error(

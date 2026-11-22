@@ -842,7 +842,7 @@ How it differs from dictation mode (Chapter 5):
 | Reply | None | Doubao/Qwen reply with AI speech; Hermes replies in plain text (TTS is reserved in the architecture but not yet wired up) |
 | Interruption | Esc / Delete key | Simply start speaking to interrupt the AI's playback |
 
-- The conversation is shown in a bubble card on the floating bar, with "You / AI" role color bands distinguishing the two parties (teal = you, purple = AI); the AI's text is revealed word by word along with its speech and becomes the full text as soon as it finishes speaking (it never lays out what you have not heard yet; Hermes has no audio, so its text appears as it is generated); long replies can be scrolled with the wheel — click the bubble once to jump back to the latest line, and when you are already at the latest line a click expands/collapses the full text
+- The conversation is shown in a bubble card on the floating bar, with "You / AI" role color bands distinguishing the two parties (teal = you, purple = AI); the AI's text is revealed at a fixed steady rate from the start of the reply (about 6 characters/second, following each provider's own speech-rate setting), and whatever remains is filled in once the voice finishes (Hermes has no audio, so its text appears as it is generated); long replies can be scrolled with the wheel — click the bubble once to jump back to the latest line, and when you are already at the latest line a click expands/collapses the full text
 - The conversation and recording are mutually exclusive: pressing the dialog hotkey while recording is ignored with a notice; pressing the recording hotkey during a conversation is likewise ignored with a notice — neither side preempts the other
 - Billing follows the server-side rules: one complete conversation (from entering to exiting) counts as one query — Doubao is billed per the Volcengine console invoice, Qwen per the Alibaba Cloud Model Studio invoice; Hermes is self-hosted and not billed
 
@@ -901,7 +901,7 @@ Hermes has no voice reply, so the "AI speaking" state never appears: once thinki
 
 **When the text appears**
 
-With Doubao / Qwen the text follows the audio — it appears as it is spoken (see §9.1); Hermes has no audio, so its text appears as the server streams it.
+With Doubao / Qwen the text is revealed at a **fixed steady rate** (base about 6 characters/second, moving faster or slower together with each provider's own speech-rate setting — Doubao and Qwen are independent); whatever remains is filled in the moment the voice finishes. Hermes has no audio, so its text appears as the server streams it.
 
 **Echo check**
 
@@ -924,7 +924,7 @@ Persona fields take effect per version — one set or the other:
 ### 9.6 Voice and Playback
 
 - **Voice** (`dialog.speaker`): the dropdown contains 7 official voices (vv / 小何 (Xiaohe) / 云舟 (Yunzhou) / 小天 (Xiaotian) — 4 Chinese; Tim / Dacey / Stokie — 3 English); for SC2.0 cloned voices (names starting with `saturn_` or `S_`), type the name directly into the input box
-- **Speech rate / Volume** (`dialog.speech_rate` / `dialog.loudness_rate`): range [-50, 100]; positive values speed up / brighten; only applies to 2.0-version models
+- **Speech rate / Volume** (`dialog.speech_rate` / `dialog.loudness_rate`): range [-50, 100]; positive values speed up / brighten; only applies to 2.0-version models. **Speech rate also sets the bubble text's steady reveal speed** (base 6 characters/second × rate multiplier — speak faster and the text follows)
 - **Playback device** (`dialog.output_device`): which device the AI voice plays from; follows the system output by default; the list refreshes automatically when the dropdown is opened (hot-plug supported)
 
 ### 9.7 Session Behavior
@@ -946,6 +946,7 @@ Persona fields take effect per version — one set or the other:
 - **Voice/persona changes not taking effect**: some parameters are sent when the session is created; exit the conversation and re-enter
 - **Settings don't line up after switching providers**: after switching provider, the field groups on the Settings → Voice Mode page show or hide accordingly (the Doubao / Qwen / Hermes groups are mutually exclusive) — this is normal; some parameters are sent at session creation, so re-enter the conversation for them to take effect
 - **Qwen context not continued**: Qwen has no cross-connection continuation (reconnecting starts a new session); cross-conversation memory is supported only by Doubao and Hermes (`keep_context`); within a single session the number of history turns is controlled by `max_history_turns`
+- **Qwen speech rate**: the **Speech rate** setting under Voice & playback applies to Qwen as well (sent as Qwen's `speech_rate` multiplier; the [-50, 100] slider is mapped to 0.5–2.0), and the bubble text's steady reveal speed follows it
 - **Hermes says not configured when entering a conversation**: `dialog.hermes.base_url` / `api_key` not filled in (api_key is the `API_SERVER_KEY` in `~/.hermes/.env` on the server); an authentication failure shows "Hermes authentication failed: check the API Key"
 - **No sound from Hermes**: normal — Hermes provides no audio (audio_api=false); replies are shown as text in the floating-bar bubble; TTS is reserved for later
 - **Hermes answers slowly**: model generation time on your self-hosted server (measured 5.5–7.9 s for a plain-text single turn); you can adjust `turn_timeout_ms`, but do not set it too low; to cancel the current turn while thinking, press the dialog hotkey once

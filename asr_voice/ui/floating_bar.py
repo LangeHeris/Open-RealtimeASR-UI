@@ -569,10 +569,8 @@ class FloatingBar(QWidget):
     def _assert_topmost(self) -> bool:
         """Windows：重新断言 WS_EX_TOPMOST，提回置顶组顶部（SWP_NOACTIVATE 不抢焦点）。
 
-        返回 SetWindowPos 是否真的成功（供临时置顶入口记日志/排查）。
-        Qt 只在建窗时设一次 TOPMOST，隐藏后 show 会被 Windows 插到置顶组底部、被别的置顶窗压住；须走 set_window_topmost
-        而非裸调 ctypes（64 位未声明 argtypes 时 HWND_TOPMOST(-1) 截成 0xFFFFFFFF 报 ERROR_INVALID_WINDOW_HANDLE、保活空转）。菜单/对话框开着不抢顶。
-        永久置顶与临时置顶共用这一条保活路径。
+        返回 SetWindowPos 是否成功。必须走 set_window_topmost：裸调 ctypes 在 64 位下
+        未声明 argtypes 会把 HWND_TOPMOST 截断。菜单/对话框开着不抢顶。
         """
         if sys.platform != "win32":
             return False
@@ -1975,9 +1973,8 @@ class FloatingBar(QWidget):
         # 刻意排在临时提示之前：对话内容不该被一条瞬时提示清屏
         # （"已复制本轮"/"外放可能有回声"这类），提示改画成卡片底部一行小字。
         if self._state in _DIALOG_STATES:
-            # ：只有极简主题把「思考中…」画进气泡。极简悬浮条是一整块
-            # 声纹按钮（paintEvent 在 _voice_mode 下直接 return，条上不画状态文字）
-            # 用户看不见思考态；其它主题条内 _hint 照旧显示「思考中...」，行为不变。
+            # 只有极简主题把「思考中…」画进气泡：它的悬浮条是一整块声纹按钮，条上
+            # 不画状态文字，用户看不见思考态；其它主题条内 _hint 照旧显示「思考中…」。
             thinking = bool(self._voice_mode) and self._state == DIALOG_UI_THINKING
             rows = self._dialog_rows()
             if rows:

@@ -36,9 +36,9 @@ def _session_volume(session):
 
 
 def _wasapi_mute_all(exclude_pid: int) -> list:
-    """静音除 exclude_pid 外的全部会话，返回我们亲手静音的会话清单。
+    """静音除 exclude_pid 外的全部会话，返回本进程静音的会话清单。
 
-    已被静音的（含用户手动静音）跳过不记录——恢复时只解除我们静音过的。
+    已被静音的（含用户手动静音）跳过不记录——恢复时只解除本进程静音过的。
     """
     muted = []
     for session in _all_sessions():

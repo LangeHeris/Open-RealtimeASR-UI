@@ -378,6 +378,7 @@ def validate_config(cfg: dict) -> list[str]:
         ("vad_threshold", 0.5, float, -1.0, 1.0),
         ("silence_duration_ms", 800, int, 200, 6000),
         ("max_history_turns", 20, int, 1, 50),
+        ("speech_rate", 0, int, -50, 100),
     ):
         err = _range_error(qwen.get(fld, default), cast, lo, hi,
                            f"dialog.qwen.{fld}")

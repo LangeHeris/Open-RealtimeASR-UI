@@ -55,7 +55,7 @@ DEFAULTS = {
         # 开通"实时语音转写"（标准版）后领取，与大模型版互不通用
         "std_app_id": "",
         "std_api_key": "",    # APIKey：MD5(appid+ts) 的 HmacSHA1 签名密钥
-"edition": "llm",       # llm=大模型版 rtasr_llm | std=标准版 rtasr
+        "edition": "llm",       # llm=大模型版 rtasr_llm | std=标准版 rtasr
         "lang": "autodialect",  # 大模型版：autodialect=中英+202方言 | autominor=37语种（需工单开通）
         "std_lang": "cn",       # 标准版：cn=中文/中英混合 | en=英文
         # 标准版专用参数（大模型版不支持，不发送）：
@@ -251,6 +251,7 @@ DEFAULTS = {
             "vad_threshold": 0.5,         # [-1.0,1.0]，仅 server_vad
             "silence_duration_ms": 800,   # [200,6000]，仅 server_vad
             "enable_speech_emotion": True,
+            "speech_rate": 0,             # [-50,100]，换算成 Qwen 的 0.5~2.0 倍语速
             "max_history_turns": 20,      # [1,50]，单会话内历史轮数
             "enable_search": False,       # 联网搜索，仅 plus/flash 生效
         },

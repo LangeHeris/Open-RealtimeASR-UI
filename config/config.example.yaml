@@ -101,7 +101,7 @@ volcengine:
 # 本地 FunASR 引擎配置（完全离线，无需密钥）
 funasr:
   model: "paraformer-zh-streaming"   # 流式模型，支持逐字同步上屏
-  device: "cuda"                     # "auto" | "cuda" | "cpu"（有 GPU 用 cuda 更快）
+  device: "auto"                     # "auto" | "cuda" | "cpu"（auto=有 N 卡走 cuda、否则回落 cpu；写死 cuda 在纯 CPU 机器上会加载失败）
   # 识别窗口预设：逐字上屏的节奏与延迟（改动后自动重新预热）
   #   "默认"   600ms 窗，识别稳（推荐）
   #   "低延迟" 480ms 窗，出字更快，抗噪略弱
@@ -134,6 +134,10 @@ vad:
 hotkey:
   toggle: "ctrl+g"          # 开始/停止录音（避免 win+h 的管理员权限要求）
   dialog: "ctrl+shift+h"    # 进入/退出语音对话（留空=不注册，功能隐藏）
+  # 长按说话（默认关；关闭时全链路行为与既往版本逐字一致）
+  hold_to_talk: false       # 开=按住热键说话、松手结束；短于阈值的轻点完全不算录音
+  hold_threshold_ms: 300    # 按下多久才算正式生效；轻点丢弃（也是防误触的省钱闸门）
+  hold_poll_ms: 20          # 松手判定采样间隔：越小越灵敏，CPU 开销略增
   # 其他可选: "win+h", "ctrl+alt+v", "alt+`" 等
   # 注意避免与系统/其他软件热键冲突
 
@@ -174,6 +178,15 @@ ui:
   # 可在 设置 → 常规 → "识别引擎排序" 用上下按钮调整
   engine_order: "aliyun,volcengine,xfyun,tencent,funasr"
 
+  # 各提供商是否在右键"识别引擎"菜单里显示（false=隐藏该提供商整组）
+  engine_show_tencent: true
+  engine_show_aliyun: true
+  engine_show_xfyun: true
+  engine_show_volcengine: true
+  engine_show_funasr: true
+  # 逐模型显隐：不出现在右键"识别引擎"菜单里的引擎 ID（逗号分隔，空=全部显示）
+  engine_hidden_models: ""
+
   # 设置界面主题内部键（minimal_dark / fluent_light；显示名随界面语言）
   settings_style: "minimal_dark"
 
@@ -197,7 +210,7 @@ injection:
   paste_delay_ms: 50        # 写入剪贴板后等待多久再模拟粘贴
   keep_clipboard: false     # 保留剪贴：识别结果留在剪贴板（占用剪贴板，会覆盖图片/文件；Ctrl+V 可随时重复粘贴）
   game_mode: false          # 游戏模式：强制剪贴板粘贴注入（不降级逐字、粘贴后不恢复剪贴板）；用于逐字输入无效的游戏等自绘输入框
-  replace_intermediate: true# 实时识别时是否边说边替换中间结果
+  replace_intermediate: true # 实时识别时是否边说边替换中间结果
 
 # AI 文本修正（可选）：识别结果先注入原文，后台调 LLM 修正后替换
 # OpenAI 兼容协议：OpenAI / DeepSeek / Moonshot / 智谱 / 通义 / 本地 Ollama / vLLM
@@ -211,7 +224,12 @@ llm:
   disable_thinking: true    # 关闭思考：请求附加禁用思考参数（DeepSeek V4/智谱/Qwen3/OpenAI o 系支持；旧版 R1 不支持需换模型）
   batch_sentences: 3        # 累积几句修正一次：1=每句即时修正；2+ 攒够 N 句一次修正（省 API 调用）
   batch_idle_ms: 1000       # 累积模式下距上句静音超过此时长（毫秒）也触发修正
+  wait_for_correction: false  # True=修正后上屏：final 不立即上屏，等修正完成直接上屏修正版（无视觉跳动、从根本消除吞句；代价是每句延迟 1-3 秒）
   history_context: false    # 附带历史上下文：修正时把最近 15 条历史记录一并发给 AI 作语境参考（仅参考不修正；增大 token 消耗）
+
+# 历史记录：识别结果剪贴板，右键"历史记录"菜单点击复制
+history:
+  enable: true
 
 # 语音命令模式
 commands:
@@ -290,6 +308,7 @@ dialog:
     vad_threshold: 0.5        # [-1.0,1.0]，仅 server_vad；越大越不易触发
     silence_duration_ms: 800  # [200,6000]，仅 server_vad；静音多久算说完
     enable_speech_emotion: true   # 识别用户语音情绪并影响回复
+    speech_rate: 0           # [-50,100]，换算成 0.5~2.0 倍语速；气泡文字匀速显示速度随之同步
     max_history_turns: 20     # [1,50]，单会话内历史轮数（Qwen 无跨连接续接，重连即新会话）
     enable_search: false      # 联网搜索，仅 plus/flash 生效
 

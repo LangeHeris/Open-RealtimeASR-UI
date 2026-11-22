@@ -57,7 +57,7 @@ V2_ENGINES = {"16k_zh_en_2.0", "16k_zh_en_speaker_2.0"}
 PREVIEW_ENGINES = {"Hy-ASR-3.0-preview"}
 
 # filter_punc 口径（与服务端一致）：0 不过滤；1 去掉句末标点；2 去掉全部标点。
-# 2.0 / preview 分支的服务端结果不保证按此过滤（实测每句末尾仍带句号），
+# 2.0 / preview 分支的服务端结果不保证按此过滤（每句末尾仍带句号），
 # 故在客户端按同一口径兜底，保证设置项对这些引擎同样生效。
 _TRAILING_PUNC = "。．.！!？?；;，,、：:…~～·"
 _CJK_PUNC_RE = re.compile(r"[。，、；：？！…—～·「」『』（）【】《》〈〉〔〕“”‘’]")
@@ -172,11 +172,9 @@ class TencentRealtimeASR:
         expired = timestamp + 86400  # 1 天有效
         nonce = random.randint(1, 9999999999)
 
-        # 三分支参数集按各自接口文档设计（发不支持的参数可能被拒或忽略）：
-        # - v1：完整参数；filter_punc 服务端只定义 0/1（去句末句号），且仅
-        #   中文普通话引擎支持，故按 0/1 下发，「过滤所有标点」由客户端完成
-        # - v2：2.0 握手参数表未定义 filter_punc（该参数只出现在 v1 示例里），
-        #   标点过滤由客户端兜底（见 _apply_punc_filter），不额外带未知参数
+        # 三分支参数集按各自接口文档设计（发未定义的参数可能被拒或忽略）：
+        # - v1：filter_punc 只定义 0/1（去句末句号），「过滤所有标点」由客户端完成
+        # - v2：握手参数表无 filter_punc，标点过滤全由客户端兜底（见 _apply_punc_filter）
         # - preview：仅基础参数（官方声明不支持 vad/热词/词汇替换/噪音阈值）
         branch = self._engine_branch()
         params = {
@@ -251,12 +249,10 @@ class TencentRealtimeASR:
             return 0
 
     def _apply_punc_filter(self, text: str) -> str:
-        """按 filter_punc 口径处理标点（final 帧上统一兜底）。
+        """按 filter_punc 口径处理 final 文本的标点。
 
-        服务端能力有限：v1 的 filter_punc 只定义 0/1（去句末句号）且仅中文
-        普通话引擎支持，2.0 / preview 接口干脆没有该参数。三档语义统一由
-        本方法在 final 帧落实，中间帧不动（避免逐字上屏时把尾部逗号删掉又
-        补回来）。
+        服务端能力有限：v1 只定义 0/1 且仅中文普通话引擎支持，2.0 / preview 无该参数，
+        三档语义统一由本方法落实；中间帧不动，避免尾部标点删了又补。
         """
         try:
             mode = int(self.filter_punc or 0)

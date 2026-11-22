@@ -1013,6 +1013,9 @@ _FIELDS = [
     ("dialog.qwen", "voice", "set.dialog_qwen.voice", "combo", _QWEN_VOICE_OPTIONS,
      "set.dialog_qwen.voice.desc",
      None),
+    ("dialog.qwen", "speech_rate", "set.dialog_qwen.speech_rate", "slider", (-50, 100, 5, ""),
+     "set.dialog_qwen.speech_rate.desc",
+     None),
     ("dialog.qwen", "instructions", "set.dialog_qwen.instructions", "text", None,
      "set.dialog_qwen.instructions.desc",
      "set.dialog_qwen.instructions.tip"),
@@ -2315,13 +2318,19 @@ class SettingsDialog(QDialog):
         g = QGridLayout(row)
         g.setContentsMargins(0, 12, 0, 12)
         g.setHorizontalSpacing(18)
-        g.setVerticalSpacing(0)
+        # 行间距只对多行栅格生效：大输入框行另起一行放控件，需要与上方说明留空
+        g.setVerticalSpacing(6)
         g.setColumnStretch(0, 1)
-        g.addLayout(_label_block(), 0, 0)
-        # 多行编辑类控件（Prompt 编辑器）：顶部对齐；其余垂直居中
+        # 多行编辑控件定宽 430px，与说明同处一行时左列只剩几十像素，长说明
+        # 会被排成窄条多行。改为标题与说明通栏占满整行，控件另起一行左对齐。
         tall = isinstance(getattr(widget, "_asr_value_widget", widget), QTextEdit)
-        w_align = Qt.AlignRight | (Qt.AlignTop if tall else Qt.AlignVCenter)
-        g.addWidget(widget, 0, 1, w_align)
+        if tall:
+            g.addLayout(_label_block(), 0, 0, 1, 2)
+            g.addWidget(widget, 1, 0, 1, 2, Qt.AlignLeft | Qt.AlignTop)
+            return row
+        g.addLayout(_label_block(), 0, 0)
+        # 其余控件右对齐、与标签行垂直居中
+        g.addWidget(widget, 0, 1, Qt.AlignRight | Qt.AlignVCenter)
         # 悬浮条不透明度：拖动滑块实时预览（不写文件，点保存才落盘）
         if (section, key) == ("ui", "bar_opacity") and isinstance(widget, SliderSpinBox):
             inner = widget.findChild(FlatSlider)
@@ -3513,7 +3522,8 @@ class SettingsDialog(QDialog):
             ("set.group.qwen_in",
              pick("dialog.qwen", ("region", "workspace_id", "api_key"))),
             ("set.group.qwen_model",
-             pick("dialog.qwen", ("model", "voice", "instructions"))),
+             pick("dialog.qwen", ("model", "voice", "speech_rate",
+                                  "instructions"))),
             ("set.group.qwen_io",
              pick("dialog.qwen", ("turn_detection", "vad_threshold",
                                   "silence_duration_ms"))),

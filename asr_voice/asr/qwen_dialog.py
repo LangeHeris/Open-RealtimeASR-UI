@@ -97,6 +97,7 @@ class QwenDialogClient:
         enable_speech_emotion: bool = True,
         max_history_turns: int = 20,
         enable_search: bool = False,
+        speech_rate: float = 1.0,
         on_state: Optional[StateCallback] = None,
         on_event: Optional[EventCallback] = None,
         on_audio: Optional[AudioCallback] = None,
@@ -112,6 +113,8 @@ class QwenDialogClient:
         self.enable_speech_emotion = enable_speech_emotion
         self.max_history_turns = max_history_turns
         self.enable_search = enable_search
+        # 模型音频输出语速倍率 [0.5, 2.0]（官方 session.speech_rate，1.0 正常）
+        self.speech_rate = speech_rate
 
         self.on_state = on_state
         self.on_event = on_event
@@ -217,6 +220,7 @@ class QwenDialogClient:
             "enable_speech_emotion": self.enable_speech_emotion,
             "max_history_turns": self.max_history_turns,
             "enable_search": self.enable_search,
+            "speech_rate": self.speech_rate,
             "turn_detection": td,
         }}
 

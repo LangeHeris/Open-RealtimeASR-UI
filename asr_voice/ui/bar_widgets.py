@@ -116,12 +116,8 @@ def set_window_topmost(hwnd: int) -> bool:
 def reassert_topmost(widget, force: bool = False) -> None:
     """Windows：重设 WS_EX_TOPMOST（SWP_NOACTIVATE 不抢焦点）。
 
-    隐藏后重新 show 的窗口会被 Windows 插到置顶组底部（标志仍在却"置顶失效"），显式
-    SetWindowPos(HWND_TOPMOST) 提回。保留「传 widget」签名；菜单/对话框开着时静默返回。
-
-    默认只看窗口自己的 TOPMOST 标志：关闭「永远置顶」后气泡/确认条的 Qt 标志已被清掉，
-    若仍盲目提顶会让气泡独自钉在最上层、方窗让位。`force=True` 供临时置顶使用——
-    此时窗口 Qt 标志没有 TOPMOST，但悬浮条主动在保持置顶组。
+    隐藏后重新 show 会被插到置顶组底部（标志仍在但「置顶失效」），显式提回；菜单/
+    对话框开着时静默返回，`force=True` 供临时置顶使用。
     """
     if sys.platform != "win32":
         return
@@ -199,12 +195,8 @@ def draw_caret_marker(painter: QPainter, x: float, cy: float, text_h: float,
 def wrap_lines(metrics, text: str, max_w: int) -> list[str]:
     """按像素宽度贪心折行。
 
-    CJK 逐字断行；ASCII 单词内不硬断（回退到最近空格），
-    避免 "realtime" 被切成 "realti/me" 这种难读的断法。
-
-    文本自带的换行是硬断：每段单独折行、空段丢弃。调用方按「一行 = 一行高」
-    画字，若把换行符留在行内，绘制时会变成多行塞进一行的高度 —— 后面几行被裁掉
-    （用户看到缺字），或被 Qt 的段内行距推到相邻行上（两行重叠）。
+    CJK 逐字断行，ASCII 单词内不硬断（回退到最近空格）。换行符是硬断：每段单独
+    折行、空段丢弃——留在行内会多行塞进一行高，表现为缺字或两行重叠。
     """
     lines: list[str] = []
     normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
@@ -300,7 +292,7 @@ class SpeechBubble(QWidget):
     # 不会把大屏文本变少）。
     AUTO_MAX_LINES = 24
     EXTRA_LINE_H = 26        # note / 思考行这类独立小字行的行高预算（行距+2*ROW_PAD_Y）
-    # ：思考态在卡片内的独立提示行（仅极简主题）。
+    # 思考态在卡片内的独立提示行（仅极简主题）。
     # 只存 i18n 键（导入期不取文案，理由见 i18n 模块 docstring）；文案在调用点 t() 取。
     THINKING_TEXT_KEY = "bubble.thinking"
     ROW_PAD_X = 12           # 行内左右留白（角色色带外侧）
@@ -351,7 +343,7 @@ class SpeechBubble(QWidget):
         self._note = ""                    # 「已省略 N 行」标记（截断不再静默）
         self._note_size = 11
         self._note_h = 0
-        # ：「思考中…」（仅极简主题）。与 _note 一样是独立字段
+        # 「思考中…」（仅极简主题），与 _note 一样是独立字段
         # 绝不进 _rows —— 「最后一行 = 当前轮」是浮条与多份用例依赖的契约。
         self._thinking = ""
         self._thinking_size = 11
@@ -459,12 +451,11 @@ class SpeechBubble(QWidget):
 
     def show_message(self, text: str, color: QColor, marquee: bool = False,
                      elide: str = "right", wrap: bool = False) -> None:
-        """更新内容并显示（同步位置到悬浮窗正上方）。常规内容，清除 loading 标记。
+        """更新内容并显示（同步位置到悬浮窗正上方），并清除 loading 标记。
 
-        marquee=True：文本超长时在气泡内循环滚动（用于长确认文本），
-        wrap=True：按可用宽度折行并完整显示（用于错误详情），
-        否则按 elide 方向静态省略："right" 保留头部（录音累积全文，默认），
-        "left" 保留尾部（语音模式流式回复，最新说出的话在尾部）。"""
+        marquee=True 循环滚动（长确认文本）；wrap=True 按宽度折行（错误详情）；
+        否则按 elide 静态省略：right 留头部、left 留尾部。
+        """
         self._loading = False
         self._marquee = marquee
         self._wrap = wrap
@@ -474,7 +465,7 @@ class SpeechBubble(QWidget):
         self._rows = []
         self._toast = ""
         self._note = ""
-        self._thinking = ""     # ：离开卡片态就不该留思考行
+        self._thinking = ""     # 离开卡片态就不该留思考行
         self._show(text, color)
 
     def show_loading(self, text: str, color: QColor, angle: float) -> None:
@@ -496,9 +487,8 @@ class SpeechBubble(QWidget):
                     thinking: bool = False, status: str = "") -> None:
         """语音模式多行字幕式卡片（上=上一轮，下=当前轮）。
 
-        rows = [{"role","text","struck","current","final"}]，最多两行：上一轮压暗小一号，当前轮角色色带 +
-        标签；宽度随悬浮条、超长折行（当前轮留尾 / 上一轮留头）。toast / thinking 是底部独立行，不进 _rows。
-        status 非空时顶替 thinking 的文案（工具进展这类"此刻在做什么"，两者不同时出现）。
+        rows 最多两行，字段 role/text/struck/current/final，超长折行。toast 与 thinking
+        是底部独立行、不进 _rows；status 非空时顶替 thinking 的文案。
         """
         self._loading = False
         self._marquee = False
@@ -509,7 +499,7 @@ class SpeechBubble(QWidget):
         self._expanded = bool(expanded)
         self._streaming = bool(streaming)
         self._toast = str(toast or "")
-        # ：思考行，独立字段（非极简主题的调用方传 False ⇒ 行为不变）
+        # 思考行：独立字段（非极简主题的调用方传 False ⇒ 行为不变）
         self._thinking = (str(status or "")
                           or (t(SpeechBubble.THINKING_TEXT_KEY) if thinking else ""))
         # _text 只作为"内容变了"的判定与复制兜底，卡片排版不走它
@@ -724,9 +714,8 @@ class SpeechBubble(QWidget):
         # 否则截断时卡片会比屏幕高出几十像素（新用例当场抓到的第二种越屏）。
         reserve = 2 * self.PAD_Y + self.EXTRA_LINE_H
         if self._thinking:
-            # ：思考行也是卡片里实打实的一行，同样要占预算。这里按真实字体
-            # 度量算（大字号下 note/思考行比 EXTRA_LINE_H 高，26 只是小字号的近似）
-            # 否则思考态 + 大字号会把卡片顶出可用高度。
+            # 思考行也是卡片里实打实的一行，同样要占预算。按真实字体度量算（大字号
+            # 下比 EXTRA_LINE_H 高，26 只是小字号的近似），否则会顶出可用高度。
             base = int(getattr(self._bar.cfg, "font_size_bar", 13) or 13)
             kfm = QFontMetrics(bubble_font(self, max(8, base - 2)))
             reserve += int(kfm.lineSpacing()) + 2 * self.ROW_PAD_Y
@@ -835,8 +824,8 @@ class SpeechBubble(QWidget):
                 "toast": True,
             })
             total += built[-1]["h"] + self.SEP_H
-        # ：思考行（独立字段，不进 _rows）。排在正文之后、省略标记之前 ——
-        # 「思考中…」是当下正在发生的事，比"少了几行"的说明更该先被看到。
+        # 思考行（独立字段，不进 _rows）：排在正文之后、省略标记之前——它是当下
+        # 正在发生的事，比「少了几行」的说明更该先被看到。
         self._thinking_size = max(8, base - 2)
         self._thinking_h = 0
         if self._thinking:
@@ -1007,7 +996,7 @@ class SpeechBubble(QWidget):
     def _paint_card(self, painter: QPainter, top: int) -> None:
         """两行字幕式卡片：角色色带 + 角色标签 + 正文（打断整行划线）。
 
-        上一轮整体压暗表示"这是刚才那句"；当前轮中间结果半透明、定稿全不透明。
+        上一轮整体压暗表示"这是上一句"；当前轮中间结果半透明、定稿全不透明。
         **不画未定稿光标**：卡片只出现在语音模式，而该模式已整体取消光标。
         """
         w = self.width()
@@ -1075,10 +1064,9 @@ class SpeechBubble(QWidget):
                 ty += row["lh"]
             y += row["h"]
         if self._thinking:
-            # ：思考行（工具进展也走这里）。左对齐（跟正文同一起读线），字号同 note、
-            # 略亮一点。位置在正文之后、省略标记之前。窄卡片时不省略（"思考中…" 只有
-            # 4 字且宽度已由 CARD_MIN_AVAIL_W 保底）—— 但进展文案可能很长（工具名 +
-            # 命令行），必须右截断，否则直接被卡片边缘切掉，看起来像"缺字"。
+            # 思考行（工具进展也走这里）：左对齐、字号同 note、略亮，位置在正文之后、
+            # 省略标记之前。短文案不省略（宽度已由 CARD_MIN_AVAIL_W 保底），进展文案
+            # 可能很长（工具名 + 命令行），必须右截断，否则会被边缘切掉像缺字。
             if self._rows:
                 y += self.SEP_H
             kfm = QFontMetrics(bubble_font(self, self._thinking_size))
@@ -1171,8 +1159,8 @@ class SpeechBubble(QWidget):
         self._sync_pos()
         # 必须整窗重画，不能用 update()（= 标脏等合并的局部重绘）：滚动会让整块
         # 内容平移，而本控件是顶层 + WA_TranslucentBackground，只补画脏区时会留下
-        # "文字被砍了一半"的残影—— 真机反馈过同一现象（见 _force_full_repaint
-        # 的 docstring：离屏环境复现不了，只有真机合成器才暴露）。
+        # "文字被砍了一半"的残影—— 真实运行中出现过同一现象（见
+        # _force_full_repaint 的 docstring：离屏环境复现不了）。
         self._force_full_repaint()
         event.accept()
 

@@ -124,7 +124,7 @@ class HermesDialogClient:
         self._release_final_pass = True
         engine = self._asr
         end = getattr(engine, "end_segment", None)
-        # 入口就打一行 INFO（而不是等 final 到了才打）：真机上「按住说话后 agent
+        # 入口就打一行 INFO（而不是等 final 到了才打）：「按住说话后 agent
         # 没反应」时，先靠它区分「松手通知根本没到客户端」与「引擎没产出 final」
         # 顺带记下这次成句是靠引擎收束还是靠静音判停。
         logger.info("长按松手：通知客户端收束本轮（end_segment=%s）",
@@ -225,7 +225,7 @@ class HermesDialogClient:
             logger.debug("长按闸门关闭，暂不提交本轮文本")
             return
         if self._release_final_pass:
-            # 可观测（提到 INFO，生产日志级别就是 INFO）：真机上出现「按住说话后
+            # 可观测（提到 INFO，生产日志级别就是 INFO）：出现「按住说话后
             # agent 完全没反应」时，靠这行判断松手那一句到底有没有被提交。
             # 只打长度不打正文：用户语音内容不进日志。
             logger.info("长按松手：放行收束出的一句（len=%d）", len(text))

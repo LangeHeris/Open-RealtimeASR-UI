@@ -87,11 +87,10 @@ def command_delete_last(app) -> None:
 
 
 def command_delete_selection(app) -> None:
-    """「删除」：前台有选中文字则清空选中，没有选中退回到「删除那句」。
+    """「删除」：有选中文字则清空选中，没有则退回到「删除那句」。
 
-    选中检测走注入线程的 read_selection（Ctrl+C 哨兵法，约 0.1s）；回调里
-    校验前台窗口未变再发 Delete 键，避免把按键打到切换后的窗口。读取时
-    哨兵覆盖了原剪贴板，删除命令没有结果需要保留，完成后一律恢复原内容。
+    选中检测走注入线程的 read_selection（Ctrl+C 哨兵法）；回调里校验前台窗口未变
+    再发 Delete，避免打到切换后的窗口；哨兵覆盖的剪贴板完成后一律恢复。
     """
     hwnd_before = app.injector.current_window_hwnd()
 

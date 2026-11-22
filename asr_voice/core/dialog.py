@@ -87,12 +87,9 @@ LEVEL_NORMALIZE = 3000.0
 DRAIN_INTERVAL_MS = 50
 
 # ---- 半双工闸门「防回声尾」静默期 ----
-# pending_ms 归零只说明应用侧缓冲空了，设备侧还压着一段：播放流缓冲里是 AI 的
-# 最后几百毫秒，采集流缓冲则是同样一段音频在麦克风侧的回传。闸门在这个时刻重开，
-# 这些帧正好落在「已采集、未递出」的窗口里，照样会被送进服务端；服务端把它们当成
-# 用户提问，就表现为 AI 用自己的句尾自问自答。
-# 静默期 = 播放设备延迟 + 采集设备延迟 + 余量（按实际流延迟动态算，见
-# _echo_guard_seconds），上下钳制避免异常设备把闸门关死或形同关闭。
+# pending_ms 归零只代表应用侧缓冲空了：设备侧还压着 AI 的最后一段，采集侧同样有
+# 一段在回传，闸门此刻重开这些帧就会被送进服务端，表现为 AI 用句尾自问自答。
+# 静默期 = 播放延迟 + 采集延迟 + 余量（见 _echo_guard_seconds），上下钳制防异常设备。
 ECHO_TAIL_MARGIN_S = 0.15
 ECHO_TAIL_GUARD_MIN_S = 0.25
 ECHO_TAIL_GUARD_MAX_S = 0.70
@@ -101,14 +98,14 @@ ECHO_TAIL_GUARD_MAX_S = 0.70
 # （超出窗口的重复是用户在真的复述，提示反而多余）。只在窗口内提示一次。
 ECHO_DETECT_WINDOW_S = 2.0
 
-# ---- 文本跟读（按已播音频揭示 AI 文本）----
-# 文本比语音先到（豆包 550 / Qwen delta 都是秒级推完，语音要播十几秒），
-# 直接上屏等于把还没听到的答案先摊开。这里按「已播音频时长 × 语速」逐字揭示，
-# 听完即全文；语速逐轮用实测校准（本轮字数 / 本轮音频秒数），首轮用缺省值。
+# ---- 文本匀速揭示（固定速度逐字显示 AI 正文）----
+# 文本比语音先到（豆包 550 / Qwen delta 都是秒级推完，语音要播十几秒），直接
+# 上屏等于把还没听到的答案先摊开。这里按固定字/秒从首个文本帧起匀速揭示：
+# 时钟只走墙上时间，不追播放进度——「跟音频」的方案依赖语速校准与追赶，
+# 实测三处失真（首帧前全量 / 359 过早 flush / 校准分母缺失），固定速度行为
+# 完全可预期。速度取略快于常见 TTS 语速，避免语音念完文字还没出完。
 REVEAL_INTERVAL_MS = 100
-REVEAL_DEFAULT_CPS = 5.0             # 中文播报约 4~6 字/秒
-REVEAL_MIN_CPS = 1.5
-REVEAL_MAX_CPS = 12.0
+REVEAL_FIXED_CPS = 6.0               # 匀速揭示基准字/秒；实际速度 × (1 + 语速设置/100)
 
 # dialog_id 跨进程续接文件（state_dir 下的 JSON）
 _CONTEXT_FILE = state_dir() / "dialog_context.json"
@@ -138,9 +135,8 @@ def _make_asr_factory(cfg, engine: str, overrides: dict):
     def _factory(*, on_result=None, on_error=None):
         if engine == "tencent":
             from ..asr.tencent_realtime import TencentRealtimeASR
-            # 局部名不能叫 `t`：本模块顶部 import 了 i18n 的 t()，同名局部
-            # 会把下方的 t("...") 遮蔽成 UnboundLocalError（同 floating_bar
-            # 那次踩过的坑，守卫见 test_i18n.NoShadowingOfTranslationHelper）。
+            # 局部名不能叫 `t`：本模块顶部 import 了 i18n 的 t()，同名局部会把
+            # 下方的 t("...") 遮蔽成 UnboundLocalError。
             tencent_cfg = getattr(cfg, "tencent", None)
             return TencentRealtimeASR(
                 app_id=str(getattr(tencent_cfg, "app_id", "")),
@@ -260,10 +256,11 @@ class DialogController(QObject):
         self._text_frames = 0                # 本轮收到的文本帧数
         self._turn_bargein = False           # 本轮是否被用户打断
         self._audio_base_ms = 0              # 本轮开始时播放器的累计播放量
-        # ---- 文本跟读（按已播音频揭示，见 _feed_ai_text / _reveal_tick）----
+        # ---- 文本匀速揭示（见 _feed_ai_text / _reveal_tick）----
         self._ai_full_text = ""              # 本轮 AI 正文全量（揭示源）
         self._ai_reveal_chars = 0            # 已揭示字数
-        self._reveal_cps = REVEAL_DEFAULT_CPS   # 字/秒，逐轮用实测校准
+        self._reveal_started_ts = 0.0        # 首个文本帧到达时刻（匀速起点）
+        self._reveal_cps = REVEAL_FIXED_CPS  # 每轮开始按语速设置重算（见 _begin_turn_metrics）
         self._reveal_timer = QTimer(self)
         self._reveal_timer.setInterval(REVEAL_INTERVAL_MS)
         self._reveal_timer.timeout.connect(self._reveal_tick)
@@ -378,7 +375,7 @@ class DialogController(QObject):
                 self._emit_turn(text, bool(payload.get("is_final", False)))
         elif neutral == USER_TURN_END:
             # 同 _enter_listening：状态只走 state_changed（UI 画 spinner +「思考中...」），
-            # 用户刚才那句话留在屏上。进入新一轮即复位两个排空标志：上一轮 359 会残留成
+            # 用户上一句留在屏上。进入新一轮即复位两个排空标志：上一轮 359 会残留成
             # True，而 THINKING 也是可完结态（无音频 provider 的唯一出口，见 _check_drain），
             # 不复位会被上一轮提前收尾；_ai_turn_started 清空后本轮要等自己的 AI_TURN_START。
             self._tts_ended = False
@@ -430,11 +427,13 @@ class DialogController(QObject):
                 self._begin_stop()
                 return
             self._tts_ended = True
-            self._reveal_flush()          # 播完了：剩下的字一次性放开
+            # 359 只代表服务端把音频推完，本地还在实时播放。此刻不能放开剩余
+            # 文字——那会把还没念到的部分一次性刷上屏（用户看到「前几个字逐字、
+            # 后面一口气全出」）。真正的放开点在 _check_drain 的排空分支。
             self.progress_changed.emit("")   # 工具进展随本轮结束清掉
             logger.info("AI_TURN_END：服务端本轮播报结束，等本地缓冲排空")
             if not self._ai_text_shown and not self._ai_full_text_seen:
-                # 可观测性：这一轮两条文本通道都没内容 —— 真机上就是「有声音
+                # 可观测性：这一轮两条文本通道都没内容 —— 实际使用中就是「有声音
                 # 没文字」。留一条 WARNING（用户日志级别是 INFO，DEBUG 看不到）。
                 logger.warning(
                     "本轮 AI 没有任何文本上屏（350 未带 text、550 也未带 content）"
@@ -603,14 +602,17 @@ class DialogController(QObject):
             if self._state == DIALOG_STATE_SPEAKING:
                 # 记「播放真的结束了」：半双工闸门的防回声尾静默期从这一刻起算
                 self._speak_end_ts = time.monotonic()
+            # 本地播完了才放开剩余文字：此刻语音已念完，补齐无感；放在 359 时刻
+            # 则会把还没念到的部分提前剧透（匀速揭示下若语速快于固定速度，
+            # 这里补的是零头）。
+            self._reveal_flush()
             self._enter_listening()
 
     def _echo_guard_seconds(self) -> float:
         """半双工闸门重开前的静默长度（秒）：两侧设备延迟之和 + 余量。
 
-        播放侧延迟决定扬声器还要响多久，采集侧延迟决定这段声音多久之后才被
-        递到本方法；两者重叠的音频全部落在闸门重开之后，必须一并盖掉。
-        设备不提延迟（替身/未开流）时按最小值兜底。
+        播放侧决定扬声器还响多久，采集侧决定这段声音多久后才被递上来；两者重叠的
+        部分全落在闸门重开之后，必须一并盖掉。设备不报延迟时按最小值兜底。
         """
         out = getattr(self._player, "latency_s", 0.0) or 0.0
         inp = getattr(self._capture, "latency_s", 0.0) or 0.0
@@ -631,10 +633,10 @@ class DialogController(QObject):
             return False
         return (time.monotonic() - self._speak_end_ts) < self._echo_guard_seconds()
 
-    # ---- 文本跟读（按已播音频揭示 AI 正文）----
+    # ---- 文本匀速揭示（固定速度逐字显示 AI 正文）----
 
     def _apply_reveal_poll(self, active: bool) -> None:
-        """启停跟读定时器（必在主线程执行，理由同 _apply_drain_poll）。"""
+        """启停揭示定时器（必在主线程执行，理由同 _apply_drain_poll）。"""
         if active:
             if not self._reveal_timer.isActive():
                 self._reveal_timer.start()
@@ -642,18 +644,12 @@ class DialogController(QObject):
             self._reveal_timer.stop()
 
     def _pacing_active(self) -> bool:
-        """本轮能不能按播放进度揭示文本 —— 两个条件缺一不可。
+        """本轮是否走匀速揭示 —— 仅 Hermes 例外。
 
-        1. provider 有音频：Hermes 纯文本回复，跟读只会让用户盯着永远不增长的
-           一两个字，等一段永远不会响的语音。
-        2. 输出流真的开着：没有开着的流就没有播放时钟，`played_ms` 永远不动，
-           跟读会退化成"只显示第一个字"。宁可先给全文，也不装一个假节奏。
+        Hermes 的正文本身就是 SSE 流式增量，即时上屏自带节奏；套一层匀速
+        定时器反而会人为放慢它的文本显示。
         """
-        if str(getattr(self, "_session_provider", "") or "") == "hermes":
-            return False
-        player = self._player
-        running = getattr(player, "is_running", None) if player is not None else None
-        return bool(running()) if callable(running) else False
+        return str(getattr(self, "_session_provider", "") or "") != "hermes"
 
     def _played_ms(self) -> int:
         """播放器累计播放毫秒数（取不到当 0：跟读与指标都不该因播放器实现崩）。"""
@@ -661,30 +657,34 @@ class DialogController(QObject):
         return int(getattr(player, "played_ms", 0) or 0) if player is not None else 0
 
     def _feed_ai_text(self, text: str) -> None:
-        """收 AI 正文（客户端已累积成全量）：记下来，按需揭示。"""
+        """收 AI 正文（客户端已累积成全量）：记下来，匀速揭示。
+
+        首个文本帧同时是匀速揭示的起点：文本一到就开始按固定字/秒出字。
+        本方法跑在客户端线程，直接调 `_reveal_tick` 与事件处理同线程模型。
+        """
         self._ai_full_text = text
         self._text_frames += 1
         if not self._pacing_active():
             self._ai_reveal_chars = len(text)
             self._show_ai_text(text)
             return
+        if self._reveal_started_ts <= 0:
+            self._reveal_started_ts = time.monotonic()
         self._reveal_poll.emit(True)
         self._reveal_tick()
 
     def _reveal_tick(self) -> None:
-        """主线程定时器：按「已播音频秒数 × 语速」推进揭示游标。"""
+        """主线程定时器：按固定字/秒推进揭示游标。
+
+        时钟 = 首帧文本以来的墙钟时间，与播放进度解耦：不追音频、不校准
+        语速，行为完全可预期。轮次结束/打断/退出时由 `_reveal_flush` 放开
+        剩余部分。
+        """
         full = self._ai_full_text
-        if not full:
+        if not full or self._reveal_started_ts <= 0:
             return
-        if not self._first_audio_ts:
-            # 本轮还没有音频帧：没有播放进度可依据。此刻拿到的通常只有开头的
-            # 一两个片段，先给全量；等音频起来再按 played_ms 继续推进。
-            if self._ai_reveal_chars < len(full):
-                self._ai_reveal_chars = len(full)
-                self._show_ai_text(full)
-            return
-        played_ms = max(0, self._played_ms() - self._audio_base_ms)
-        target = min(len(full), 1 + int(played_ms * self._reveal_cps / 1000.0))
+        elapsed_ms = int((time.monotonic() - self._reveal_started_ts) * 1000)
+        target = min(len(full), 1 + int(elapsed_ms * self._reveal_cps / 1000.0))
         if target <= self._ai_reveal_chars:
             return
         self._ai_reveal_chars = target
@@ -730,25 +730,39 @@ class DialogController(QObject):
         self._audio_base_ms = self._played_ms()
         self._ai_reveal_chars = 0
         self._ai_full_text = ""
+        self._reveal_started_ts = 0.0        # 匀速起点复位：第二轮从自己的首帧文本重新起算
+        # 匀速揭示速度跟随「语速」设置：滑杆调快 = TTS 念得快 = 文字也走得快，
+        # 两边节奏保持一致。speech_rate ∈ [-50,100]，0 为正常语速。
+        try:
+            d = getattr(self._app.cfg, "dialog", None)
+            # 各家语速独立：Qwen（provider=aliyun）读 dialog.qwen.speech_rate，
+            # 豆包读顶层 dialog.speech_rate
+            source = (getattr(d, "qwen", None)
+                      if dialog_provider(self._app.cfg) == "aliyun" else d)
+            rate = int(getattr(source, "speech_rate", 0) or 0)
+        except (TypeError, ValueError):
+            rate = 0
+        multiplier = max(0.5, min(2.0, 1.0 + rate / 100.0))
+        self._reveal_cps = REVEAL_FIXED_CPS * multiplier
 
     def _log_turn_metrics(self) -> None:
         """本轮结束打一行 INFO：延迟、文本量、音频量、是否被打断。
 
-        真机排障只靠日志回传，没有这些数字就只能靠"感觉慢"。顺带用本轮实测
-        「字数/音频秒数」校准语速，下一轮的跟读节奏更贴。
+        排障只靠日志回传，没有这些数字就只能凭感觉；音频量是 359 时刻的已播
+        部分（非本轮总时长）。
         """
         audio_ms = max(0, self._played_ms() - self._audio_base_ms)
         first = (int((self._first_audio_ts - self._turn_started_ts) * 1000)
                  if self._first_audio_ts and self._turn_started_ts else -1)
+        pacing = self._pacing_active() and bool(self._reveal_started_ts)
         logger.info(
-            "对话轮次指标：provider=%s 首音频=%s 文本帧=%d 正文=%d字 音频=%dms 打断=%s",
+            "对话轮次指标：provider=%s 首音频=%s 文本帧=%d 正文=%d字 音频=%dms "
+            "跟读=%s 打断=%s",
             str(getattr(self, "_session_provider", "") or "?"),
             f"{first}ms" if first >= 0 else "无",
             self._text_frames, len(self._ai_full_text), audio_ms,
+            "开" if pacing else "关",
             "是" if self._turn_bargein else "否")
-        if audio_ms >= 800 and self._ai_full_text:
-            cps = len(self._ai_full_text) * 1000.0 / audio_ms
-            self._reveal_cps = min(REVEAL_MAX_CPS, max(REVEAL_MIN_CPS, cps))
         self._turn_started_ts = 0.0
         self._first_audio_ts = 0.0
 
@@ -1106,6 +1120,9 @@ class DialogController(QObject):
         """
         if self._state in (DIALOG_STATE_IDLE, DIALOG_STATE_STOPPING):
             return
+        # 退出前把跟读没放完的正文补齐：语音不会再播了，剩下的字放着只会
+        # 让气泡永远停在半句上。
+        self._reveal_flush()
         self._set_state(DIALOG_STATE_STOPPING)
         self._stop_thread = threading.Thread(
             target=self._stop_worker, daemon=True, name="dialog-stop")
@@ -1229,6 +1246,10 @@ class DialogController(QObject):
             enable_speech_emotion=bool(getattr(q, "enable_speech_emotion", True)),
             max_history_turns=int(getattr(q, "max_history_turns", 20)),
             enable_search=bool(getattr(q, "enable_search", False)),
+            # 火山侧的 [-50,100] 语速滑杆与 Qwen 的 [0.5,2.0] 倍率同构：
+            # -50 → 0.5（慢一半）、0 → 1.0、+100 → 2.0（快一倍）
+            speech_rate=max(0.5, min(2.0, 1.0 + _safe_float(
+                getattr(q, "speech_rate", 0), 0) / 100.0)),
         )
         self._attach_client(client)
         return client
@@ -1236,9 +1257,8 @@ class DialogController(QObject):
     def _create_hermes_client(self, dialog_id: str = ""):
         """创建 HermesDialogClient（组合型：本地 VAD + ASR 引擎 + HTTP）。
 
-        ASR 引擎用 asr_factory 延迟构造：对话专属引擎与听写引擎可能不是同一家，而各引擎构造参数不同，故把「按
-        dialog_asr_engine 造一个引擎」交给工厂闭包。dialog_id 形参不用（Hermes 的续接句柄是服务端
-        session_id，由客户端自己校验后复用，见 _load_saved_hermes_session）。
+        ASR 引擎由工厂闭包延迟构造——对话专属引擎与听写引擎可能不同家；
+        dialog_id 形参不用，Hermes 的续接句柄是服务端 session_id。
         """
         from ..asr.hermes_dialog import HermesDialogClient
         from ..config.loader import (
@@ -1284,14 +1304,12 @@ class DialogController(QObject):
             dtype="int16", on_block=self._on_mic_block, device=device or None,
         )
 
-    # ---- dialog_id 持久化（跨进程续接，spec「连接生命周期」）----
+    # ---- dialog_id 持久化（跨进程续接）----
 
     def _persist_dialog_id(self) -> None:
-        """150 返回后写入状态目录；keep_context=False 不写（下次全新会话）。
+        """SESSION_READY 后写入状态目录；keep_context=False 不写（下次全新会话）。
 
-        两家分键存：豆包的 dialog_id 与 Hermes 的 session_id 语义不同（前者是服务端
-        续接句柄、后者是服务端会话主键），共用一个键会互相顶掉——切回豆包时被
-        Hermes 的 id 误续接，反过来也是。
+        豆包与 Hermes 分键存：前者是续接句柄、后者是会话主键，共用一个键会互相顶掉。
         """
         d = getattr(self._app.cfg, "dialog", None)
         if not bool(getattr(d, "keep_context", True)):

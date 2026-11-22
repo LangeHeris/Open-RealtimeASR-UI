@@ -10,7 +10,7 @@
 
 <div align="center">
 
-![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg) [![Release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?label=Release&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg) ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg) ![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg) [![Release](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?label=Release&labelColor=555555&color=2ea44f)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
 
 </div>
 
@@ -22,7 +22,7 @@
 
 <div align="center">
 
-[![下载 Windows 版](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![Steam 商店页](https://img.shields.io/badge/Steam-ORI--Voice-1b2838?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/app/5295220/) [![最新版本](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&color=555555)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
+[![下载 Windows 版](https://img.shields.io/badge/Download-ORI--win64.zip-2ea44f?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases/latest/download/ORI-win64.zip) [![Steam 商店页](https://img.shields.io/badge/Steam-ORI--Voice-1b2838?style=for-the-badge&logo=steam&logoColor=white)](https://store.steampowered.com/app/5295220/) [![最新版本](https://img.shields.io/github/v/release/LangeHeris/Open-RealtimeASR-UI?style=for-the-badge&label=Latest&labelColor=555555&color=2ea44f)](https://github.com/LangeHeris/Open-RealtimeASR-UI/releases)
 
 </div>
 
@@ -130,7 +130,7 @@ pip install funasr
 
 - **进入 / 退出**：按对话热键，或右键菜单「语音模式」；对 AI 说「退出 / 再见」也能结束
 - **打断**：豆包 / Qwen 默认全双工，AI 播报中直接开口即可打断；Hermes 按轮串行（恒半双工）
-- **文字**：豆包 / Qwen 的文字跟着语音逐步出现（说到哪显示到哪）；Hermes 无语音，按生成进度即时上屏
+- **文字**：豆包 / Qwen 的文字按固定速度匀速显示（基准约 6 字/秒，随「语速」设置同步快慢）；Hermes 无语音，按生成进度即时上屏
 - **记忆**：豆包支持跨次记忆（续接最近 20 轮）；Qwen 为单会话内记忆；Hermes 默认跨次续接同一会话，上下文由服务端按窗口自动压缩（设置里也可改成攒满 N 轮换新会话）
 - **计费**：豆包 / Qwen 按厂商规则计费；Hermes 自建自用，无计费
 

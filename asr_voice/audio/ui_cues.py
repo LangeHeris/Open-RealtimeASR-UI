@@ -1,14 +1,10 @@
 """录音起停提示音：按样式播放内置短音效。
 
-样式 = 一组「开始/停止」WAV。当前内置三种：
-- `bubble`（气泡）：freesound 拨片采样改造，开始原声裁短、停止降调；
-- `cork`（瓶塞）：freesound 酒瓶塞爆裂声，同样开始原声、停止降调 + 低通；
-- `click`（点击）：现代 UI 轻点，高频 click 起音 + 低频 click 收束。
+样式 = 一组「开始/停止」WAV，当前内置 `bubble`（气泡）、`cork`（瓶塞）、
+`click`（点击）。新增样式只需把成对 WAV 放进 assets/sounds 并登记到 STYLES。
 
-后续新增样式只需把成对 WAV 放进 assets/sounds 并登记到 STYLES。
-
-刻意不用 QtMultimedia，也不占用对话 TTS 的播放流：Windows 原生 winsound 异步
-播放 WAV，延迟低、不碰音频设备。提示音绝不能影响录音主流程，失败只记日志。
+用 winsound 异步播放而非 QtMultimedia：延迟低、不与对话 TTS 抢音频设备，
+失败只记日志，不影响录音主流程。
 """
 
 from __future__ import annotations

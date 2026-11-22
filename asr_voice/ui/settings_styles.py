@@ -37,6 +37,8 @@ SETTINGS_STYLES: dict[str, dict] = {
         "text":            "#ececef",
         # 次级文字提亮：说明文字字号小、灰阶抗锯齿发软，提亮补对比
         "secondary":       "#a5a5ac",
+        # 行内说明单列一档：小字号灰阶抗锯齿边缘发虚，比次级文字再亮一档
+        "desc":            "#c2c2ca",
         "page":            "#1c1c1f",
         # 纯色实底：无渐变无反光
         "panel":           "#242428",
@@ -96,6 +98,8 @@ SETTINGS_STYLES: dict[str, dict] = {
         "text":            "#1b1b1f",
         # 次级文字加深：原 #616161 在说明字号下偏浅
         "secondary":       "#55555c",
+        # 行内说明单列一档：小字号灰阶抗锯齿边缘发虚，比次级文字再深一档
+        "desc":            "#45454d",
         "page":            "#f4f4f6",
         "panel":           "#ffffff",
         # 填充比白卡略深一档 + 可见描边：原 #fbfbfd 贴在白卡上等于隐形
@@ -361,7 +365,7 @@ def _settings_qss(p: dict) -> str:
        普惠体命中 55 Regular 正文观感，系统回退位雅黑无 600 面也不会跳粗 */
     QLabel#fieldLabel {{ color: {p['text']}; font-size: 11pt; font-weight: 400; background: transparent; }}
     QLabel#fieldDesc {{
-        color: {p['secondary']}; font-size: 10pt; background: transparent;
+        color: {p.get('desc', p['secondary'])}; font-size: 10pt; background: transparent;
     }}
     /* 主题分段卡片（参考图「外观」通栏大卡）：选中亮描边 */
     QToolButton#themeCard {{

@@ -343,10 +343,8 @@ class SteamIntegration:
                          progress=None, timeout_s: float = 900.0) -> int:
         """把本地目录发布成一个工坊物品，返回新物品 ID（失败返回 0）。
 
-        **阻塞直到上传完成**（内容大时可达十几分钟），必须放后台线程；`progress` 收到
-        (已处理字节, 总字节)。        流程 CreateItem → 等 → StartItemUpdate → 设字段 → 提交 → 等。
-
-        发行构建只消费工坊内容，上传由发行方工具完成（该工具不带 --steam）。
+        **阻塞直到上传完成**，内容大时可达十几分钟，必须放后台线程；`progress` 收到
+        (已处理字节, 总字节)。发行构建不能上传，只由发行方工具调用（不带 --steam）。
         """
         if is_steam_build():
             logger.debug("发行构建不提供工坊上传能力")
@@ -429,10 +427,8 @@ class SteamIntegration:
                         description_zh: str | None = None) -> bool:
         """更新一个**已存在**的工坊物品（成功返回 True）。
 
-        **没传的字段一律不设**（Steam UGC 只改显式设置的项，未设置保持线上原值）；preview 非图片
-        时 Steam 返回 true 但静默不出封面，故先校验存在；**阻塞**须后台线程；改标签/补封面只能走这条。
-
-        `title_zh` / `description_zh` 只用于简体中文槽，不传则两槽同文。
+        **没传的字段一律不设**；preview 非图片时返回 true 但静默不出封面，故先校验；
+        **阻塞**须后台线程；中文槽不传则与英文同文。
         """
         if not self.workshop_available():
             return False

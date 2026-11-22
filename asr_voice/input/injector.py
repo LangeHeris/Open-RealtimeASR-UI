@@ -24,7 +24,7 @@ import pyperclip
 
 logger = logging.getLogger(__name__)
 
-# 「刚才那一下按键是我们自己发的」保留时长（秒）。
+# 「上一次按键是否由本进程合成」的保留时长（秒）。
 
 # 必须有它：「删除键打断录音」监听区分不出合成键与真键（GetAsyncKeyState 只读物理键，
 # 钩子拿到的注入事件与真键同形），而注入器为退格重写会真发 Backspace，于是自我打断。
@@ -357,7 +357,7 @@ class TextInjector:
                 self._mark_synthetic_input()
 
     def _mark_synthetic_input(self) -> None:
-        """记录「此刻是我们自己在合成输入」。仅注入线程调用。"""
+        """记录「此刻的输入由本进程合成」。仅注入线程调用。"""
         self._last_synthetic_at = time.monotonic()
 
     def synthetic_input_active(self) -> bool:
