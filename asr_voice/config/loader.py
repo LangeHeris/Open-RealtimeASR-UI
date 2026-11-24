@@ -1183,11 +1183,14 @@ def describe_config(cfg: SimpleNamespace) -> str:
     return ", ".join(parts)
 
 
-def enforce_offline_engine(cfg, path=None) -> bool:
-    """外部服务不可用时，把配置里的云端引擎改回内置离线引擎。
+def enforce_offline_engine(cfg) -> bool:
+    """外部服务不可用时，把**内存中**的云端引擎临时改回内置离线引擎。
 
-    返回 True = 发生了改写（cfg 已就地修改）。外部服务不可用时云端入口不装配，但 start_session
-    仍会弹「请填写 XX 密钥」指向不存在的页面，故须在进 session 前摆正。不能一律强制 funasr。
+    返回 True = 发生了回落（cfg 已就地修改）。只改内存，**不写 config.yaml**：
+    那次云端选择是用户自己的偏好，扩展包暂不可用（未安装 / Steam 未就绪 /
+    本机扫描不到）不该把它永久抹掉；下次检测到扩展包时启动会自动恢复。
+    外部服务不可用时云端入口不装配，但 start_session 仍会弹「请填写 XX 密钥」
+    指向不存在的页面，故仍须在进 session 前把内存值摆正。
     """
     if cfg is None:
         return False
@@ -1208,15 +1211,56 @@ def enforce_offline_engine(cfg, path=None) -> bool:
 
     log = logging.getLogger(__name__)
     try:
-        update_config_field("engine", "funasr", path=path)
-    except Exception:
-        # 安装目录只读等场景：文件改不了也得改内存，否则本次会话仍会
-        # 走向"请填写密钥"那条死路
-        log.warning("引擎校正：写配置失败，仅改内存", exc_info=True)
-    if not isinstance(cfg, dict):
-        try:
+        if isinstance(cfg, dict):
+            cfg["_offline_engine_from"] = engine
+            cfg["engine"] = "funasr"
+        else:
+            cfg._offline_engine_from = engine  # 扩展包可用时恢复用
             cfg.engine = "funasr"
-        except Exception:
-            log.debug("引擎校正：内存 cfg 赋值失败", exc_info=True)
-    log.info("外部服务不可用，引擎由 %s 回落为内置离线引擎 funasr", engine)
+    except Exception:
+        log.debug("引擎校正：内存 cfg 赋值失败", exc_info=True)
+    log.info(
+        "外部服务不可用，本次会话引擎由 %s 临时回落为内置离线引擎 funasr"
+        "（配置中的云端选择已保留）", engine)
+    return True
+
+
+def preferred_engine(cfg) -> str:
+    """启动期被临时回落的原始引擎（没有回落返回空串）。"""
+    if cfg is None:
+        return ""
+    if isinstance(cfg, dict):
+        return str(cfg.get("_offline_engine_from", "") or "")
+    return str(getattr(cfg, "_offline_engine_from", "") or "")
+
+
+def restore_preferred_engine(cfg) -> bool:
+    """外部服务恢复可用时，把启动期临时回落的云端引擎还原回内存。
+
+    Steamworks 初始化后工坊目录才可见（SDK 来源）：启动早期判定离线、
+    初始化后判定可用时调用。返回 True = 发生了还原。
+    """
+    engine = preferred_engine(cfg)
+    if not engine:
+        return False
+    # 延迟导入理由同 enforce_offline_engine
+    from ..steam_integration import external_services_allowed
+
+    if not external_services_allowed():
+        return False
+    log = logging.getLogger(__name__)
+    try:
+        if isinstance(cfg, dict):
+            cfg["engine"] = engine
+            cfg.pop("_offline_engine_from", None)
+        else:
+            cfg.engine = engine
+            try:
+                delattr(cfg, "_offline_engine_from")
+            except AttributeError:
+                pass
+    except Exception:
+        log.debug("引擎恢复：内存 cfg 赋值失败", exc_info=True)
+        return False
+    log.info("外部服务已可用，恢复配置中的引擎：%s", engine)
     return True

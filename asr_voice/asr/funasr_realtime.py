@@ -142,6 +142,43 @@ def _model_cache_present() -> bool:
     return bool(_model_cache_dirs())
 
 
+def _cached_model_dir(model: str, hub: str = "ms", revision: str = "") -> Path | None:
+    """modelscope 本地缓存中可直接加载的模型目录；未命中返回 None。
+
+    命中时把绝对路径交给 AutoModel：省掉每次加载的 hub 在线解析，源码版断网也能
+    加载。只认同时含 configuration.json 与 model.pt 的目录，未完成的下载或残缺快照
+    不会命中，届时仍走原来的在线下载分支。
+    """
+    name = (model or "").strip()
+    if not name or name in (".", "..") or "\\" in name:
+        return None
+    # hf 缓存布局不同（models--org--name/snapshots/<sha>），保持原有在线解析
+    if hub not in ("ms", "modelscope"):
+        return None
+    try:
+        from funasr.download.name_maps_from_hub import name_maps_ms
+
+        hub_id = name_maps_ms.get(name) or name
+    except Exception:  # noqa: BLE001 老版本无该模块时按原样当 hub id 用
+        hub_id = name
+    snapshots = _model_cache_root() / "models" / hub_id.replace("/", "--") / "snapshots"
+    if not snapshots.is_dir():
+        return None
+    # 指定 revision 时只认那一个快照（缺失就回落在线，让 hub 去取指定修订）；
+    # 未指定时 master 优先，其余按名字兜底
+    if revision:
+        cands = [snapshots / revision]
+    else:
+        cands = sorted(
+            (p for p in snapshots.iterdir() if p.is_dir()),
+            key=lambda p: (p.name != "master", p.name),
+        )
+    for cand in cands:
+        if (cand / "configuration.json").is_file() and (cand / "model.pt").is_file():
+            return cand
+    return None
+
+
 def _model_cache_bytes() -> int:
     """paraformer 模型缓存当前占用字节数（下载进度估算用）。
 
@@ -292,10 +329,12 @@ class FunASRRealtime:
                     "funasr 依赖不完整，请运行：pip install funasr torch torchaudio"
                 ) from exc
 
-            # 模型引用与下载渠道解析，优先级：随发行分发的模型 > 用户配置的
-            # local_dir > 按 model_hub（ms/hf）在线下载。随包模型由发行包投放
-            # models/<model>，命中即离线加载（发行构建零联网、无需任何配置）。
+            # 模型引用解析，优先级：随发行分发的模型 > 用户配置的 local_dir >
+            # 本地 modelscope 缓存 > 按 model_hub（ms/hf）在线下载。随包模型由
+            # 发行包投放 models/<model>，命中即离线加载（发行构建零联网、无需任何
+            # 配置）；缓存命中同样免联网，未命中才回落在线下载。
             bundled = _bundled_model_dir(str(self.model_name))
+            cached: Path | None = None
             if bundled is not None:
                 model_ref: str = str(bundled.resolve())
                 hub_kwargs: dict = {}
@@ -310,16 +349,27 @@ class FunASRRealtime:
                 hub_kwargs = {}
                 logger.info("使用本地模型目录：%s", model_ref)
             else:
-                model_ref = self.model_name
-                hub_kwargs = {"hub": self.model_hub}
-                if self.model_revision:
-                    hub_kwargs["model_revision"] = self.model_revision
-                    logger.info("锁定模型版本：%s", self.model_revision)
+                cached = _cached_model_dir(
+                    str(self.model_name), self.model_hub, self.model_revision
+                )
+                if cached is not None:
+                    model_ref = str(cached.resolve())
+                    hub_kwargs = {}
+                    logger.info("使用本地缓存的模型：%s", model_ref)
+                else:
+                    model_ref = self.model_name
+                    hub_kwargs = {"hub": self.model_hub}
+                    if self.model_revision:
+                        hub_kwargs["model_revision"] = self.model_revision
+                        logger.info("锁定模型版本：%s", self.model_revision)
 
             # 模型下载进度轮询：仅当模型尚未下载时才启动
             # 已下载完成时扫描目录大小约等于模型大小，会误显示"下载中94%"
             model_already_downloaded = (
-                bundled is not None or bool(self.local_dir) or _model_cache_present()
+                bundled is not None
+                or cached is not None
+                or bool(self.local_dir)
+                or _model_cache_present()
             )
 
             if self.on_progress:
@@ -346,7 +396,16 @@ class FunASRRealtime:
                     threading.Thread(target=_poll, daemon=True, name="funasr-progress").start()
 
             device = self._resolve_device()
-            self._model = AutoModel(model=model_ref, device=device, **hub_kwargs)
+            self._model = AutoModel(
+                model=model_ref,
+                device=device,
+                # 关掉 funasr 每次加载都做的 PyPI 版本自检：实测 0.8s（网络热）～
+                # 5.7s（冷），断网时还要挂到超时；版本由 requirements 锁定，自检无收益
+                disable_update=True,
+                # 每块 generate 的 tqdm 进度条写 stderr，GUI 与日志里都是噪音
+                disable_pbar=True,
+                **hub_kwargs,
+            )
             stop_poll.set()
             logger.info("FunASR 模型加载完成：%s", self.model_name)
 

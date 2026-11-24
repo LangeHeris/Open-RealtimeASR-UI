@@ -7,9 +7,6 @@ _settings_qss（palette -> 全控件 QSS）、_theme_palette（按配置选预�
 
 from __future__ import annotations
 
-from .fonts import get_loaded_family
-
-
 def _theme_palette(cfg) -> dict:
     """设置弹窗配色：按 `ui.settings_style` 选预设，未知回退默认。
     每套预设覆盖全部控件的色值，显示名走 i18n（set.style.*）、键为语言无关内部键；
@@ -27,7 +24,8 @@ def _theme_palette(cfg) -> dict:
 
 
 # 主题键用语言无关内部键（键要进 config.yaml 又要过 i18n，不能存中文显示名；显示名走 set.style.*）。
-# minimal_dark（默认，中性灰调）/ fluent_light（Win11 浅色）；旧配置的中文取值由 loader 一次性迁移。
+# minimal_dark（默认，中性灰调）/ fluent_light（Win11 浅色）；
+# 旧配置的中文取值由 loader 一次性迁移。
 # accent 系列（主按钮/滑块已填段/开关开/焦点描边）统一中性灰而非蓝——蓝色太突兀，
 # 交互强调用亮灰（深色）/深灰（浅色）。
 SETTINGS_STYLES: dict[str, dict] = {
@@ -90,6 +88,13 @@ SETTINGS_STYLES: dict[str, dict] = {
         "admin_green_hover": "#84d47a",
         "admin_green_down":  "#57ab4e",
         "admin_text":        "#16161a",
+        # Steam 页连接状态条：绿=已连接 / 琥珀=未连接（半透明底 + 同色文字）
+        "banner_ok_bg":      "rgba(108, 203, 95, 0.12)",
+        "banner_ok_text":    "#8fdc84",
+        "banner_ok_dot":     "#6ccb5f",
+        "banner_warn_bg":    "rgba(255, 185, 70, 0.12)",
+        "banner_warn_text":  "#f0b455",
+        "banner_warn_dot":   "#e0a03a",
         "radius": 8,
     },
     "fluent_light": {
@@ -148,6 +153,13 @@ SETTINGS_STYLES: dict[str, dict] = {
         "admin_green_hover": "#248a24",
         "admin_green_down":  "#0d650d",
         "admin_text":        "#ffffff",
+        # Steam 页连接状态条：绿=已连接 / 琥珀=未连接（半透明底 + 同色文字）
+        "banner_ok_bg":      "rgba(15, 123, 15, 0.10)",
+        "banner_ok_text":    "#0f7b0f",
+        "banner_ok_dot":     "#0f7b0f",
+        "banner_warn_bg":    "rgba(157, 93, 0, 0.10)",
+        "banner_warn_text":  "#8a5a00",
+        "banner_warn_dot":   "#b37700",
         "radius": 8,
     },
 }
@@ -167,15 +179,13 @@ def _settings_qss(p: dict) -> str:
     root_bg = page
     root_border = p.get("root_border") or p["border"]
     root_top = root_border
-    # 普惠体优先 + 系统回退：生效 family 为普惠体（内置默认/用户所选，fonts/ 多字重已全量注册）时
-    # 用它真实注册的 family 名置栈首；普惠体文件缺失时 Qt 自动落栈内系统回退位，不崩不空白。
-    # bold_stack 同栈，靠 font-weight 700 取 Bold 字重。字重层级：正文/描述/表单标签 400，
-    # 分组标题/导航项/卡片标题 500，对话框大标题/主按钮 700。
-    fam = get_loaded_family()
-    puhuiti_head = f"'{fam}', " if "puhuiti" in fam.lower() else "'Alibaba PuHuiTi 3.0', "
-    font_stack = (puhuiti_head
-                  + "'Segoe UI Variable Text', 'Segoe UI', "
-                  + "'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif")
+    # 与交互原型保持一致：原型浏览器实际命中的是普惠体，所以普惠体置顶；
+    # 系统 UI 字体只做回退。bold_stack 同栈，靠 font-weight 700 取 Bold 字重。
+    # 字重层级：正文/描述/表单标签 400，分组标题/导航项/卡片标题 500，
+    # 对话框大标题/主按钮 700。
+    font_stack = ("'Alibaba PuHuiTi 3.0', "
+                  "'Segoe UI Variable Text', 'Segoe UI', "
+                  "'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif")
     bold_stack = font_stack
     return f"""
     QDialog {{ background: {page}; font-family: {font_stack}; }}
@@ -188,7 +198,7 @@ def _settings_qss(p: dict) -> str:
     QWidget#dialogRoot {{
         background: {root_bg}; border: 1px solid {root_border};
         border-top: 1px solid {root_top};
-        border-radius: {r}px;
+        border-radius: 12px;
     }}
     QWidget#titleBar {{ background: transparent; border: none; }}
     QLabel#dialogTitle {{
@@ -225,6 +235,91 @@ def _settings_qss(p: dict) -> str:
     QPushButton#btnClose:hover {{ background: {p['nav_hover']}; color: {p['text']}; }}
     QPushButton#btnClose:pressed {{ background: {p['btn_pressed']}; color: {p['text']}; }}
     QLabel {{ color: {p['text']}; background: transparent; }}
+    /* 页面头部：标题 + 一句说明（方案 A 的页头语言） */
+    QLabel#pageTitle {{
+        color: {p['text']}; font-size: 12pt;
+        font-family: {bold_stack}; font-weight: 600;
+        background: transparent;
+    }}
+    QLabel#pageDesc {{
+        color: {p['secondary']}; font-size: 9.5pt;
+        background: transparent; padding-top: 2px;
+    }}
+    /* 分组标题：卡片之外的小号灰字，和卡片留白形成层级 */
+    QLabel#groupTitle {{
+        color: {p['secondary']}; font-size: 9pt;
+        font-family: {bold_stack}; font-weight: 500;
+        letter-spacing: 1px; background: transparent;
+        padding: 0px 4px 6px;
+    }}
+    /* 分组卡片：一组的行都住在一个圆角容器里，行间只用发丝线 */
+    QWidget#groupCard {{
+        background: {p['card_bg']}; border: 1px solid {p['card_border']};
+        border-radius: 12px;
+    }}
+    QFrame#groupRowSep {{ background: {p['sep']}; border: none; }}
+    /* 命令参考展开区：和分组卡同一套外观，避免展开后变成裸文字 */
+    QWidget#cmdRefBody {{
+        background: {p['card_bg']}; border: 1px solid {p['card_border']};
+        border-radius: 12px;
+    }}
+    /* 自定义短语词表：表头/行/选中态全部走设置窗调色板 */
+    QWidget#phraseCard {{
+        background: {p['card_bg']}; border: 1px solid {p['card_border']};
+        border-radius: 12px;
+    }}
+    QTableWidget#phraseTable {{
+        background: transparent; border: none; color: {p['text']};
+        selection-background-color: {p['nav_sel']};
+        selection-color: {p['text']};
+    }}
+    QTableWidget#phraseTable::item {{
+        padding: 6px 8px; border-bottom: 1px solid {p['sep']};
+    }}
+    /* 词表单元格编辑器：内边距收窄，行高 34px 内文字完整可见 */
+    QTableWidget#phraseTable QLineEdit {{
+        background: {p['input_bg']}; border: 1px solid {p['focus_border']};
+        border-radius: 6px; padding: 1px 8px; color: {p['text']};
+        selection-background-color: {p['selection_bg']};
+    }}
+    QTableWidget#phraseTable QHeaderView::section {{
+        background: {p['input_bg']}; color: {p['secondary']};
+        border: none; padding: 6px 8px;
+        font-family: {font_stack}; font-size: 9pt; font-weight: 500;
+    }}
+    QTableCornerButton::section {{
+        background: {p['input_bg']}; border: none;
+    }}
+    /* 搜索命中后的短暂高亮：用一档明显但不刺眼的按钮悬停色 */
+    QWidget#settingRow[highlight="true"] {{
+        background: {p['btn_hover']}; border-radius: 8px;
+    }}
+    /* 侧边栏搜索框：比表单输入框更紧凑，和导航项同宽 */
+    QLineEdit#searchEdit {{
+        background: {p['input_bg']}; border: 1px solid {p['input_border']};
+        border-radius: 8px; padding: 5px 10px; color: {p['text']};
+        font-size: 9.5pt; selection-background-color: {p['selection_bg']};
+    }}
+    QLineEdit#searchEdit:hover {{ background: {p['btn_hover']}; }}
+    QLineEdit#searchEdit:focus {{
+        background: {p['input_bg']}; border: 1px solid {p['focus_border']};
+    }}
+    /* 搜索结果：整行左对齐的轻量按钮，页面名跟在标题后 */
+    QPushButton#searchResult {{
+        background: transparent; border: none; border-radius: 8px;
+        color: {p['text']}; text-align: left; padding: 8px 10px;
+        font-size: 10.5pt;
+    }}
+    QPushButton#searchResult:hover {{ background: {p['nav_hover']}; }}
+    QLabel#searchGroup {{
+        color: {p['secondary']}; font-size: 9.5pt;
+        font-family: {bold_stack}; font-weight: 500;
+        background: transparent; padding: 12px 4px 4px;
+    }}
+    QLabel#searchEmpty {{
+        color: {p['secondary']}; font-size: 10pt;
+        background: transparent; padding: 18px 4px;
+    }}
     /* 语音命令页「命令参考」折叠切换：左侧对齐的轻量文字按钮 */
     QPushButton#cmdRefToggle {{
         background: transparent; border: none; text-align: left;
@@ -239,12 +334,12 @@ def _settings_qss(p: dict) -> str:
     QListWidget#navList::item {{
         padding: 9px 12px; margin: 2px 12px; border-radius: 8px;
         color: {p['nav_text']}; background: transparent;
-        font-family: {font_stack}; font-weight: 500; font-size: 12pt;
+        font-family: {font_stack}; font-weight: 500; font-size: 10.5pt;
     }}
     QListWidget#navList::item:hover {{ background: {p['nav_hover']}; color: {p['text']}; }}
     QListWidget#navList::item:selected {{
         background: {p['nav_sel']}; color: {p['text']};
-        font-family: {bold_stack}; font-weight: 700;
+        font-family: {bold_stack}; font-weight: 500;
     }}
     QListWidget#navList::item:selected:hover {{
         background: {p['nav_sel']}; color: {p['text']};
@@ -254,15 +349,15 @@ def _settings_qss(p: dict) -> str:
     QWidget#accordionCard {{
         background: {p.get('card_gradient', p['card_bg'])};
         border: 1px solid {p['card_border']};
-        border-radius: 10px;
+        border-radius: 12px;
     }}
     QLabel#accordionTitle {{
-        color: {p['text']}; font-size: 11pt;
+        color: {p['text']}; font-size: 10.5pt;
         font-family: {bold_stack}; font-weight: 500;
         background: transparent;
     }}
     QLabel#accordionDesc {{
-        color: {p['secondary']}; font-size: 10pt; background: transparent;
+        color: {p['secondary']}; font-size: 9.5pt; background: transparent;
     }}
     QLabel#accordionChevron {{
         color: {p['secondary']}; font-size: 13pt; background: transparent;
@@ -277,7 +372,7 @@ def _settings_qss(p: dict) -> str:
     QWidget#engineOrderGroup {{
         background: {p['card_bg']};
         border: 1px solid {p['card_border']};
-        border-radius: 10px;
+        border-radius: 12px;
     }}
     QWidget#eoVendorHeader, QWidget#eoVendorBlock, QWidget#eoModels {{
         background: transparent;
@@ -300,47 +395,28 @@ def _settings_qss(p: dict) -> str:
         padding: 0px 5px;
     }}
     QLabel#eoBadge:disabled {{ color: {p['secondary']}; }}
-    /* inset 发丝分隔线：左缩进 36 对齐文本、右到边（iOS 标志性细节）。
+    /* inset 发丝分隔线：左缩进 48 对齐文本、右到边（iOS 标志性细节）。
        用 root_border（半透明 0.10/0.14）而非 sep（0.06/0.07）——
        组内分隔线需要比"点缀发丝"明显一档才读得出列表结构 */
     QFrame#eoSep {{
-        background: {p['root_border']}; border: none; margin-left: 36px;
+        background: {p['root_border']}; border: none; margin-left: 48px;
+    }}
+    /* 行首序号：拖动重排后由代码刷新，弱灰小字不与厂商名抢层级 */
+    QLabel#eoIndex {{
+        color: {p['secondary']}; font-size: 8.5pt; background: transparent;
     }}
     /* 模型行名称：略小于厂商主标题，层级靠缩进+字号而非底色面板 */
     QLabel#eoModelName {{
         color: {p['text']}; font-size: 10pt; background: transparent;
     }}
     QLabel#eoModelName:disabled {{ color: {p['secondary']}; }}
-    /* 排序步进器：iOS UIStepper 式实底胶囊分段——填充底+细描边把
-       两个方向装成一个控件，箭头用正文色（显眼、可点感强）；
-       悬停半区 btn_hover 加深、按压 selection_bg 强反馈。
-       首/尾方向仅禁点击、无差异配色（QSS color 对 disabled 同样生效，
-       不写 :disabled 规则即两端与其余箭头同色） */
-    QFrame#eoStepper {{
-        background: {p['input_bg']};
-        border: 1px solid {p['input_border']};
-        border-radius: 7px;
-    }}
-    QFrame#eoStepperSep {{
-        background: {p['root_border']}; border: none;
-    }}
-    QPushButton#eoStepBtn {{
-        background: transparent; color: {p['text']};
-        border: none; border-radius: 5px; font-size: 9pt; padding: 0;
-    }}
-    QPushButton#eoStepBtn:hover {{
-        background: {p['btn_hover']};
-    }}
-    QPushButton#eoStepBtn:pressed {{
-        background: {p['selection_bg']};
-    }}
     /* 组下脚注：iOS 设置 section footer 的灰色小字 */
     QLabel#eoFooter {{
         color: {p['secondary']}; font-size: 8.5pt; background: transparent;
     }}
     /* 扁平分区标题（参考图「外观」式纯文字标题，无卡片） */
     QLabel#sectionTitle {{
-        color: {p['text']}; font-size: 11.5pt;
+        color: {p['text']}; font-size: 10.5pt;
         font-family: {bold_stack}; font-weight: 500;
         background: transparent; padding: 2px 2px 8px;
     }}
@@ -350,22 +426,22 @@ def _settings_qss(p: dict) -> str:
     QFrame#groupSep {{ background: {p['group_sep']}; border: none; }}
     /* 分区内小节标题（大模型版/标准版、豆包 1.0/2.0 等） */
     QLabel#cardSection {{
-        color: {p['secondary']}; font-size: 9.5pt;
+        color: {p['secondary']}; font-size: 9pt;
         font-family: {bold_stack}; font-weight: 500;
         letter-spacing: 1px; background: transparent; margin-top: 12px;
     }}
     QLabel#fieldSection {{
-        color: {p['text']}; font-size: 11pt;
+        color: {p['text']}; font-size: 10.5pt;
         font-family: {bold_stack}; font-weight: 500;
         margin-top: 2px; margin-bottom: 2px; background: transparent;
     }}
     /* 识别引擎卡片：关闭显示时厂商名置灰 */
     QLabel#fieldSection:disabled {{ color: {p['secondary']}; }}
-    /* 字段标签与行内说明：层级靠字号（11pt/10pt）区分；标签保持 400——
-       普惠体命中 55 Regular 正文观感，系统回退位雅黑无 600 面也不会跳粗 */
-    QLabel#fieldLabel {{ color: {p['text']}; font-size: 11pt; font-weight: 400; background: transparent; }}
+    /* 字段标签与行内说明：层级靠字号（10.5pt/9.5pt）区分；标签保持 400——
+       系统雅黑与普惠体都没有 600 面时也不会跳粗 */
+    QLabel#fieldLabel {{ color: {p['text']}; font-size: 10.5pt; font-weight: 400; background: transparent; }}
     QLabel#fieldDesc {{
-        color: {p.get('desc', p['secondary'])}; font-size: 10pt; background: transparent;
+        color: {p.get('desc', p['secondary'])}; font-size: 9.5pt; background: transparent;
     }}
     /* 主题分段卡片（参考图「外观」通栏大卡）：选中亮描边 */
     QToolButton#themeCard {{
@@ -385,6 +461,22 @@ def _settings_qss(p: dict) -> str:
         border-radius: {ri}px; padding: 6px 12px; color: {p['text']};
         selection-background-color: {p['selection_bg']};
     }}
+    /* 热键显示用等宽字体（与原型一致）：组合键字符宽度稳定，不随字号跳动 */
+    QLineEdit#hotkeyEdit {{
+        font-family: "Cascadia Mono", "Consolas", "JetBrains Mono", monospace;
+        font-size: 9.5pt;
+    }}
+    /* 滑块右侧数值：原型是纯文本，这里保留可编辑但去掉常态边框 */
+    QSpinBox#sliderSpin {{
+        background: transparent; border: 1px solid transparent;
+        border-radius: 6px; padding: 2px 4px; color: {p['text']};
+        font-family: "Cascadia Mono", "Consolas", "JetBrains Mono", monospace;
+        font-size: 9.5pt;
+    }}
+    QSpinBox#sliderSpin:hover {{ background: {p['btn_hover']}; }}
+    QSpinBox#sliderSpin:focus {{
+        background: {p['input_bg']}; border: 1px solid {p['focus_border']};
+    }}
     QLineEdit:hover, QSpinBox:hover, QComboBox:hover {{ background: {p['btn_hover']}; }}
     QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{
         background: {p['input_bg']}; border: 1px solid {p['focus_border']};
@@ -398,16 +490,13 @@ def _settings_qss(p: dict) -> str:
         selection-background-color: {p['selection_bg']};
         font-size: 10.5pt;
     }}
-    QTextEdit:hover {{ background: {p['btn_hover']}; }}
+    /* 多行文本框：悬停不换背景（大面积底色跳变很扎眼），只微亮边框；
+       聚焦边框再用 focus_border 强化层级 */
+    QTextEdit:hover {{ border: 1px solid {p['btn_hover']}; }}
     QTextEdit:focus {{ background: {p['input_bg']}; border: 1px solid {p['focus_border']}; }}
     QTextEdit:disabled {{ color: {p['secondary']}; border-color: {p['border']}; }}
     QTextEdit::placeholder {{ color: {p['secondary']}; }}
     QComboBox::drop-down {{ border: none; width: 24px; }}
-    QComboBox::down-arrow {{
-        width: 0; height: 0; border-left: 4px solid transparent;
-        border-right: 4px solid transparent; border-top: 5px solid {p['secondary']};
-        margin-right: 8px;
-    }}
     QComboBox QAbstractItemView {{
         background: {p['combo_bg']}; color: {p['text']};
         border: 1px solid {p['border']}; border-radius: {ri}px;
@@ -513,6 +602,35 @@ def _settings_qss(p: dict) -> str:
         background: {p['save_hover']}; color: {p['save_hover_text']};
     }}
     QPushButton#workshopPrimary:pressed {{ background: {p['btn_pressed']}; }}
+    /* Steam 页连接状态条：绿=客户端已连接 / 琥珀=未连接 */
+    QWidget#steamStatusBanner {{
+        background: {p['banner_ok_bg']}; border: none; border-radius: 8px;
+    }}
+    QWidget#steamStatusBanner[state="warn"] {{ background: {p['banner_warn_bg']}; }}
+    QWidget#steamStatusDot {{
+        background: {p['banner_ok_dot']}; border: none; border-radius: 3px;
+    }}
+    QWidget#steamStatusBanner[state="warn"] QWidget#steamStatusDot {{
+        background: {p['banner_warn_dot']};
+    }}
+    QLabel#steamStatusText {{
+        color: {p['banner_ok_text']}; background: transparent;
+        font-size: 9.5pt; font-weight: 500;
+    }}
+    QWidget#steamStatusBanner[state="warn"] QLabel#steamStatusText {{
+        color: {p['banner_warn_text']};
+    }}
+    /* 蓝色主按钮：仅用于「安装扩展包」这类一次性行动入口，其余按钮保持中性 */
+    QPushButton#btnAccent {{
+        background: {p['admin_blue']}; color: {p['admin_text']}; border: none;
+        border-radius: 14px; padding: 6px 15px; font-size: 9.5pt;
+        font-weight: 600;
+    }}
+    QPushButton#btnAccent:hover {{ background: {p['admin_blue_hover']}; }}
+    QPushButton#btnAccent:pressed {{ background: {p['admin_blue_down']}; }}
+    QPushButton#btnAccent:disabled {{
+        background: {p['btn_bg']}; color: {p['secondary']};
+    }}
     """
 
 
@@ -523,11 +641,9 @@ def _welcome_qss(p: dict) -> str:
     privacyLink / btnGhost+btnPrimary（tileKey 是热键 keycap）。
     """
     r = p["radius"]
-    fam = get_loaded_family()
-    puhuiti_head = f"'{fam}', " if "puhuiti" in fam.lower() else "'Alibaba PuHuiTi 3.0', "
-    font_stack = (puhuiti_head
-                  + "'Segoe UI Variable Text', 'Segoe UI', "
-                  + "'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif")
+    font_stack = ("'Alibaba PuHuiTi 3.0', "
+                  "'Segoe UI Variable Text', 'Segoe UI', "
+                  "'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif")
     return f"""
     QDialog {{ background: {p['page']}; font-family: {font_stack}; }}
     /* 无边框圆角根面板：不透明实底（透明表面禁 ClearType 致文字发糊），
@@ -592,9 +708,12 @@ def _welcome_qss(p: dict) -> str:
 def _error_qss(p: dict) -> str:
     """启动期致命错误弹窗 QSS：与设置弹窗同源的无边框圆角卡片。
 
-    主按钮复用设置界面的 save_* 主按钮色族（中性灰强调），保持全应用
-    交互强调一致；正文左缩进 52px 与标题对齐（图标 38 + 间距 14）。
+    字体栈、标题层级（12pt/600）、正文色与主按钮几何全部对齐设置界面；
+    主按钮复用 save_* 色族（中性灰强调），保持全应用交互强调一致。
     """
+    font_stack = ("'Alibaba PuHuiTi 3.0', "
+                  "'Segoe UI Variable Text', 'Segoe UI', "
+                  "'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif")
     return f"""
     QWidget#errDlg {{ background: transparent; }}
     QWidget#errPanel {{
@@ -602,23 +721,68 @@ def _error_qss(p: dict) -> str:
         border: 1px solid {p['border']};
         border-radius: 12px;
     }}
+    QDialog#errDlg, QLabel#errTitle, QLabel#errBody, QLabel#errHint,
+    QLabel#errFieldLabel, QLabel#errHintLine, QLabel#errInline,
+    QPushButton#errOk, QPushButton#errGhost {{
+        font-family: {font_stack};
+    }}
     QLabel#errTitle {{
         color: {p['text']};
-        font-size: 13pt;
+        font-size: 12pt;
         font-weight: 600;
     }}
     QLabel#errBody {{
-        color: {p['secondary']};
+        color: {p['text']};
         font-size: 10pt;
-        padding: 2px 0 0 52px;
     }}
+    /* 操作提示块：浅色小卡，与设置界面的说明块同一层级语言 */
+    QWidget#errHintCard {{
+        background: {p['input_bg']};
+        border: 1px solid {p['border']};
+        border-radius: 8px;
+    }}
+    QLabel#errHint {{
+        color: {p['desc']};
+        font-size: 9.5pt;
+        background: transparent;
+    }}
+    /* 热键冲突弹窗：直接录制新组合的字段区 */
+    QLabel#errFieldLabel {{
+        color: {p['text']};
+        font-size: 10.5pt;
+        font-weight: 500;
+    }}
+    QLineEdit#hotkeyEdit {{
+        background: {p['input_bg']}; border: 1px solid {p['input_border']};
+        border-radius: 8px; padding: 8px 12px; color: {p['text']};
+        selection-background-color: {p['selection_bg']};
+        selection-color: {p['text']};
+        font-family: "Cascadia Mono", "Consolas", "JetBrains Mono", monospace;
+        font-size: 10pt;
+    }}
+    QLineEdit#hotkeyEdit:focus {{ border: 1px solid {p['focus_border']}; }}
+    QLabel#errHintLine {{
+        color: {p['desc']};
+        font-size: 9pt;
+    }}
+    QLabel#errInline {{
+        color: {p['danger']};
+        font-size: 9.5pt;
+    }}
+    QPushButton#errGhost {{
+        background: {p['btn_bg']}; color: {p['text']}; border: none;
+        border-radius: 8px; padding: 7px 18px; font-size: 10pt;
+    }}
+    QPushButton#errGhost:hover {{ background: {p['btn_hover']}; }}
+    QPushButton#errGhost:pressed {{ background: {p['btn_pressed']}; }}
     QPushButton#errOk {{
         background: {p['save_bg']};
         color: {p['save_text']};
         border: none;
-        border-radius: 6px;
+        border-radius: 8px;
+        padding: 7px 22px;
         font-size: 10pt;
-        font-weight: 600;
+        font-weight: 700;
     }}
     QPushButton#errOk:hover {{ background: {p['save_hover']}; color: {p['save_hover_text']}; }}
     QPushButton#errOk:pressed {{ background: {p['btn_pressed']}; }}

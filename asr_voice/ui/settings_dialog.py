@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal, QEvent, QTimer
+from PySide6.QtCore import QPoint, QRectF, QSize, Qt, Signal, QEvent, QTimer
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -57,7 +57,11 @@ from PySide6.QtWidgets import (
 from .. import __version__
 from ..hotkey.hold import hold_flag_enabled
 from ..i18n import t
-from ..steam_integration import external_services_allowed, is_steam_build
+from ..steam_integration import (
+    CLOUD_CONFIG_NAME,
+    external_services_allowed,
+    is_steam_build,
+)
 from .doc_viewer import doc_path
 from .icons import app_icon, uac_shield_icon
 from .presets import (
@@ -77,8 +81,10 @@ from .settings_widgets import (
     EngineOrderRow,
     FlatSlider,
     HotkeyCaptureEdit,
+    NavItemDelegate,
     SliderSpinBox,
     ThemeCardGroup,
+    ThemedComboBox,
     ToggleSwitch,
 )
 
@@ -255,7 +261,7 @@ def _nav_pixmap(kind: str, color: str) -> QPixmap:
     """画一个 18×18 线稿图标（导航用）。
 
     kind：grid=四方块 / key=钥匙 / sliders=滑杆 / sparkle=四角星 /
-    mic=麦克风 / steam=官方标志位图 / info=圆点 i。
+    mic=麦克风 / terminal=命令气泡 / steam=官方标志位图 / info=圆点 i。
     """
     pm = QPixmap(18, 18)
     pm.fill(Qt.GlobalColor.transparent)
@@ -300,6 +306,12 @@ def _nav_pixmap(kind: str, color: str) -> QPixmap:
         p.drawRoundedRect(QRectF(8, 8.5, 8.5, 7), 3, 3)
         p.drawLine(14.5, 15.5, 15.5, 17.5)
         p.drawLine(15.5, 17.5, 12, 15.5)
+    elif kind == "terminal":
+        # 语音命令：对话气泡内一个 > 提示符，与「关于」的 info 圆圈区分
+        p.drawRoundedRect(QRectF(1.5, 2, 15, 12.5), 3.5, 3.5)
+        p.drawLine(4.5, 6, 7.5, 8.25)
+        p.drawLine(7.5, 8.25, 4.5, 10.5)
+        p.drawLine(9.5, 11, 13, 11)
     elif kind == "steam":
         # Steam 页：官方标志（不再手绘，见 _steam_symbol_pixmap 的来源说明）。
         symbol = _steam_symbol_pixmap(color)
@@ -318,11 +330,11 @@ def _nav_pixmap(kind: str, color: str) -> QPixmap:
     return pm
 
 
-def _nav_icon(kind: str) -> QIcon:
-    """导航项图标：常态灰、选中亮（QListWidget 选中时用 Selected 模式）。"""
+def _nav_icon(kind: str, normal: str, selected: str) -> QIcon:
+    """导航项图标：常态 nav_text、选中 text（随设置窗 palette 走，浅色下不再发白）。"""
     ic = QIcon()
-    ic.addPixmap(_nav_pixmap(kind, "#9a9a9e"), QIcon.Mode.Normal)
-    ic.addPixmap(_nav_pixmap(kind, "#f0f0f0"), QIcon.Mode.Selected)
+    ic.addPixmap(_nav_pixmap(kind, normal), QIcon.Mode.Normal)
+    ic.addPixmap(_nav_pixmap(kind, selected), QIcon.Mode.Selected)
     return ic
 
 
@@ -427,6 +439,7 @@ _NAV_KINDS = {
     "set.page.ai_fix": "sparkle",
     "set.page.recording": "mic",
     "set.page.voice_mode": "chat",
+    "set.page.commands": "terminal",
     "set.page.steam": "steam",
     "set.page.about": "info",
 }
@@ -880,13 +893,6 @@ _FIELDS = [
     ("hotkey", "hold_threshold_ms", "set.hotkey.hold_threshold_ms", "slider", (100, 3000, 50, "set.unit.ms"),
      "set.hotkey.hold_threshold_ms.desc",
      "set.hotkey.hold_threshold_ms.tip"),
-    ("ui", "auto_hide_seconds", "set.ui.auto_hide_seconds", "slider", (0, 3600, 30, "set.unit.sec"),
-     "set.ui.auto_hide_seconds.desc", None),
-    ("ui", "bar_opacity", "set.ui.bar_opacity", "slider", (0, 100, 5, "%"),
-     "set.ui.bar_opacity.desc", None),
-    ("ui", "settings_style", "set.ui.settings_style", "theme_cards", None,
-     "set.ui.settings_style.desc",
-     "set.ui.settings_style.tip"),
     # 界面语言：值为 ""（跟随系统）/ zh / en，语言无关故持久化安全。
     # combo 的 extra 用 dict 形态（值→i18n 键），避免字段表里写文案。
     ("ui", "language", "set.ui.language", "combo",
@@ -894,6 +900,13 @@ _FIELDS = [
       "zh": "set.combo.ui.language.zh",
       "en": "set.combo.ui.language.en"},
      "set.ui.language.desc", "set.ui.language.tip"),
+    ("ui", "auto_hide_seconds", "set.ui.auto_hide_seconds", "slider", (0, 3600, 30, "set.unit.sec"),
+     "set.ui.auto_hide_seconds.desc", None),
+    ("ui", "bar_opacity", "set.ui.bar_opacity", "slider", (0, 100, 5, "%"),
+     "set.ui.bar_opacity.desc", None),
+    ("ui", "settings_style", "set.ui.settings_style", "theme_cards", None,
+     "set.ui.settings_style.desc",
+     "set.ui.settings_style.tip"),
     # ---- 语音对话（豆包 S2S）：接入 ----
     ("dialog", "enable", "set.dialog.enable", "bool", None,
      "set.dialog.enable.desc",
@@ -1130,6 +1143,13 @@ _ADVANCED_FIELDS = [
     ("recording", "max_session_seconds", "set.recording.max_session_seconds", "slider", (0, 3600, 10, "set.unit.sec"),
      "set.recording.max_session_seconds.desc",
      "set.recording.max_session_seconds.tip"),
+    ("recording", "cue_sound", "set.recording.cue_sound", "bool", None,
+     "set.recording.cue_sound.desc", "set.recording.cue_sound.tip"),
+    ("recording", "cue_style", "set.recording.cue_style", "combo",
+     {"bubble": "set.combo.recording.cue_style.bubble",
+      "cork": "set.combo.recording.cue_style.cork",
+      "click": "set.combo.recording.cue_style.click"},
+     "set.recording.cue_style.desc", "set.recording.cue_style.tip"),
     ("recording", "pause_background_audio", "set.recording.pause_background_audio", "bool", None,
      "set.recording.pause_background_audio.desc",
      "set.recording.pause_background_audio.tip"),
@@ -1139,13 +1159,6 @@ _ADVANCED_FIELDS = [
     ("recording", "mute_only_game_mode", "set.recording.mute_only_game_mode", "bool", None,
      "set.recording.mute_only_game_mode.desc",
      "set.recording.mute_only_game_mode.tip"),
-    ("recording", "cue_sound", "set.recording.cue_sound", "bool", None,
-     "set.recording.cue_sound.desc", "set.recording.cue_sound.tip"),
-    ("recording", "cue_style", "set.recording.cue_style", "combo",
-     {"bubble": "set.combo.recording.cue_style.bubble",
-      "cork": "set.combo.recording.cue_style.cork",
-      "click": "set.combo.recording.cue_style.click"},
-     "set.recording.cue_style.desc", "set.recording.cue_style.tip"),
     ("vad", "energy_threshold", "set.vad.energy_threshold", "slider", (50, 5000, 10),
      "set.vad.energy_threshold.desc",
      "set.vad.energy_threshold.tip"),
@@ -1169,6 +1182,12 @@ _ADVANCED_FIELDS = [
     ("llm", "model", "set.llm.model", "str", None,
      "set.llm.model.desc",
      "set.llm.model.tip"),
+    ("llm", "wait_for_correction", "set.llm.wait_for_correction", "bool", None,
+     "set.llm.wait_for_correction.desc",
+     "set.llm.wait_for_correction.tip"),
+    ("llm", "history_context", "set.llm.history_context", "bool", None,
+     "set.llm.history_context.desc",
+     "set.llm.history_context.tip"),
     ("llm", "timeout_ms", "set.llm.timeout_ms", "slider", (1000, 10000, 500, "set.unit.ms"),
      "set.llm.timeout_ms.desc", None),
     ("llm", "disable_thinking", "set.llm.disable_thinking", "bool", None,
@@ -1180,12 +1199,6 @@ _ADVANCED_FIELDS = [
     ("llm", "batch_idle_ms", "set.llm.batch_idle_ms", "slider", (500, 10000, 500, "set.unit.ms"),
      "set.llm.batch_idle_ms.desc",
      "set.llm.batch_idle_ms.tip"),
-    ("llm", "wait_for_correction", "set.llm.wait_for_correction", "bool", None,
-     "set.llm.wait_for_correction.desc",
-     "set.llm.wait_for_correction.tip"),
-    ("llm", "history_context", "set.llm.history_context", "bool", None,
-     "set.llm.history_context.desc",
-     "set.llm.history_context.tip"),
     ("llm", "prompt", "set.llm.prompt", "str", None,
      "set.llm.prompt.desc",
      "set.llm.prompt.tip"),
@@ -1265,7 +1278,7 @@ def _list_output_devices() -> list[str]:
     return names
 
 
-class DeviceCombo(QComboBox):
+class DeviceCombo(ThemedComboBox):
     """设备下拉框：每次展开下拉时重新枚举设备列表（输入/输出共用）。
 
     设置窗口打开期间插入/拔出设备（USB 声卡、蓝牙耳机等），
@@ -1334,9 +1347,13 @@ class SettingsDialog(QDialog):
     # 「永久为管理员启动」已确认 UAC：提权实例已接管，app 收到后退出当前实例
     restart_requested = Signal()
 
-    def __init__(self, cfg, parent: Optional[QWidget] = None):
+    def __init__(self, cfg, parent: Optional[QWidget] = None,
+                 steam_sync=None):
         super().__init__(parent)
         self.cfg = cfg
+        # 手动云存档同步回调：由 VoiceApp 注入（返回 (ok, saved_at_iso|error)）；
+        # 直接构造对话框的场景（测试/诊断）为 None，按钮显示不可用
+        self._steam_sync = steam_sync
         self.setWindowTitle(t("set.window_title"))
         self.setMinimumWidth(720)
         self.setMinimumHeight(520)
@@ -1349,8 +1366,9 @@ class SettingsDialog(QDialog):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
 
         # 字体：设置界面固定字体栈（不跟随用户自定义字体）——用户字体通常只有单字重，
-        # 加粗/层次出不来；栈首普惠体（多字重已随 fonts/ 全量注册），文件缺失时
-        # Qt 自动落栈内系统回退位，不崩不空白。基础字号 10.5pt。
+        # 加粗/层次出不来。与交互原型保持一致：原型浏览器实际命中的就是普惠体
+        # （fonts/ 全量字重已注册），所以普惠体置顶，系统 UI 字体只做回退。
+        # 基础字号 10.5pt。
         font = QFont()
         font.setFamilies(["Alibaba PuHuiTi 3.0",
                           "Segoe UI Variable Text", "Segoe UI",
@@ -1364,6 +1382,9 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(_settings_qss(self._palette))
 
         self._widgets: dict[tuple[str, Optional[str]], QWidget] = {}
+        # 搜索索引 / 页面归属：_build_page 成型后扫描页面填入。
+        self._search_items: list[dict] = []
+        self._page_indexes: dict[str, int] = {}
 
         def pick(section: str, keys: tuple, src=None) -> list:
             fields = _FIELDS if src is None else src
@@ -1433,19 +1454,44 @@ class SettingsDialog(QDialog):
         content.setContentsMargins(12, 2, 16, 14)
         content.setSpacing(10)
 
+        side = QWidget()
+        side.setFixedWidth(196)
+        side_lay = QVBoxLayout(side)
+        side_lay.setContentsMargins(0, 0, 0, 0)
+        side_lay.setSpacing(8)
+
+        search_wrap = QWidget()
+        sw = QHBoxLayout(search_wrap)
+        sw.setContentsMargins(12, 0, 12, 0)
+        self._search_edit = QLineEdit()
+        self._search_edit.setObjectName("searchEdit")
+        self._search_edit.setPlaceholderText(t("set.search.placeholder"))
+        sw.addWidget(self._search_edit)
+        side_lay.addWidget(search_wrap)
+
         nav = QListWidget()
         nav.setObjectName("navList")
-        nav.setFixedWidth(196)
         nav.setSpacing(1)
-        nav.setIconSize(QSize(20, 20))
+        nav.setIconSize(QSize(18, 18))
         nav.setFocusPolicy(Qt.NoFocus)
+        self._nav_delegate = NavItemDelegate(self._palette["accent"])
+        nav.setItemDelegate(self._nav_delegate)
+        side_lay.addWidget(nav, 1)
+        self._nav = nav
+
         stack = QStackedWidget()
+        self._stack = stack
+        self._last_page_index = 0
 
         def add_page(page_key: str, page: QWidget) -> None:
             # page_key 是 i18n 键（_NAV_KINDS 同口径）；显示名在此处才 t()
             # 因为此刻语言已由 main 的 apply_configured_language 定好。
-            item = QListWidgetItem(_nav_icon(_NAV_KINDS.get(page_key, "info")),
-                                   t(page_key))
+            self._page_indexes[page_key] = stack.count()
+            item = QListWidgetItem(
+                _nav_icon(_NAV_KINDS.get(page_key, "info"),
+                          self._palette.get("nav_text", "#9a9a9e"),
+                          self._palette.get("text", "#f0f0f0")),
+                t(page_key))
             nav.addItem(item)
             # _build_page 已内置滚动区，不再外包 QScrollArea
             stack.addWidget(page)
@@ -1467,16 +1513,17 @@ class SettingsDialog(QDialog):
             ("set.group.hotkey", pick("hotkey", ("toggle", "hold_to_talk",
                                      "hold_threshold_ms"))
              + pick("hotkey", ("hold_poll_ms",), _ADVANCED_FIELDS)),
-            ("set.group.output", pick("injection", ("paste_delay_ms",), _ADVANCED_FIELDS)),
             ("set.group.interface", pick("ui", ("language", "auto_hide_seconds",
                                                 "bar_opacity", "settings_style"))),
+            ("set.group.output", pick("injection", ("paste_delay_ms",), _ADVANCED_FIELDS)),
         ]
         if _ext:
             general_groups.append(self._build_engine_order_editor())
         # Steam 相关项不再挂在「通用设置」页：它们与通用配置是两码事
         # （云存档 / 显卡加速扩展包 / 创意工坊），挤在同一页会让"通用"越滚越长。
         # 独立成「Steam」页，见下方 add_page("set.page.steam", ...)。
-        add_page("set.page.general", self._build_page(general_groups))
+        add_page("set.page.general",
+                 self._build_page(general_groups, page_key="set.page.general"))
 
         # 引擎密钥：各厂商一张可展开卡（复刻参考图「插件配置」卡片列表）；
         # 显示/隐藏与排序开关已移至"常规 -> 引擎排序"。当前引擎的卡片默认展开。
@@ -1518,7 +1565,8 @@ class SettingsDialog(QDialog):
                 t("set.group.llm_common"), t("set.llm_common.desc"),
                 pick("llm", ("base_url", "api_key", "model"), _ADVANCED_FIELDS)
                 + [self._build_llm_test_row()]))
-            add_page("set.page.keys", self._build_page(key_cards))
+            add_page("set.page.keys",
+                     self._build_page(key_cards, page_key="set.page.keys"))
 
         # 引擎参数：各厂商识别效果参数，合并到一页折叠卡列表展示。
         # 卡片顺序与名称跟随 ui.engine_order 与统一短名（与引擎密钥页/右键菜单一致）；
@@ -1566,7 +1614,8 @@ class SettingsDialog(QDialog):
                 t(self._ENGINE_PROVIDER_TITLES[p]),
                 t(self._engine_param_desc_key(p)),
                 params_by_provider[p], expanded=(p == current_engine)))
-        add_page("set.page.params", self._build_page(param_cards))
+        add_page("set.page.params",
+                 self._build_page(param_cards, page_key="set.page.params"))
 
         # 页名已是"AI 修正"，组内不再重复"文本修正"标题（多余）；
         # 主开关也可在右键菜单「注入逻辑」处快速启停，这里统一管理修正行为参数。
@@ -1574,12 +1623,15 @@ class SettingsDialog(QDialog):
         # 外部服务不可用时 AI 修正页不出现
         if _ext:
             add_page("set.page.ai_fix", self._build_page([
-                ("", pick("llm", ("enable", "wait_for_correction", "history_context",
-                                  "timeout_ms", "disable_thinking",
-                                  "batch_sentences", "batch_idle_ms",
-                                  "prompt"),
-                          _ADVANCED_FIELDS)),
-            ]))
+                ("set.group.ai_behavior",
+                 pick("llm", ("enable", "wait_for_correction", "history_context",
+                              "disable_thinking"), _ADVANCED_FIELDS)),
+                ("set.group.ai_batch",
+                 pick("llm", ("timeout_ms", "batch_sentences", "batch_idle_ms"),
+                      _ADVANCED_FIELDS)),
+                ("set.group.ai_prompt",
+                 pick("llm", ("prompt",), _ADVANCED_FIELDS)),
+            ], page_key="set.page.ai_fix"))
 
         phrase_editor = self._build_phrase_editor()
         # 语音命令页：外部服务不可用时去掉「帮我」AI 前缀相关字段（走外部 LLM 服务）
@@ -1588,12 +1640,30 @@ class SettingsDialog(QDialog):
                       "ai_prompt_template", "phrases_enable", "standby_seconds")
                      if _ext else
                      ("prefix", "hotkey", "phrases_enable", "standby_seconds"))
-        add_page("set.page.commands", self._build_page([
+        # 按原型拆组：触发与命令 / 行为 / 提示词模板（无标题独立卡）。
+        _cmd_groups = []
+        for _title, _keys in (
             ("set.group.commands",
-             pick("commands", _cmd_keys, _ADVANCED_FIELDS)),
-            self._build_command_reference(),
-            phrase_editor,
-        ]))
+             tuple(k for k in ("prefix", "hotkey", "ai_prefix", "ai_thinking")
+                   if k in _cmd_keys)),
+            ("set.group.command_behavior",
+             tuple(k for k in ("phrases_enable", "standby_seconds")
+                   if k in _cmd_keys)),
+            # _prompt 只是流程标记（非 i18n 键）：提示词模板不套分组标题，
+            # 字段行自身的标签+说明已经完整，再套一层会同文案渲染两遍
+            ("_prompt",
+             tuple(k for k in ("ai_prompt_template",) if k in _cmd_keys)),
+        ):
+            _fields = pick("commands", _keys, _ADVANCED_FIELDS)
+            if not _fields:
+                continue
+            if _title == "_prompt":
+                _cmd_groups.append(("", _fields))
+            else:
+                _cmd_groups.append((_title, _fields))
+        add_page("set.page.commands", self._build_page(
+            _cmd_groups + [self._build_command_reference(), phrase_editor],
+            page_key="set.page.commands"))
         # 自定义短语词表：仅开启「自定义短语」开关后显示（_widgets 在
         # _build_page/_make_row 期间填充，绑定须在该页构建之后）
         phrase_sw = self._widgets.get(("commands", "phrases_enable"))
@@ -1604,14 +1674,16 @@ class SettingsDialog(QDialog):
         add_page("set.page.recording", self._build_page([
             ("set.group.recording",
              pick("audio", ("warmup_capture", "input_device"), _ADVANCED_FIELDS) +
-             pick("recording", ("auto_stop_seconds", "max_session_seconds",
-                                "pause_background_audio", "mute_background_audio",
-                                "mute_only_game_mode", "cue_sound", "cue_style"),
+             pick("recording", ("auto_stop_seconds", "max_session_seconds"),
                   _ADVANCED_FIELDS)),
             ("set.group.vad",
              pick("vad", ("energy_threshold", "silence_duration_ms",
                           "min_speech_ms"), _ADVANCED_FIELDS)),
-        ]))
+            ("set.group.sound_feedback",
+             pick("recording", ("cue_sound", "cue_style",
+                                "pause_background_audio", "mute_background_audio",
+                                "mute_only_game_mode"), _ADVANCED_FIELDS)),
+        ], page_key="set.page.recording"))
 
         # 语音模式页：接入（三家共用）→ provider 专属字段区（豆包 / Qwen /
         # Hermes 互斥显隐）→ 收音与播报（三家共用）。provider 下拉切换只显当前
@@ -1623,13 +1695,13 @@ class SettingsDialog(QDialog):
             add_page("set.page.voice_mode", self._build_page([
                 ("set.group.dialog_in",
                  pick("dialog", ("enable",)) +
-                 pick("hotkey", ("dialog",)) +
                  pick("dialog", ("provider",)) +
+                 pick("hotkey", ("dialog",)) +
                  [self._build_dialog_test_row()]),
                 provider_area,
                 ("set.group.dialog_io",
                  pick("dialog", ("output_device", "half_duplex", "auto_reconnect"))),
-            ]))
+            ], page_key="set.page.voice_mode"))
             # provider 显隐联动：初始按配置值设定，之后随下拉切换（_widgets 已在
             # _build_dialog_provider_area/_build_page 期间填充，绑定须在构建之后）
             self._dialog_doubao_group = doubao_grp
@@ -1645,19 +1717,27 @@ class SettingsDialog(QDialog):
         # 无条件建页会让源码构建多出一个空白「Steam」标签。
         if is_steam_build():
             add_page("set.page.steam",
-                     self._build_page(self._steam_page_groups(pick)))
+                     self._build_page(self._steam_page_groups(pick),
+                                      page_key="set.page.steam"))
 
         # 关于：头部信息卡（图标+名称+版本）+ 可展开卡列表（同引擎密钥页样式）
         add_page("set.page.about", self._build_page(
-            [self._build_about_header()] + self._build_about_cards()))
+            [self._build_about_header()] + self._build_about_cards(),
+            page_key="set.page.about"))
 
-        nav.currentRowChanged.connect(stack.setCurrentIndex)
+        # 搜索页：不在左侧导航里，只在输入关键词时临时占位
+        self._search_page_index = stack.count()
+        stack.addWidget(self._build_search_page())
+        # 搜索页就绪后再接信号：避免构造期 textChanged 抢先访问结果容器
+        self._search_edit.textChanged.connect(self._run_search)
+
+        nav.currentRowChanged.connect(self._on_nav_changed)
         nav.setCurrentRow(0)
 
         # 参考图无导航分隔线：左侧导航与内容同底色，仅选中胶囊区分
         body_row = QHBoxLayout()
         body_row.setSpacing(8)
-        body_row.addWidget(nav)
+        body_row.addWidget(side)
         body_row.addWidget(stack, 1)
         content.addLayout(body_row, 1)
 
@@ -1694,6 +1774,8 @@ class SettingsDialog(QDialog):
         outer.installEventFilter(self)
         title_bar.setMouseTracking(True)
         title_bar.installEventFilter(self)
+        # 搜索框 Esc 清空：不依赖原生清空按钮（深色主题下图标对比不可控）
+        self._search_edit.installEventFilter(self)
 
     def eventFilter(self, obj, ev) -> bool:
         """边缘拉伸过滤器：悬停显示方向箭头，左键按住走系统级缩放。
@@ -1702,6 +1784,11 @@ class SettingsDialog(QDialog):
         而非 t：Python 变量判定是**函数级**的，一旦出现 `t = ...` 即遮蔽本模块的 i18n.t()。
         """
         ev_type = ev.type()
+        if obj is self._search_edit:
+            if ev_type == QEvent.Type.KeyPress and ev.key() == Qt.Key.Key_Escape:
+                self._search_edit.clear()
+                return True
+            return super().eventFilter(obj, ev)
         if ev_type == QEvent.Type.MouseMove:
             edge = self._edge_at(ev.globalPosition().toPoint())
             if edge is not None:
@@ -1756,36 +1843,69 @@ class SettingsDialog(QDialog):
             return Qt.CursorShape.SizeFDiagCursor
         return Qt.CursorShape.SizeBDiagCursor
 
-    def _build_page(self, groups: list, stretch: bool = True) -> QWidget:
-        """构建设置页：无页头，扁平分区用发丝分割线串联，手风琴卡片之间纯留白。
+    def _index_page(self, body: QWidget, page_key: str) -> None:
+        """页面成型后登记搜索项：手风琴卡标题 + 字段行。
+
+        不在构建过程中登记：提权行 / 引擎排序 / 命令参考等自定义区块在
+        _build_page 之前就已建好，构建期上下文不可靠；页面成型后按 objectName
+        扫描最稳。
+        """
+        for card in body.findChildren(AccordionCard):
+            title = card.findChild(QLabel, "accordionTitle")
+            if title is None:
+                continue
+            desc = card.findChild(QLabel, "accordionDesc")
+            self._search_items.append({
+                "page": page_key,
+                "label": title.text(),
+                "desc": desc.text() if desc is not None else "",
+                "widget": card,
+            })
+        for row in body.findChildren(QWidget, "settingRow"):
+            label = row.findChild(QLabel, "fieldLabel")
+            if label is None:
+                continue
+            desc = row.findChild(QLabel, "fieldDesc")
+            self._search_items.append({
+                "page": page_key,
+                "label": label.text(),
+                "desc": desc.text() if desc is not None else "",
+                "widget": row,
+            })
+
+    def _build_page(self, groups: list, stretch: bool = True,
+                    page_key: str = "") -> QWidget:
+        """构建设置页：页头 + 分组卡片 / 手风琴卡片列表。
 
         groups 项可为 ("标题", fields) 元组、已构建的 QWidget 或 AccordionCard。
+        page_key 决定页头文案（set.page.* / set.page.*.desc）与搜索索引归属；
+        传空则不画页头（内部或临时页使用）。
         """
         outer = QWidget()
         v = QVBoxLayout(outer)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        # 滚动区：分区/卡片列表
+        # 滚动区：页头 + 分区/卡片列表
         body = QWidget()
         lay = QVBoxLayout(body)
         lay.setContentsMargins(6, 12, 10, 8)
         lay.setSpacing(0)
+        if page_key:
+            title = QLabel(t(page_key))
+            title.setObjectName("pageTitle")
+            desc = QLabel(t(page_key + ".desc"))
+            desc.setObjectName("pageDesc")
+            desc.setWordWrap(True)
+            lay.addWidget(title)
+            lay.addWidget(desc)
+            lay.addSpacing(12)
         prev_card = True  # 首项之前不加分隔线
         for g in groups:
             is_card = isinstance(g, AccordionCard)
             if lay.count():
-                if is_card or prev_card:
-                    lay.addSpacing(12)
-                else:
-                    # 扁平分区之间：醒目的区块分割线 + 加大留白，区块边界一眼可辨
-                    lay.addSpacing(18)
-                    sep = QFrame()
-                    sep.setObjectName("groupSep")
-                    sep.setFrameShape(QFrame.Shape.HLine)
-                    sep.setFixedHeight(1)
-                    lay.addWidget(sep)
-                    lay.addSpacing(14)
+                # 手风琴之间、卡片分组之间用较小留白；两种区块交替时放大一档
+                lay.addSpacing(12 if is_card or prev_card else 18)
             if isinstance(g, QWidget):
                 lay.addWidget(g)
             else:
@@ -1794,6 +1914,8 @@ class SettingsDialog(QDialog):
             prev_card = is_card
         if stretch:
             lay.addStretch(1)
+        if page_key:
+            self._index_page(body, page_key)
         v.addWidget(self._wrap_scroll(body), 1)
         return outer
 
@@ -1918,7 +2040,8 @@ class SettingsDialog(QDialog):
         v.addLayout(row)
         cards.append(contact)
 
-        cards.append(self._build_log_card())
+        log_card = self._build_log_card()
+        cards.append(log_card)
         return cards
 
     def _open_contact_url(self) -> None:
@@ -1964,9 +2087,11 @@ class SettingsDialog(QDialog):
         v.addWidget(btn)
 
         body = QWidget()
+        body.setObjectName("cmdRefBody")
+        body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         body.setVisible(False)
         grid = QGridLayout(body)
-        grid.setContentsMargins(4, 8, 4, 0)
+        grid.setContentsMargins(16, 12, 16, 12)
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(6)
         grid.setColumnStretch(1, 1)
@@ -2026,6 +2151,7 @@ class SettingsDialog(QDialog):
         note.setObjectName("fieldDesc")
         note.setWordWrap(True)
         grid.addWidget(note, len(rows) + 1, 0, 1, 2)
+        v.addSpacing(6)
         v.addWidget(body)
 
         def _toggle():
@@ -2050,7 +2176,7 @@ class SettingsDialog(QDialog):
         v.setSpacing(0)
 
         st = QLabel(t("set.phrase.title"))
-        st.setObjectName("sectionTitle")
+        st.setObjectName("groupTitle")
         v.addWidget(st)
         desc = QLabel(t("set.phrase.desc"))
         desc.setObjectName("fieldDesc")
@@ -2058,16 +2184,22 @@ class SettingsDialog(QDialog):
         v.addWidget(desc)
 
         table = QTableWidget(0, 2)
+        table.setObjectName("phraseTable")
         table.setHorizontalHeaderLabels([t("set.phrase.col_name"),
                                          t("set.phrase.col_content")])
         table.verticalHeader().setVisible(False)
-        table.setAlternatingRowColors(True)
+        table.setAlternatingRowColors(False)
+        table.setShowGrid(False)
+        table.setFrameShape(QFrame.Shape.NoFrame)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setFixedHeight(200)
+        # 行高必须显式给足：全局输入框样式带 6px 上下内边距，Qt 默认行高
+        # （约 22px）会把双击编辑器压到文字不可见
+        table.verticalHeader().setDefaultSectionSize(34)
         header = table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        table.setColumnWidth(0, 160)
+        table.setColumnWidth(0, 180)
 
         for item in custom_phrases.entries():
             name = str(item.get("name") or "")
@@ -2075,9 +2207,6 @@ class SettingsDialog(QDialog):
             if not name and not content:
                 continue
             self._append_phrase_row(table, name, content)
-
-        v.addSpacing(8)
-        v.addWidget(table)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
@@ -2088,8 +2217,17 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(btn_add)
         btn_row.addWidget(btn_del)
         btn_row.addStretch(1)
-        v.addSpacing(6)
-        v.addLayout(btn_row)
+
+        card = QWidget()
+        card.setObjectName("phraseCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(12, 12, 12, 12)
+        cv.setSpacing(8)
+        cv.addWidget(table)
+        cv.addLayout(btn_row)
+        v.addSpacing(8)
+        v.addWidget(card)
 
         self._phrase_table = table
         btn_add.clicked.connect(lambda _=False: self._append_phrase_row(table, "", ""))
@@ -2143,6 +2281,145 @@ class SettingsDialog(QDialog):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setWidget(widget)
         return scroll
+
+    # ---- 设置搜索 ----
+    def _build_search_page(self) -> QWidget:
+        """搜索结果页：只由侧边栏搜索框驱动，不在左侧导航里占位。"""
+        outer = QWidget()
+        v = QVBoxLayout(outer)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        body = QWidget()
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(6, 12, 10, 8)
+        lay.setSpacing(0)
+        title = QLabel(t("set.search.results"))
+        title.setObjectName("pageTitle")
+        self._search_meta = QLabel("")
+        self._search_meta.setObjectName("pageDesc")
+        lay.addWidget(title)
+        lay.addWidget(self._search_meta)
+        lay.addSpacing(12)
+        self._search_result_layout = QVBoxLayout()
+        self._search_result_layout.setContentsMargins(0, 0, 0, 0)
+        self._search_result_layout.setSpacing(2)
+        lay.addLayout(self._search_result_layout)
+        lay.addStretch(1)
+        v.addWidget(self._wrap_scroll(body), 1)
+        return outer
+
+    def _on_nav_changed(self, row: int) -> None:
+        """导航切换：记录最后停留的页；搜索中点击导航则先退出搜索。"""
+        if row < 0:
+            return
+        self._last_page_index = row
+        if self._search_edit.text():
+            self._search_edit.clear()
+            return
+        self._stack.setCurrentIndex(row)
+
+    def _run_search(self, text: str) -> None:
+        """按关键词过滤设置项；空串恢复搜索前的页面。"""
+        query = text.strip().lower()
+        if not query:
+            self._clear_search_results()
+            self._search_meta.setText("")
+            if self._last_page_index >= 0:
+                self._nav.setCurrentRow(self._last_page_index)
+                self._stack.setCurrentIndex(self._last_page_index)
+            return
+        results = []
+        for item in self._search_items:
+            page_title = t(item["page"])
+            if (query in item["label"].lower()
+                    or query in item["desc"].lower()
+                    or query in page_title.lower()):
+                results.append(item)
+        self._render_search_results(results)
+        self._nav.setCurrentRow(-1)
+        self._nav.clearSelection()
+        self._stack.setCurrentIndex(self._search_page_index)
+
+    def _clear_search_results(self) -> None:
+        layout = getattr(self, "_search_result_layout", None)
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _render_search_results(self, results: list) -> None:
+        self._search_meta.setText(t("set.search.count", n=len(results)))
+        self._clear_search_results()
+        if not results:
+            empty = QLabel(t("set.search.empty"))
+            empty.setObjectName("searchEmpty")
+            self._search_result_layout.addWidget(empty)
+            return
+        grouped: dict[str, list] = {}
+        order: list[str] = []
+        for item in results:
+            page = item["page"]
+            if page not in grouped:
+                grouped[page] = []
+                order.append(page)
+            grouped[page].append(item)
+        for page in order:
+            head = QLabel(t(page))
+            head.setObjectName("searchGroup")
+            self._search_result_layout.addWidget(head)
+            for item in grouped[page]:
+                btn = QPushButton(f'{item["label"]}    ·    {t(page)}')
+                btn.setObjectName("searchResult")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(
+                    lambda _=False, it=item: self._goto_search_result(it))
+                self._search_result_layout.addWidget(btn)
+
+    def _goto_search_result(self, item: dict) -> None:
+        """跳到设置项所在页，展开祖先折叠卡并短暂高亮。"""
+        page_key = item["page"]
+        index = self._page_indexes.get(page_key)
+        if index is None:
+            return
+        self._last_page_index = index
+        self._search_edit.clear()
+        self._nav.setCurrentRow(index)
+        self._stack.setCurrentIndex(index)
+        widget = item["widget"]
+        parent = widget.parentWidget()
+        while parent is not None:
+            if isinstance(parent, AccordionCard):
+                parent.set_expanded(True)
+            parent = parent.parentWidget()
+        page_widget = self._stack.widget(index)
+        scroll = page_widget.findChild(QScrollArea) if page_widget else None
+        if scroll is not None:
+            def _scroll() -> None:
+                try:
+                    scroll.ensureWidgetVisible(widget, 0, 80)
+                except RuntimeError:
+                    pass
+
+            QTimer.singleShot(0, _scroll)
+        self._flash_widget(widget)
+
+    def _flash_widget(self, widget: QWidget) -> None:
+        widget.setProperty("highlight", True)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+        QTimer.singleShot(1600, lambda: self._clear_highlight(widget))
+
+    @staticmethod
+    def _clear_highlight(widget: QWidget) -> None:
+        try:
+            widget.setProperty("highlight", False)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        except RuntimeError:
+            pass
 
     def _open_config_file(self) -> None:
         """用系统默认程序打开 config.yaml（记事本等）。"""
@@ -2259,7 +2536,7 @@ class SettingsDialog(QDialog):
         if isinstance(w, DeviceCombo):
             w.setMinimumWidth(280)
         elif isinstance(w, HotkeyCaptureEdit):
-            w.setFixedWidth(200)
+            w.setFixedWidth(220)
         elif isinstance(w, QLineEdit):
             w.setMinimumWidth(280)
         elif isinstance(w, QComboBox):
@@ -2304,6 +2581,12 @@ class SettingsDialog(QDialog):
                 left.addWidget(d)
             return left
 
+        def _finish(row: QWidget) -> QWidget:
+            """行级收尾：高亮底色需要 styled background。"""
+            row.setObjectName("settingRow")
+            row.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            return row
+
         # 主题卡片（参考图「外观」）：不占右侧控件位，标签在上、三张卡片通栏
         if isinstance(widget, ThemeCardGroup):
             row = QWidget()
@@ -2312,7 +2595,7 @@ class SettingsDialog(QDialog):
             vv.setSpacing(8)
             vv.addLayout(_label_block())
             vv.addWidget(widget)
-            return row
+            return _finish(row)
 
         row = QWidget()
         g = QGridLayout(row)
@@ -2322,12 +2605,13 @@ class SettingsDialog(QDialog):
         g.setVerticalSpacing(6)
         g.setColumnStretch(0, 1)
         # 多行编辑控件定宽 430px，与说明同处一行时左列只剩几十像素，长说明
-        # 会被排成窄条多行。改为标题与说明通栏占满整行，控件另起一行左对齐。
+        # 会被排成窄条多行。改为标题与说明通栏占满整行，控件另起一行并
+        # 同样通栏（卡片内边距 16px 已留白，文本框右缘与行分隔线对齐）。
         tall = isinstance(getattr(widget, "_asr_value_widget", widget), QTextEdit)
         if tall:
             g.addLayout(_label_block(), 0, 0, 1, 2)
-            g.addWidget(widget, 1, 0, 1, 2, Qt.AlignLeft | Qt.AlignTop)
-            return row
+            g.addWidget(widget, 1, 0, 1, 2)
+            return _finish(row)
         g.addLayout(_label_block(), 0, 0)
         # 其余控件右对齐、与标签行垂直居中
         g.addWidget(widget, 0, 1, Qt.AlignRight | Qt.AlignVCenter)
@@ -2339,10 +2623,10 @@ class SettingsDialog(QDialog):
                 inner.valueChanged.connect(
                     lambda v: self.bar_opacity_preview.emit(int(v))
                 )
-        return row
+        return _finish(row)
 
     def _build_group(self, title: str, fields: list) -> QWidget:
-        """构建扁平分区：纯文字分区标题 + 行清单 + 行间细分割线。
+        """构建分组卡片：标题在卡外，字段行住在一个圆角容器里。
 
         fields 项为七元组，也可混入 _sec() 的小节标题行（wtype="header"）
         或已构建的 QWidget（直接作为一行插入并参与行间分割线排版）。
@@ -2353,36 +2637,38 @@ class SettingsDialog(QDialog):
         v.setSpacing(0)
         if title:
             st = QLabel(t(title))
-            st.setObjectName("sectionTitle")
+            st.setObjectName("groupTitle")
             v.addWidget(st)
+        card = QWidget()
+        card.setObjectName("groupCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        cv = QVBoxLayout(card)
+        # 左右 16px 内边距与行文本对齐；行间发丝线在容器内通栏，天然缩进 16px
+        cv.setContentsMargins(16, 0, 16, 0)
+        cv.setSpacing(0)
         count = 0
         for field in fields:
             if isinstance(field, QWidget):
-                if count:
-                    sep = QFrame()
-                    sep.setObjectName("rowSep")
-                    sep.setFrameShape(QFrame.Shape.HLine)
-                    sep.setFixedHeight(1)
-                    v.addWidget(sep)
-                v.addWidget(field)
-                count += 1
-                continue
-            if field[3] == "header":
+                row = field
+            elif field[3] == "header":
                 h = QLabel(t(field[2]))
                 h.setObjectName("cardSection")
-                v.addWidget(h)
+                cv.addWidget(h)
                 continue
-            row = self._make_row(field)
-            if row is None:
-                continue
+            else:
+                row = self._make_row(field)
+                if row is None:
+                    continue
             if count:
                 sep = QFrame()
-                sep.setObjectName("rowSep")
+                sep.setObjectName("groupRowSep")
                 sep.setFrameShape(QFrame.Shape.HLine)
                 sep.setFixedHeight(1)
-                v.addWidget(sep)
-            v.addWidget(row)
+                cv.addWidget(sep)
+            cv.addWidget(row)
             count += 1
+        if count:
+            v.addWidget(card)
         return sec
 
     def _build_accordion_group(self, title: str, desc: str, fields: list,
@@ -2480,8 +2766,10 @@ class SettingsDialog(QDialog):
     def _build_engine_order_editor(self) -> QWidget:
         """识别引擎排序编辑器：苹果「分组列表」风（大圆角组 + inset 发丝分隔线）。
 
-        上下按钮调整 provider 分组顺序：后台线程写 ui.engine_order（避免 IO 阻塞）并就地
-        更新 self.cfg.ui.engine_order；展开区各模型行只控制显隐（ui.engine_hidden_models）。
+        按住行首手柄拖动调整 provider 顺序：后台线程写 ui.engine_order（避免 IO 阻塞）
+        并就地更新 self.cfg.ui.engine_order；展开区各模型行只控制显隐
+        （ui.engine_hidden_models）。相比原来的 ↑↓ 步进器，拖动更直观，也不再需要
+        处理首/尾按钮禁用态。
         """
         order_str = getattr(self.cfg.ui, "engine_order", "") or ""
         order = [p.strip() for p in str(order_str).split(",") if p.strip()]
@@ -2500,7 +2788,7 @@ class SettingsDialog(QDialog):
         hl.setContentsMargins(0, 12, 0, 6)
         hl.setSpacing(8)
         st = QLabel(t("set.engine.order_title"))
-        st.setObjectName("sectionTitle")
+        st.setObjectName("groupTitle")
         hl.addWidget(st)
         hl.addStretch(1)
         vlay.addWidget(head)
@@ -2527,7 +2815,10 @@ class SettingsDialog(QDialog):
         fw.addWidget(footer)
         vlay.addWidget(fwrap)
 
-        # 并行存 [provider 键, 行块 widget]；移动时交换并按新顺序重排布局
+        # 并行存 [provider 键, 行块 widget]；拖动时换位并按新顺序重排布局。
+        # 拖动状态记在实例上：手柄的 mouseMove 会持续回调，直到松手才落盘。
+        self._engine_drag_changed = False
+        self._engine_drag_origin: list[str] = []
         current_group = engine_group_of(
             str(getattr(self.cfg, "engine", "") or ""))
         self._engine_order_rows: list[list] = []
@@ -2535,10 +2826,14 @@ class SettingsDialog(QDialog):
             row = self._make_engine_provider_entry(
                 p, expanded=(p == current_group),
                 badge=(t("set.engine.badge_current") if p == current_group else ""))
+            handle = row.drag_handle()
+            handle.dragStarted.connect(self._on_engine_drag_started)
+            handle.dragMoved.connect(
+                lambda pos, r=row: self._on_engine_drag_moved(r, pos))
+            handle.dragFinished.connect(self._on_engine_drag_finished)
             gl.addWidget(row)
             self._engine_order_rows.append([p, row])
-        # 首行禁用 ▲、末行禁用 ▼ 并隐藏末行底部分隔线
-        self._refresh_engine_steppers()
+        self._refresh_engine_order_visuals()
         return box
 
     def _make_engine_provider_entry(self, provider: str,
@@ -2546,8 +2841,9 @@ class SettingsDialog(QDialog):
                                     badge: str = "") -> QWidget:
         """单个厂商行块（EngineOrderRow，苹果分组列表风）。
 
-        头行 = 厂商名/副标题 + 步进器 + 显隐开关；展开区为各模型行（仅名称 + 显隐开关）。
-        总开关关闭时头行置灰、模型区整体禁用；显隐写入 ui.engine_hidden_models。
+        头行 = 拖动手柄 + 序号 + 厂商名/副标题 + 折叠箭头 + 显隐开关；展开区为各模型行
+        （仅名称 + 显隐开关）。总开关关闭时头行置灰、模型区整体禁用；
+        显隐写入 ui.engine_hidden_models。
         """
         models = engines_by_group().get(provider, [])
         if provider in ENGINE_CATEGORIES:
@@ -2569,15 +2865,11 @@ class SettingsDialog(QDialog):
                              expanded=expanded, badge=badge,
                              palette=self._palette)
 
-        # ---- 头行右侧：排序步进器 + 显隐开关（开关最右，iOS 惯例）----
+        # ---- 头行右侧：折叠箭头已由行块内置，这里只追加显隐开关（最右，iOS 惯例）----
         # 显隐开关：关掉 = 该提供商引擎从右键"识别引擎"菜单整组隐藏。
         # 不配"显示/隐藏"状态字——开关形态本身已表意。先 setChecked 回显
         # 再 connect，避免初始化误写配置。
         show_on = bool(self._read_cfg("ui", f"engine_show_{provider}"))
-        row.add_header_widget(row.make_stepper(
-            lambda _checked, r=row: self._move_engine_row(r, -1),
-            lambda _checked, r=row: self._move_engine_row(r, 1),
-        ))
         toggle = ToggleSwitch(self._palette)
         toggle.setChecked(show_on)
         toggle.setToolTip(t("set.engine.provider_tip"))
@@ -2613,8 +2905,8 @@ class SettingsDialog(QDialog):
                 bv.addWidget(msep)
             mrow = QWidget()
             mh = QHBoxLayout(mrow)
-            # 左缩进 36 与厂商文本对齐（14 边距 + 14 箭头 + 8 间距）
-            mh.setContentsMargins(36, 5, 12, 5)
+            # 左缩进 48 与厂商文本对齐（10 边距 + 14 手柄 + 6 间距 + 12 序号 + 6 间距）
+            mh.setContentsMargins(48, 5, 12, 5)
             mh.setSpacing(8)
             mlabel = QLabel(label)
             mlabel.setObjectName("eoModelName")
@@ -2641,12 +2933,12 @@ class SettingsDialog(QDialog):
         toggle.toggled.connect(body.setEnabled)
         return row
 
-    def _refresh_engine_steppers(self) -> None:
-        """刷新各行块：首行禁用 ▲、末行禁用 ▼；末行隐藏底部 inset 分隔线。"""
+    def _refresh_engine_order_visuals(self) -> None:
+        """刷新行首序号与末行分隔线（拖动重排后统一调用）。"""
         rows = self._engine_order_rows
         n = len(rows)
         for i, (_, row) in enumerate(rows):
-            row.set_step_enabled(i > 0, i < n - 1)
+            row.set_index(i + 1)
             row.set_trailing_sep_visible(i < n - 1)
 
     def _engine_hidden_models(self) -> list:
@@ -2686,27 +2978,56 @@ class SettingsDialog(QDialog):
                                section="ui", value_type="str"):
             logger.info("引擎模型显隐已更新：%s", value or "（全部显示）")
 
-    def _move_engine_row(self, row: QWidget, delta: int) -> None:
-        """把指定行上下移动一格：交换并行列表项 + 按新顺序重排布局 + 持久化。"""
+    def _on_engine_drag_started(self) -> None:
+        """手柄按下：记录拖动起点与当前顺序，松手时才决定是否落盘。"""
+        self._engine_drag_changed = False
+        self._engine_drag_origin = [k for k, _ in self._engine_order_rows]
+
+    def _on_engine_drag_moved(self, row: QWidget, global_pos) -> None:
+        """手柄拖动中：按鼠标落在哪一行判断目标位，实时换位并刷新序号。
+
+        手柄有隐式鼠标抓取，指针移出行块后仍能收到 mouseMove；这里只做同容器
+        换位，不涉及 QDrag/mimeData，逻辑量最小。
+        """
         rows = self._engine_order_rows
-        idx = next((i for i, (_, r) in enumerate(rows) if r is row), -1)
-        if idx < 0:
+        if not rows:
             return
-        new_idx = idx + delta
-        if not (0 <= new_idx < len(rows)):
+        current = next((i for i, (_, r) in enumerate(rows) if r is row), -1)
+        if current < 0:
             return
-        rows[idx], rows[new_idx] = rows[new_idx], rows[idx]
+        target = -1
+        for i, (_, r) in enumerate(rows):
+            top = r.mapToGlobal(QPoint(0, 0)).y()
+            if global_pos.y() < top + r.height():
+                target = i
+                break
+        if target < 0:
+            target = len(rows) - 1
+        if target == current:
+            return
+        rows.insert(target, rows.pop(current))
         self._reorder_engine_rows()
-        # 换位后首/末卡变了，同步刷新步进器可用态
-        self._refresh_engine_steppers()
-        order_str = ",".join(k for k, _ in rows)
-        # 就地更新内存 cfg（悬浮条下次建菜单即生效）
+        self._refresh_engine_order_visuals()
+        self._engine_drag_changed = True
+
+    def _on_engine_drag_finished(self) -> None:
+        """松手：顺序确实变化才写内存与配置文件。"""
+        if not self._engine_drag_changed:
+            return
+        self._engine_drag_changed = False
+        order_str = ",".join(k for k, _ in self._engine_order_rows)
+        if order_str == ",".join(self._engine_drag_origin):
+            return
+        self._persist_engine_order(order_str)
+
+    def _persist_engine_order(self, order_str: str) -> None:
+        """就地更新内存 cfg（悬浮条下次建菜单即生效），后台线程写盘避免卡 UI。"""
         try:
             self.cfg.ui.engine_order = order_str
         except AttributeError:
             logger.debug("同步内存 engine_order 失败（cfg.ui 缺失）", exc_info=True)
-        # 后台线程写文件持久化（避免 IO 阻塞 UI）
         import threading
+
         threading.Thread(
             target=self._write_engine_order, args=(order_str,),
             daemon=True, name="engine-order-write",
@@ -2777,7 +3098,8 @@ class SettingsDialog(QDialog):
 
         row = QHBoxLayout()
         row.setSpacing(6)
-        combo = QComboBox()
+        combo = ThemedComboBox()
+        combo.set_arrow_color(self._palette["secondary"])
         btn_add = QPushButton(t("set.prompt.add"))
         btn_save = QPushButton(t("set.prompt.save"))
         btn_del = QPushButton(t("set.prompt.delete"))
@@ -2933,10 +3255,12 @@ class SettingsDialog(QDialog):
         return row
 
     def _steam_page_groups(self, pick) -> list:
-        """渠道发行分组（仅发行构建渲染）。
+        """Steam 页分组（仅发行构建渲染）。
 
+        参考方案：连接状态条 → 云存档（同步密钥 + 云存档状态/立即同步）→
+        显卡加速（开关 + 扩展包入口）→ 创意工坊卡片。
         `pick` 是 __init__ 内的闭包（按 _FIELDS 过滤），故由调用处传进来。
-        源码构建返回空列表，通用设置页与以前一模一样。
+        源码构建返回空列表。
         """
         from ..steam_integration import (
             STEAM_DLC_GPU_APP_ID,
@@ -2947,26 +3271,166 @@ class SettingsDialog(QDialog):
 
         if not is_steam_build():
             return []
-        # 「云存档同步密钥」开关。渲染条件（满足其一）：external_services_allowed()
-        # （源码构建 / 发行构建装了工坊内容包），或配置里开关已是 True（绝不把打开过的
-        # 用户锁在外面，能看见也能关掉）。默认 False＝密钥默认不进云。真双向同步：
-        # 开关决定密钥随云存档上传，恢复时云上那份含密钥文件存在与否决定是否下载回来。
+        integ = get_integration()
+        connected = bool(getattr(integ, "available", False))
+
+        # 云存档卡：同步密钥开关（条件渲染）+ 状态行（始终显示，离线时说明原因）
         _keys_already_on = bool(getattr(
             getattr(self.cfg, "steam", None), "cloud_sync_keys", False))
+        cloud_rows = []
         if external_services_allowed() or _keys_already_on:
-            rows = list(pick("steam", ("cloud_sync_keys",)))
-        else:
-            rows = []
+            cloud_rows += list(pick("steam", ("cloud_sync_keys",)))
+        cloud_rows.append(self._build_steam_cloud_status_row(integ, connected))
+
+        # 显卡加速卡：开关（平台支持时）+ 未安装扩展包时的安装入口
+        gpu_rows = []
         if _gpu_switch_available():
-            rows = rows + pick("steam", ("use_gpu",))
-        # 有 N 卡但没装扩展包：补一个安装入口（配置里也提示过一次，见 app.run）
+            gpu_rows += pick("steam", ("use_gpu",))
         if STEAM_DLC_GPU_APP_ID and nvidia_gpu_present() and \
-                not get_integration().dlc_installed(STEAM_DLC_GPU_APP_ID):
-            rows.append(self._build_gpu_install_row())
-        # 创意工坊作为独立一张卡（不走扁平分区）：它内部有列表 + 多按钮，塞进
-        # _build_group 的字段流会被行间分割线排版拉坏。SDK 不可用时照样建卡，
-        # 让用户看到"为什么没有工坊"而不是以为功能凭空消失。
-        return [("set.steam.group", rows), self._build_workshop_card()]
+                not integ.dlc_installed(STEAM_DLC_GPU_APP_ID):
+            gpu_rows.append(self._build_gpu_install_row())
+
+        groups: list = [self._build_steam_status_banner(connected),
+                        ("set.steam.group_cloud", cloud_rows)]
+        if gpu_rows:
+            groups.append(("set.steam.group_gpu", gpu_rows))
+        # 创意工坊作为独立一张卡（内部有列表 + 多按钮，塞进字段流会被行间
+        # 分割线排版拉坏）。SDK 不可用时照样建卡，说明为什么没有工坊。
+        groups.append(self._build_workshop_card())
+        return groups
+
+    def _build_steam_status_banner(self, connected: bool) -> QWidget:
+        """连接状态条：绿=已连接客户端，琥珀=未连接。"""
+        banner = QWidget()
+        banner.setObjectName("steamStatusBanner")
+        banner.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        banner.setProperty("state", "ok" if connected else "warn")
+        h = QHBoxLayout(banner)
+        h.setContentsMargins(12, 9, 12, 9)
+        h.setSpacing(9)
+        dot = QWidget()
+        dot.setObjectName("steamStatusDot")
+        dot.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        dot.setFixedSize(7, 7)
+        text = QLabel(t("set.steam.connected" if connected
+                        else "set.steam.disconnected"))
+        text.setObjectName("steamStatusText")
+        h.addWidget(dot)
+        h.addWidget(text)
+        h.addStretch(1)
+        return banner
+
+    def _build_steam_cloud_status_row(self, integ, connected: bool) -> QWidget:
+        """云存档状态行：最近同步时间 + 立即同步按钮。"""
+        wrap = QWidget()
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 12, 0, 12)
+        h.setSpacing(12)
+
+        left = QVBoxLayout()
+        left.setSpacing(2)
+        title = QLabel(t("set.steam.cloud_status"))
+        title.setObjectName("fieldLabel")
+        status = QLabel(self._steam_last_sync_text(integ, connected))
+        status.setObjectName("fieldDesc")
+        status.setWordWrap(True)
+        left.addWidget(title)
+        left.addWidget(status)
+        h.addLayout(left, 1)
+
+        btn = QPushButton(t("set.steam.sync_now"))
+        btn.setObjectName("btnGhost")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                          QSizePolicy.Policy.Fixed)
+        available = connected and self._steam_sync is not None
+        btn.setEnabled(available)
+        if not available:
+            btn.setToolTip(t("set.steam.sync_unavailable"))
+        btn.clicked.connect(self._on_steam_sync_clicked)
+        h.addWidget(btn)
+
+        self._steam_sync_status = status
+        self._steam_sync_btn = btn
+        return wrap
+
+    def _steam_last_sync_text(self, integ, connected: bool) -> str:
+        """读云端 _meta.saved_at 作为「最近同步」；读不到就显示尚未同步。"""
+        if not connected or integ is None:
+            return t("set.steam.sync_unavailable")
+        try:
+            raw = integ.cloud_read(CLOUD_CONFIG_NAME)
+            if raw:
+                import yaml
+
+                data = yaml.safe_load(raw.decode("utf-8")) or {}
+                saved_at = str((data.get("_meta") or {}).get("saved_at", ""))
+                if saved_at:
+                    return self._format_steam_sync_time(saved_at)
+        except Exception:
+            logger.debug("读取 Steam 云存档时间失败", exc_info=True)
+        return t("set.steam.last_sync", time=t("set.steam.never_synced"))
+
+    @staticmethod
+    def _format_steam_sync_time(saved_at: str) -> str:
+        """UTC ISO -> 本地「今天 HH:MM / MM-DD HH:MM」。"""
+        from datetime import datetime, timezone
+
+        try:
+            dt = datetime.fromisoformat(str(saved_at).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            local = dt.astimezone()
+            now = datetime.now().astimezone()
+            if local.date() == now.date():
+                text = t("set.steam.today", time=local.strftime("%H:%M"))
+            elif local.year == now.year:
+                text = local.strftime("%m-%d %H:%M")
+            else:
+                text = local.strftime("%Y-%m-%d %H:%M")
+            return t("set.steam.last_sync", time=text)
+        except Exception:
+            return t("set.steam.last_sync", time=t("set.steam.never_synced"))
+
+    def _on_steam_sync_clicked(self) -> None:
+        if self._steam_sync is None:
+            return
+        self._steam_sync_btn.setEnabled(False)
+        self._steam_sync_btn.setText(t("set.steam.syncing"))
+        self._steam_sync_status.setText(t("set.steam.syncing"))
+        # 先让界面画出「同步中」，再执行可能阻塞的云端写入
+        QTimer.singleShot(0, self._finish_steam_sync)
+
+    def _finish_steam_sync(self) -> None:
+        try:
+            btn = self._steam_sync_btn
+            status = self._steam_sync_status
+        except RuntimeError:
+            return
+        try:
+            sw = self._widgets.get(("steam", "cloud_sync_keys"))
+            if sw is not None:
+                include_keys = bool(sw.isChecked())
+            else:
+                include_keys = bool(getattr(
+                    getattr(self.cfg, "steam", None),
+                    "cloud_sync_keys", False))
+            ok, payload = self._steam_sync(include_keys)
+            if ok:
+                status.setText(
+                    self._format_steam_sync_time(payload) if payload
+                    else t("set.steam.last_sync",
+                           time=t("set.steam.never_synced")))
+            else:
+                status.setText(t("set.steam.sync_failed",
+                                 error=payload or t("set.steam.sync_unavailable")))
+        except RuntimeError:
+            return
+        except Exception as exc:
+            logger.debug("手动云存档同步失败", exc_info=True)
+            status.setText(t("set.steam.sync_failed", error=str(exc)))
+        btn.setText(t("set.steam.sync_now"))
+        btn.setEnabled(True)
 
     # ---- 创意工坊 ----
     def _build_workshop_card(self) -> QWidget:
@@ -3356,7 +3820,7 @@ class SettingsDialog(QDialog):
         label.setVisible(bool(text))
 
     def _build_gpu_install_row(self) -> QWidget:
-        """「安装显卡加速包」按钮行：交给 平台客户端弹安装对话框。"""
+        """「显卡加速扩展包」行：左侧说明，右侧交给平台客户端弹安装对话框。"""
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
 
@@ -3364,15 +3828,29 @@ class SettingsDialog(QDialog):
 
         wrap = QWidget()
         h = QHBoxLayout(wrap)
-        h.setContentsMargins(0, 2, 0, 0)
-        h.setSpacing(10)
+        h.setContentsMargins(0, 12, 0, 12)
+        h.setSpacing(12)
+
+        left = QVBoxLayout()
+        left.setSpacing(2)
+        title = QLabel(t("set.steam.gpu_extension"))
+        title.setObjectName("fieldLabel")
+        desc = QLabel(t("set.steam.gpu_extension_desc"))
+        desc.setObjectName("fieldDesc")
+        desc.setWordWrap(True)
+        left.addWidget(title)
+        left.addWidget(desc)
+        h.addLayout(left, 1)
+
         btn = QPushButton(t("set.steam.gpu_install"))
-        btn.setObjectName("btnGhost")
+        btn.setObjectName("btnAccent")
         btn.setCursor(Qt.PointingHandCursor)
+        btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                          QSizePolicy.Policy.Fixed)
+        btn.setToolTip(t("set.steam.gpu_install_hint"))
         btn.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl(f"steam://install/{STEAM_DLC_GPU_APP_ID}")))
         h.addWidget(btn)
-        h.addStretch(1)
         return wrap
 
     def _build_llm_test_row(self) -> QWidget:
@@ -3383,18 +3861,22 @@ class SettingsDialog(QDialog):
         """
         wrap = QWidget()
         h = QHBoxLayout(wrap)
-        h.setContentsMargins(0, 2, 0, 0)
+        # 上下留白与普通字段行一致；按钮不随行宽拉伸，状态文字独占剩余空间
+        h.setContentsMargins(0, 12, 0, 12)
         h.setSpacing(10)
 
         btn = QPushButton(t("set.llm_test.btn"))
         btn.setObjectName("btnGhost")
         btn.setCursor(Qt.PointingHandCursor)
         btn.setToolTip(t("set.llm_test.btn_tip"))
+        btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                          QSizePolicy.Policy.Fixed)
         status = QLabel()
         status.setWordWrap(True)
         status.setVisible(False)
         h.addWidget(btn)
         h.addWidget(status, 1)
+        h.addStretch(1)
 
         self._llm_test_btn = btn
         self._llm_test_status = status
@@ -3604,18 +4086,22 @@ class SettingsDialog(QDialog):
         """
         wrap = QWidget()
         h = QHBoxLayout(wrap)
-        h.setContentsMargins(0, 2, 0, 0)
+        # 上下留白与普通字段行一致；按钮不随行宽拉伸，状态文字独占剩余空间
+        h.setContentsMargins(0, 12, 0, 12)
         h.setSpacing(10)
 
         btn = QPushButton(t("set.dialog_test.btn"))
         btn.setObjectName("btnGhost")
         btn.setCursor(Qt.PointingHandCursor)
         btn.setToolTip(t("set.dialog_test.btn_tip"))
+        btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                          QSizePolicy.Policy.Fixed)
         status = QLabel()
         status.setWordWrap(True)
         status.setVisible(False)
         h.addWidget(btn)
         h.addWidget(status, 1)
+        h.addStretch(1)
 
         self._dialog_test_btn = btn
         self._dialog_test_status = status
@@ -4146,7 +4632,8 @@ class SettingsDialog(QDialog):
             w.changed.connect(self._on_settings_style_preview)
             return w
         if wtype == "combo":
-            w = QComboBox()
+            w = ThemedComboBox()
+            w.set_arrow_color(self._palette["secondary"])
             options, display = self._combo_options(section, key, extra)
             w.addItems([t(display[v]) for v in options])
             val = str(current if current is not None else "")
@@ -4159,7 +4646,8 @@ class SettingsDialog(QDialog):
         if wtype == "billing":
             # 火山「计费方式」：duration/concurrent 两项直选（值为对应版本自己的计费）。
             # 版本选择在右键菜单，豆包 1.0 / 2.0 各有独立下拉互不干扰
-            w = QComboBox()
+            w = ThemedComboBox()
+            w.set_arrow_color(self._palette["secondary"])
             w.addItems([t("set.combo.volcengine.billing.duration"),
                         t("set.combo.volcengine.billing.concurrent")])
             cur = str(current if current is not None else "")
@@ -4171,12 +4659,14 @@ class SettingsDialog(QDialog):
             # 麦克风设备选择：DeviceCombo 每次展开下拉时重新枚举（支持热插拔）
             cur = str(current if current is not None else "")
             w = DeviceCombo(cur)
+            w.set_arrow_color(self._palette["secondary"])
             w.setToolTip(t("set.device.mic_tip"))
             return w
         if wtype == "output_combo":
             # 输出设备选择（语音对话 AI 播报）：同 DeviceCombo，枚举输出通道
             cur = str(current if current is not None else "")
             w = DeviceCombo(cur, inputs=False)
+            w.set_arrow_color(self._palette["secondary"])
             w.setToolTip(t("set.device.spk_tip"))
             return w
         return None
@@ -4197,6 +4687,9 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(_settings_qss(self._palette))
         for tw in self.findChildren(ToggleSwitch):
             tw.set_palette(self._palette)
+        for combo in self.findChildren(ThemedComboBox):
+            combo.set_arrow_color(self._palette["secondary"])
+        self._nav_delegate.set_color(self._palette["accent"])
 
     def _read_cfg(self, section: Optional[str], key: str):
         try:

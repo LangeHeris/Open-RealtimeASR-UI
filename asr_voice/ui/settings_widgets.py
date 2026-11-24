@@ -12,19 +12,28 @@ import math
 from typing import Optional
 
 from PySide6.QtCore import QEasingCurve, Property, QPropertyAnimation, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
-from PySide6.QtCore import QPointF
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
+from PySide6.QtCore import QPoint, QPointF
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPushButton,
     QSizePolicy,
     QSlider,
     QSpinBox,
     QStyle,
+    QStyledItemDelegate,
     QStyleOptionSlider,
     QToolButton,
     QVBoxLayout,
@@ -49,7 +58,7 @@ def _theme_card_icon(kind: str, color: str) -> QIcon:
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(color))
         p.drawPath(path)
-    else:  # sun
+    elif kind == "sun":
         pen = QPen(QColor(color))
         pen.setWidthF(1.7)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -62,6 +71,8 @@ def _theme_card_icon(kind: str, color: str) -> QIcon:
             x2, y2 = 20 + 13.2 * math.cos(a), 20 + 13.2 * math.sin(a)
             p.drawLine(int(round(x1)), int(round(y1)),
                        int(round(x2)), int(round(y2)))
+    else:  # 未知的图标 kind：空图标兜底，不崩
+        pass
     p.end()
     return QIcon(pm)
 
@@ -245,6 +256,64 @@ class _DisclosureTriangle(QWidget):
         p.end()
 
 
+class DragHandle(QWidget):
+    """六点拖动手柄：按下后把全局鼠标位置交给父级重排，松手时结束。
+
+    不用 QDrag：设置窗内的重排只涉及同一容器里的几个行块，父级按全局 Y
+    直接换位比维护 mimeData / drop 事件更简单，也不会出现系统拖拽阴影。
+    """
+
+    dragStarted = Signal()
+    dragMoved = Signal(QPoint)
+    dragFinished = Signal()
+
+    def __init__(self, color: str = "#a5a5ac",
+                 parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setObjectName("eoDrag")
+        self.setFixedSize(14, 24)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip(t("set.engine.drag_tip"))
+        self._color = QColor(color)
+        self._pressed = False
+
+    def mousePressEvent(self, ev) -> None:
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self._pressed = True
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.dragStarted.emit()
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev) -> None:
+        if self._pressed:
+            self.dragMoved.emit(ev.globalPosition().toPoint())
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev) -> None:
+        if self._pressed and ev.button() == Qt.MouseButton.LeftButton:
+            self._pressed = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            self.dragFinished.emit()
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def paintEvent(self, ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._color)
+        cx, cy = self.width() / 2, self.height() / 2
+        for dx in (-2.5, 2.5):
+            for dy in (-5.0, 0.0, 5.0):
+                p.drawEllipse(QPointF(cx + dx, cy + dy), 1.1, 1.1)
+        p.end()
+
+
 class EngineOrderRow(QWidget):
     """引擎排序专属行块（iOS/macOS inset grouped list 风）。
 
@@ -261,18 +330,25 @@ class EngineOrderRow(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # —— 头行：三角 + (名称 + badge / 副标题) + 右侧控件位 ——
-        # 左 14 + 三角 14 + 间距 8 → 文本起始 x=36，模型行与分隔线同缩进对齐
+        # —— 头行：手柄 + 序号 + (名称 + badge / 副标题) + 折叠箭头 + 右侧控件位 ——
+        # 左 10 + 手柄 14 + 间距 6 + 序号 12 + 间距 6 → 文本起始 x=48，
+        # 模型行与分隔线同缩进对齐。
         self._header = QWidget()
         self._header.setObjectName("eoVendorHeader")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header.setMinimumHeight(52)
         hl = QHBoxLayout(self._header)
-        hl.setContentsMargins(14, 6, 12, 6)
-        hl.setSpacing(8)
+        hl.setContentsMargins(10, 6, 12, 6)
+        hl.setSpacing(6)
         p = palette or {}
+        self._drag = DragHandle(p.get("secondary", "#a5a5ac"))
+        hl.addWidget(self._drag, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._index = QLabel("")
+        self._index.setObjectName("eoIndex")
+        self._index.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._index.setFixedWidth(12)
+        hl.addWidget(self._index, 0, Qt.AlignmentFlag.AlignVCenter)
         self._chev = _DisclosureTriangle(QColor(p.get("secondary", "#a5a5ac")))
-        hl.addWidget(self._chev, 0, Qt.AlignmentFlag.AlignVCenter)
 
         left = QVBoxLayout()
         left.setSpacing(1)
@@ -294,6 +370,7 @@ class EngineOrderRow(QWidget):
         d.setObjectName("eoVendorMeta")
         left.addWidget(d)
         hl.addLayout(left, 1)
+        hl.addWidget(self._chev, 0, Qt.AlignmentFlag.AlignVCenter)
         outer.addWidget(self._header)
 
         # 展开区顶部分隔线（随展开显隐）+ 模型区 + 块底分隔线（末行隐藏）
@@ -305,11 +382,9 @@ class EngineOrderRow(QWidget):
         self._trailing_sep = self._make_sep()
         outer.addWidget(self._trailing_sep)
 
-        # 实例引用：置灰联动 / 文案刷新 / 步进器状态
+        # 实例引用：置灰联动 / 文案刷新 / 序号
         self._title_lbl = vendor_lbl
         self._meta_lbl = d
-        self._up_btn: Optional[QPushButton] = None
-        self._down_btn: Optional[QPushButton] = None
 
         self._expanded = False
         self._header.mousePressEvent = self._on_header_click
@@ -345,8 +420,16 @@ class EngineOrderRow(QWidget):
         """更新副标题（随模型显隐动态刷新"已隐藏"计数）。"""
         self._meta_lbl.setText(text)
 
+    def drag_handle(self) -> QWidget:
+        """拖动手柄实例（由设置对话框接上重排逻辑）。"""
+        return self._drag
+
+    def set_index(self, index: int) -> None:
+        """更新行首序号（重排后由设置对话框统一刷新）。"""
+        self._index.setText(str(index))
+
     def add_header_widget(self, widget: QWidget) -> None:
-        """头行右侧末尾追加控件（先步进器后开关 → 开关最右，iOS 惯例）。
+        """头行右侧末尾追加控件（折叠箭头之后 → 开关最右，iOS 惯例）。
 
         点击这些控件由控件自身消费事件，不会触发头部的展开/收起。
         """
@@ -363,46 +446,61 @@ class EngineOrderRow(QWidget):
         """块底分隔线显隐：列表末行隐藏（重排后由调用方统一刷新）。"""
         self._trailing_sep.setVisible(on)
 
-    def make_stepper(self, on_up, on_down) -> QWidget:
-        """生成横排 ↑↓ 步进器（iOS UIStepper 式实底胶囊分段）。
 
-        填充底 + 细描边 + 中缝竖线把两方向装成一个控件；悬停加深半区、按压以
-        selection_bg 反馈；首/尾方向由 set_step_enabled 禁用（仅禁点击，无差异配色）。
-        """
-        stepper = QFrame()
-        stepper.setObjectName("eoStepper")
-        sv = QHBoxLayout(stepper)
-        sv.setContentsMargins(1, 1, 1, 1)
-        sv.setSpacing(0)
-        up = QPushButton("↑")
-        down = QPushButton("↓")
-        for b in (up, down):
-            b.setObjectName("eoStepBtn")
-            b.setFixedSize(26, 18)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        mid = QFrame()
-        mid.setObjectName("eoStepperSep")
-        mid.setFrameShape(QFrame.Shape.VLine)
-        mid.setFixedWidth(1)
-        up.setToolTip(t("set.btn.move_up"))
-        down.setToolTip(t("set.btn.move_down"))
-        up.clicked.connect(on_up)
-        down.clicked.connect(on_down)
-        sv.addWidget(up)
-        sv.addWidget(mid)
-        sv.addWidget(down)
-        self._up_btn = up
-        self._down_btn = down
-        return stepper
+class NavItemDelegate(QStyledItemDelegate):
+    """导航项选中态左侧的 3px 指示条（原型同款，QSS 画不出圆角内嵌条）。"""
 
-    def set_step_enabled(self, up_ok: bool, down_ok: bool) -> None:
-        """列表首行禁用 ▲、末行禁用 ▼（仅拦截点击，无差异配色：
-        两端箭头与其余保持同色，避免"坏掉了一样"的视觉噪声）。"""
-        if self._up_btn is not None:
-            self._up_btn.setEnabled(up_ok)
-        if self._down_btn is not None:
-            self._down_btn.setEnabled(down_ok)
+    def __init__(self, color: str, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._color = QColor(color)
+
+    def set_color(self, color: str) -> None:
+        self._color = QColor(color)
+
+    def paint(self, painter, option, index) -> None:
+        super().paint(painter, option, index)
+        if not (option.state & QStyle.StateFlag.State_Selected):
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._color)
+        r = option.rect
+        painter.drawRoundedRect(
+            QRectF(r.left() + 2, r.center().y() - 8, 3, 16), 1.5, 1.5)
+        painter.restore()
+
+
+class ThemedComboBox(QComboBox):
+    """带自绘下箭头的下拉框。
+
+    QSS 的 border-triangle 写法在 Qt 里会渲染成小方块，所以箭头改由 paintEvent
+    画两条线；颜色跟随设置窗 palette 的次级文字色。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._arrow_color = QColor("#a5a5ac")
+
+    def set_arrow_color(self, color: str) -> None:
+        self._arrow_color = QColor(color)
+        self.update()
+
+    def paintEvent(self, ev) -> None:
+        super().paintEvent(ev)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(self._arrow_color)
+        pen.setWidthF(1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        cx = self.width() - 13
+        cy = self.height() / 2 - 1
+        p.drawLine(QPointF(cx - 3.5, cy - 1.5), QPointF(cx, cy + 2))
+        p.drawLine(QPointF(cx, cy + 2), QPointF(cx + 3.5, cy - 1.5))
+        p.end()
 
 
 class ToggleSwitch(QCheckBox):
@@ -600,6 +698,7 @@ class HotkeyCaptureEdit(QLineEdit):
 
     def __init__(self, value: str = "", parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setObjectName("hotkeyEdit")
         self._kb_value = ""
         self.setReadOnly(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -681,9 +780,12 @@ class SliderSpinBox(QWidget):
                  parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._spin = QSpinBox()
+        self._spin.setObjectName("sliderSpin")
         self._spin.setRange(lo, hi)
         self._spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self._spin.setSuffix(suffix)
+        self._spin.setAlignment(Qt.AlignmentFlag.AlignRight
+                                | Qt.AlignmentFlag.AlignVCenter)
         # 宽度按后缀自适应（中文单位较宽），至少保持 72px 可读
         self._spin.setMinimumWidth(max(72, self._spin.sizeHint().width() + 6))
         slider = FlatSlider(Qt.Orientation.Horizontal)

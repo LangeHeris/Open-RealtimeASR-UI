@@ -242,9 +242,11 @@ class _HotkeyService:
             if not user32.RegisterHotKey(self._hwnd, hotkey_id, mods | MOD_NOREPEAT, vk):
                 error = ctypes.windll.kernel32.GetLastError()
                 if error == _ERROR_HOTKEY_ALREADY_REGISTERED:
-                    raise RuntimeError(
-                        "热键 {} 已被其他程序占用，请在设置里换一个组合".format(
-                            hotkey_text or "(未命名)"))
+                    from ..i18n import t
+
+                    raise RuntimeError(t(
+                        "app.err.hotkey_in_use",
+                        hotkey=hotkey_text or "?"))
                 raise OSError(error, "RegisterHotKey 失败：{}".format(hotkey_text or ""))
             self._callbacks[hotkey_id] = callback
             self._registered.add(hotkey_id)

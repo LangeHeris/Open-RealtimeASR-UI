@@ -18,9 +18,11 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 # sounddevice/numpy/websockets 及 ASR 引擎模块不在启动时导入：合计约 330ms
 #（冷启动还被杀软扫描放大），且仅录音时需要。统一在使用处延迟导入，窗口尽快可交互。
 from ..config.loader import (
+    enforce_offline_engine,
     find_config_path,
     get_config_unchecked,
     is_configured,
+    restore_preferred_engine,
 )
 from ..steam_integration import StatsTracker, get_integration, is_steam_build
 from ..hotkey import probe as _hold_probe
@@ -28,7 +30,7 @@ from ..hotkey.hold import HoldAction, HoldTracker, hold_flag_enabled
 from ..hotkey.listener import HotkeyListener
 from ..i18n import t
 from ..input.injector import TextInjector
-from ..msgbox import show_error
+from ..msgbox import show_error, show_hotkey_conflict
 from ..ui.floating_bar import FloatingBar, UI_ARMED, UI_IDLE, UI_LISTENING
 from ..ui.icons import app_icon
 # 历史对话剪贴板（同包 stdlib-only 模块，无重依赖，可放心顶层导入）
@@ -491,6 +493,20 @@ class VoiceApp(QObject):
                 self.bar.signals.transient_hint.emit(
                     t("set.steam.gpu_install_hint"), 5.0)
 
+        # 启动早期（Steamworks 初始化前）可能只扫到文件系统工坊目录、判定外部
+        # 服务不可用而临时回落本地；init 后 SDK 来源可见，若扩展包其实在，
+        # 把配置里的云端引擎还原回内存，避免菜单/设置与实际引擎不一致。
+        if restore_preferred_engine(self.cfg):
+            self.bar.set_engine(self._engine_menu_id(self.cfg))
+            if is_configured(self.cfg):
+                self.bar.set_hint(t("hint.press_to_start",
+                                    hotkey=self.cfg.hotkey.toggle.upper()))
+            logger.info("已恢复用户上次选择的引擎：%s", self.cfg.engine)
+        elif getattr(self.cfg, "_offline_engine_from", ""):
+            # 本次只能离线：明确告知是临时回落，而不是把云端选择悄悄改掉
+            self.bar.signals.transient_hint.emit(
+                t("hint.engine_offline_fallback"), 6.0)
+
         self.hotkey = HotkeyListener(
             self.cfg.hotkey.toggle, self._on_toggle,
             on_press=self._request_hold_press if self._hold_to_talk_enabled() else None)
@@ -498,10 +514,17 @@ class VoiceApp(QObject):
             self.hotkey.start()
         except Exception as exc:
             logger.error("热键注册失败：%s", exc)
-            show_error(
-                t("app.err.hotkey_register", error=exc)
-            )
-            return 3
+            resolved = self._resolve_hotkey_conflict()
+            if resolved is None:
+                show_error(
+                    t("app.err.hotkey_register", error=exc),
+                    title=t("app.err.hotkey_register_title"),
+                )
+                return 3
+            if not resolved:
+                return 3
+            logger.info("热键冲突已解决，使用新热键启动：%s",
+                        self.cfg.hotkey.toggle)
 
         # 命令待命热键（可选入口）：语音命令开启且配置了热键时注册
         self._update_cmd_hotkey_listener()
@@ -544,6 +567,12 @@ class VoiceApp(QObject):
         # 首轮，用户第一次右键就是热的。内部吞掉一切异常，不影响启动。
         from ..ui.context_menu import prewarm_context_menu
         QTimer.singleShot(0, lambda: prewarm_context_menu(self.bar))
+
+        # 源码版：后台检查本地引擎（funasr / 模型）是否有新版，只写日志不打扰。
+        # Steam 与打包版在 start_in_background() 内部直接跳过——随包分发的版本
+        # 由我们升级，用户既无法也不需要自行更新。
+        from . import update_check
+        update_check.start_in_background()
 
         # LLM 文本修正（可选）：按配置创建修正器
         self._setup_llm_corrector()
@@ -727,6 +756,69 @@ class VoiceApp(QObject):
         进 HotkeyListener（on_press=None），按下行为与改动前逐字一致。
         """
         self.hold_press_requested.emit()
+
+    def _resolve_hotkey_conflict(self) -> bool | None:
+        """启动期热键被占用：弹窗内直接录制新组合并重试注册。
+
+        返回 True=已换到可用热键（本次启动继续）；False=用户选择退出程序；
+        None=当前环境不弹窗（源码构建/弹窗失败），调用方走原有提示路径。
+        """
+        try:
+            return show_hotkey_conflict(
+                self.cfg.hotkey.toggle,
+                self._retry_hotkey_registration,
+                cfg=self.cfg,
+            )
+        except Exception:
+            logger.debug("热键冲突弹窗显示失败", exc_info=True)
+            return None
+
+    def _retry_hotkey_registration(self, hotkey: str) -> str | None:
+        """热键冲突弹窗的「保存并重试」：先注册成功，再写配置。
+
+        返回 None=成功；返回错误文案=失败原因（弹窗就地提示，继续改）。
+        成功前不落盘——避免把不可用的组合写进 config.yaml 导致下次仍起不来。
+        """
+        hotkey = (hotkey or "").strip().lower()
+        if not hotkey:
+            return t("app.err.hotkey_empty")
+        # 先改内存值：_hold_to_talk_enabled 按新热键的主键判断能否长按
+        old_toggle = ""
+        try:
+            old_toggle = self.cfg.hotkey.toggle
+            self.cfg.hotkey.toggle = hotkey
+        except Exception:
+            logger.debug("更新内存热键失败", exc_info=True)
+        try:
+            if self.hotkey is not None:
+                self.hotkey.stop()
+            listener = HotkeyListener(
+                hotkey, self._on_toggle,
+                on_press=(self._request_hold_press
+                          if self._hold_to_talk_enabled() else None))
+            listener.start()
+        except Exception as exc:
+            logger.error("热键注册失败（重试 %s）：%s", hotkey, exc)
+            try:
+                self.cfg.hotkey.toggle = old_toggle
+            except Exception:
+                logger.debug("回滚内存热键失败", exc_info=True)
+            return str(exc)
+        self.hotkey = listener
+        try:
+            from ..config.loader import update_config_field
+
+            if not update_config_field("toggle", hotkey, section="hotkey"):
+                logger.warning(
+                    "热键已切换为 %s，但写入 config.yaml 失败，下次启动需手动修改",
+                    hotkey)
+        except Exception:
+            logger.warning("热键写入配置异常", exc_info=True)
+        try:
+            self.bar.set_hint(t("hint.press_to_start", hotkey=hotkey.upper()))
+        except Exception:
+            logger.debug("更新悬浮条热键提示失败", exc_info=True)
+        return None
 
     def _on_hotkey_press(self) -> None:
         """热键按下（长按模式下由 hold_press_requested 排队到主线程后调用）。
@@ -1150,6 +1242,15 @@ class VoiceApp(QObject):
                 return
             # 中间结果：更新悬浮条（边说边看）。
             self.bar.signals.text_updated.emit(text, False)
+            # 无服务端断句的引擎（FunASR / 腾讯 preview）：final 依赖本地 VAD 切句，
+            # 热键后立刻开口时整句可能落在底噪校准窗口内、VAD 漏掉语音起止，触发词
+            # 要等到停录冲刷才成 final。中间帧是累积文本，精确等于触发词就先亮待命态。
+            _asr = self.asr
+            if text and not self._command_standby and _asr is not None and (
+                    getattr(_asr, "sync_stop_flush", False)
+                    or getattr(_asr, "flush_tail_on_stop", False)):
+                voice_command_handlers.maybe_enter_standby_from_intermediate(
+                    self, text)
             # 逐字同步：中间结果实时进输入框，增量追加、ASR 回头修正才退格重打。
             # wait 模式（等修正后上屏）不启用，避免与修正叠加。
             # 命令候选句不注入：中间帧静默 + final 整句补写不丢字，命令文字也不残留
@@ -1508,6 +1609,8 @@ class VoiceApp(QObject):
                 t("app.err.config_load", error=exc))
             return
 
+        # 外部服务仍不可用时保持内存回落（不写盘，配置里的云端选择保留）
+        enforce_offline_engine(new_cfg)
         old_hotkey = self.cfg.hotkey.toggle
         # 长按开关的生效值也要在替换 cfg 之前取：on_press 是构造期定下的，热加载
         # 只换 cfg 不重建热键的话，设置页/手改 yaml 打开长按要等重启才生效
@@ -1988,21 +2091,24 @@ class VoiceApp(QObject):
         except Exception:
             logger.debug("Steam 会话统计失败", exc_info=True)
 
-    def _flush_steam_cloud(self) -> None:
-        """上传云存档（脱敏配置 + 历史）+ 统计落盘。失败只记日志。
+    def _flush_steam_cloud(self, include_keys: bool | None = None) -> tuple[bool, str]:
+        """上传云存档（脱敏配置 + 历史）+ 统计落盘。
 
+        返回 (成功, saved_at ISO / 错误文案)；定时/退出路径忽略返回值，
+        「立即同步」按钮用它更新最近同步时间。include_keys 由调用方传入时
+        优先使用（设置窗里刚切换、尚未保存的开关状态）。
         「同步密钥」关闭时还必须**删掉**云上那份含密钥的 `config.full.yaml`：只停止
         写入不够——旧文件会留在云里，新机首启还会被恢复回来，等于开关关了密钥仍同步。
         """
         # 一律 getattr：_cleanup 会被「只造了半个 VoiceApp」的测试调用
         steam = getattr(self, "_steam", None)
         if steam is None or not steam.available:
-            return
+            return False, ""
         from pathlib import Path
 
         from . import history as _history
 
-        from ..steam_integration import build_cloud_files
+        from ..steam_integration import CLOUD_CONFIG_NAME, build_cloud_files
 
         try:
             cfg_dict = {}
@@ -2011,19 +2117,33 @@ class VoiceApp(QObject):
 
                 cfg_dict = yaml.safe_load(
                     Path(self._config_path).read_text(encoding="utf-8")) or {}
-            include_keys = bool(getattr(
-                getattr(self.cfg, "steam", None), "cloud_sync_keys", False))
+            if include_keys is None:
+                include_keys = bool(getattr(
+                    getattr(self.cfg, "steam", None),
+                    "cloud_sync_keys", False))
             files = build_cloud_files(
                 cfg_dict, _history.entries(), include_keys=include_keys)
             for name, text in files.items():
-                steam.cloud_write(name, text.encode("utf-8"))
+                if not steam.cloud_write(name, text.encode("utf-8")):
+                    return False, f"cloud_write failed: {name}"
             if not include_keys:
                 self._revoke_cloud_full_config(steam)
             stats = getattr(self, "_steam_stats", None)
             if stats is not None:
                 stats.flush(steam)
-        except Exception:
+            saved_at = ""
+            try:
+                import yaml
+
+                meta = (yaml.safe_load(files[CLOUD_CONFIG_NAME]) or {}).get(
+                    "_meta") or {}
+                saved_at = str(meta.get("saved_at", ""))
+            except Exception:
+                pass
+            return True, saved_at
+        except Exception as exc:
             logger.debug("云存档上传失败", exc_info=True)
+            return False, str(exc)
 
     @staticmethod
     def _revoke_cloud_full_config(steam) -> None:
@@ -2056,7 +2176,8 @@ class VoiceApp(QObject):
             self._settings_dlg.raise_()
             self._settings_dlg.activateWindow()
             return
-        dlg = SettingsDialog(self.cfg, parent=self.bar)
+        dlg = SettingsDialog(self.cfg, parent=self.bar,
+                             steam_sync=self._flush_steam_cloud)
         self._settings_dlg = dlg
         # 设置打开期间禁用悬浮条右键菜单（contextMenuEvent 守卫读取）
         self.bar._settings_dlg_open = True

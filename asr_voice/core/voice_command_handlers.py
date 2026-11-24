@@ -121,6 +121,30 @@ def command_delete_selection(app) -> None:
     app.injector.read_selection(done_callback=_after_read)
 
 
+def maybe_enter_standby_from_intermediate(app, text: str) -> bool:
+    """本地引擎中间帧兜底：只说出触发词时提前进入待命态。
+
+    无服务端断句的引擎（FunASR / 腾讯 preview）final 依赖本地 VAD 切句；
+    热键后立刻开口时整句可能落在 1 秒底噪校准窗口内（VAD 不喂音频），
+    VAD 漏掉语音起止 → 停录才 flush，表现为「说完触发词一直不进命令态」。
+    中间帧是累积文本，精确等于触发词就先亮待命态；随后命令句的 final
+    会剥掉触发词再路由（见 maybe_route_command 的待命分支）。
+    """
+    if not text or app._command_standby:
+        return False
+    from . import voice_commands
+
+    if not voice_commands.enabled():
+        return False
+    hit, rest = voice_commands.detect_prefix(text)
+    if not hit or rest:
+        return False
+    logger.info("语音命令：中间帧命中触发词，提前进入待命态")
+    app._command_standby = True
+    app.bar.signals.command_standby.emit(True)
+    return True
+
+
 def maybe_route_command(app, text: str) -> bool:
     """命令检测，命中返回 True（调用方停止常规上屏/注入）。判定顺序：
     待命态整句即命令 > 句首触发词（有余文即命令，无余文进待命）。
@@ -133,12 +157,20 @@ def maybe_route_command(app, text: str) -> bool:
 
     if not voice_commands.enabled():
         return False
-    # 待命态：本句整体就是命令（单说触发词后的下一句）
+    # 待命态：本句整体就是命令（单说触发词后的下一句）。本地引擎整段累积时
+    # 命令句可能还带着句首触发词（待命态由中间帧提前进入），先剥掉再路由。
     if app._command_standby:
+        hit, rest = voice_commands.detect_prefix(text)
+        if hit and not rest:
+            # 又只说了一遍触发词：维持待命并重置倒计时
+            app.bar.signals.command_standby.emit(True)
+            return True
         app._command_standby = False
         app.bar.signals.command_standby.emit(False)
         # 命令句中间帧只拦了注入没拦显示，final 被吞后清掉，别残留"发送"等字样
         app.bar.signals.text_updated.emit("", False)
+        if hit:
+            text = rest
         if not voice_commands.is_valid_command_text(text):
             # 纯标点/噪声：不当命令也不上屏，避免待命句误上屏
             return True

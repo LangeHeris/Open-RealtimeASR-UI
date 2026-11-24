@@ -42,16 +42,10 @@ def show_error(message: str, title: str = "Open-RealtimeASR-UI") -> None:
         _win32_show_error(message, title)
 
 
-def _qt_show_error(message: str, title: str) -> None:
-    """Qt 对话框路径。
-
-    启动期致命错误常发生在 QApplication 建立之前（配置加载失败等），
-    这里临时创建、用完即弃。任何失败都向外抛，由 show_error 回退 Win32。
-    """
+def _ensure_qt():
+    """确保 QApplication 与默认字体就绪（启动期可能尚无 QApplication）。"""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
-
-    from .ui.error_dialog import ErrorDialog
 
     app = QApplication.instance()
     if app is None:
@@ -68,15 +62,51 @@ def _qt_show_error(message: str, title: str) -> None:
         apply_default_font(app)
     except Exception:
         pass
-    # 主题跟随设置界面主题；配置不可用时（本错误可能就是配置加载失败）
-    # ErrorDialog 内部回退默认主题
-    cfg = None
+    return app
+
+
+def _load_cfg():
+    """读取配置；失败返回 None（弹窗内部回退默认主题）。"""
     try:
         from .config.loader import get_config_unchecked
-        cfg = get_config_unchecked(None)
+        return get_config_unchecked(None)
     except Exception:
-        cfg = None
-    ErrorDialog(message, title=title, cfg=cfg).exec()
+        return None
+
+
+def _qt_show_error(message: str, title: str) -> None:
+    """Qt 对话框路径。
+
+    启动期致命错误常发生在 QApplication 建立之前（配置加载失败等），
+    这里临时创建、用完即弃。任何失败都向外抛，由 show_error 回退 Win32。
+    """
+    from .ui.error_dialog import ErrorDialog
+
+    _ensure_qt()
+    # 主题跟随设置界面主题；配置不可用时（本错误可能就是配置加载失败）
+    # ErrorDialog 内部回退默认主题
+    ErrorDialog(message, title=title, cfg=_load_cfg()).exec()
+
+
+def show_hotkey_conflict(current: str, retry, cfg=None) -> bool | None:
+    """热键被占用：弹窗内直接录制新组合并重试注册。
+
+    retry(new_hotkey) 返回 None 表示注册成功，返回错误文案则就地提示、
+    留在弹窗里继续改。返回 True=已解决；False=用户选择退出；None=当前
+    环境不弹窗（源码构建或 Qt 路径失败），调用方沿用原有致命错误路径。
+    """
+    if not (_is_frozen() or _is_steam()):
+        return None
+    try:
+        from PySide6.QtWidgets import QDialog
+
+        from .ui.error_dialog import HotkeyConflictDialog
+
+        _ensure_qt()
+        dlg = HotkeyConflictDialog(current, retry, cfg=cfg or _load_cfg())
+        return dlg.exec() == QDialog.DialogCode.Accepted
+    except Exception:
+        return None
 
 
 def _win32_show_error(message: str, title: str) -> None:

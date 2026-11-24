@@ -187,12 +187,11 @@ def _main() -> int:
 
     setup_logging(cfg)
     logger = logging.getLogger("asr_voice")
-    # 引擎校正：外部服务不可用时不许配置里留云端引擎（详见函数 docstring）。
-    # 必须排在 is_configured() 判断之前——那条日志要反映校正后的真实状态
-    # 而且不校正的话紧接着的 start_session 会弹"请填写密钥"死路提示。
-    # 外部服务可用时这里是 no-op，已就绪的配置不受影响。
+    # 引擎校正：外部服务不可用时内存里不许留云端引擎（不写盘——扩展包暂时
+    # 不可用不该抹掉用户上次的云端选择）。必须排在 is_configured() 判断之前，
+    # 那条日志才能反映本次会话真实状态。
     from .config.loader import enforce_offline_engine
-    enforce_offline_engine(cfg, path=config_arg)
+    enforce_offline_engine(cfg)
     if is_configured(cfg):
         logger.info("配置就绪：%s", describe_config(cfg))
     elif getattr(cfg, "engine", "") == "funasr":
