@@ -238,11 +238,12 @@ def _run_elevated_wait(exe: str, params: str, timeout_ms: int = 15000) -> bool:
         return False
 
 
-def delete_admin_task() -> tuple[bool, str]:
+def delete_admin_task(interactive: bool = True) -> tuple[bool, str]:
     """删除管理员启动计划任务。
 
     先以当前权限删（任务是本用户创建的，owner 通常有权直接删）；
-    失败则弹一次 UAC 提权删除（schtasks 挂在 UAC 提权下执行并等待）。
+    失败且 `interactive` 时才弹 UAC 提权删除；开机自启路径传 False，
+    绝不能因为清理残留任务在登录时弹窗。
     """
     if sys.platform != "win32":
         return False, "仅支持 Windows"
@@ -250,6 +251,8 @@ def delete_admin_task() -> tuple[bool, str]:
         return True, "任务不存在，无需清理"
     if _schtasks("/Delete", "/TN", TASK_NAME, "/F") == 0:
         return True, "已删除管理员启动任务"
+    if not interactive:
+        return False, f"删除失败（需管理员权限），可在任务计划程序手动删除「{TASK_NAME}」"
     # 普通权限删失败：提权删（弹一次 UAC）
     if _run_elevated_wait("schtasks.exe", f'/Delete /TN "{TASK_NAME}" /F'):
         if not admin_task_exists():
@@ -258,10 +261,12 @@ def delete_admin_task() -> tuple[bool, str]:
     return False, f"删除失败（需管理员权限），可在任务计划程序手动删除「{TASK_NAME}」"
 
 
-def relaunch_if_configured(cfg) -> bool:
+def relaunch_if_configured(cfg, auto_start: bool = False) -> bool:
     """「永久为管理员启动」启动期判定（main 启动早期调用）；返回 True 表示调用方应立即退出当前实例。
 
-    提权实例顺带对账自愈：开关开着但任务缺失则补建，开关关着但任务残留则清理。
+    `auto_start`（开机/登录自动拉起）路径绝不弹 UAC：等不到管理员实例就以
+    普通权限继续，避免每次开机都要手动点「是」。提权实例顺带对账自愈：
+    开关开着但任务缺失则补建，开关关着但任务残留则清理。
     """
     import logging
 
@@ -280,7 +285,7 @@ def relaunch_if_configured(cfg) -> bool:
                     log.warning("管理员启动计划任务创建失败：%s", msg)
         elif admin_task_exists():
             # 开关已关但任务残留（关闭时删除失败遗留）：自愈清理
-            ok, msg = delete_admin_task()
+            ok, msg = delete_admin_task(interactive=not auto_start)
             log.info("自愈清理残留管理员启动任务：%s", "成功" if ok else msg)
         return False
 
@@ -295,14 +300,23 @@ def relaunch_if_configured(cfg) -> bool:
         # 触发计划任务：提权实例以管理员启动，全程无 UAC
         if run_admin_task():
             log.info("永久管理员启动：已触发计划任务（无 UAC），本进程退出")
-            # 手动双击场景：提权实例 --hidden 驻留，替用户唤出悬浮条
-            _notify_show()
+            # 开机路径不唤出悬浮条，与任务本身的 --hidden 静默启动保持一致
+            if not auto_start:
+                _notify_show()
             return True
         # 触发失败多为"任务已在运行"（提权实例在途/驻留）：等它出现
-        if _wait_instance_pipe(5.0):
+        if _wait_instance_pipe(8.0 if auto_start else 12.0):
             log.info("永久管理员启动：提权实例已在运行，本进程退出")
             return True
+        if auto_start:
+            # 开机路径绝不回退 UAC：宁可本次普通权限，也不弹窗打断登录
+            log.warning("永久管理员启动：开机未等到管理员实例，本次以普通权限运行")
+            return False
         log.warning("计划任务触发失败，回退 UAC 提权")
+    elif auto_start:
+        # 任务缺失（首次开启失败 / 被清理）：开机路径不补 UAC，正常启动即可
+        log.warning("永久管理员启动：启动任务不存在，本次以普通权限运行（不弹 UAC）")
+        return False
     # 任务不存在（首次开启 / 被删 / 被禁用）：UAC 拉起提权实例
     # 由它在 relaunch_if_configured 的提权分支补建任务
     ok, msg = relaunch_elevated()

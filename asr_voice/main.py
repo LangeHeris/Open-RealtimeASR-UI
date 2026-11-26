@@ -78,7 +78,7 @@ def _maybe_restore_cloud_config(target, explicit_config: str = "") -> None:
 
         from .steam_integration import (
             CLOUD_CONFIG_NAME, CLOUD_FULL_CONFIG_NAME, get_integration,
-            merge_cloud_config)
+            merge_cloud_config, save_last_cloud_sync)
 
         integ = get_integration()
         if not integ.init():
@@ -97,6 +97,9 @@ def _maybe_restore_cloud_config(target, explicit_config: str = "") -> None:
         import yaml
 
         cloud = yaml.safe_load(raw.decode("utf-8")) or {}
+        meta = cloud.get("_meta") if isinstance(cloud, dict) else None
+        if isinstance(meta, dict):
+            save_last_cloud_sync(str(meta.get("saved_at", "")))
         # local 传空字典：本地文件都还不存在，全靠云补。
         # allow_secrets 只在「云上确实有含密钥那份」时为 True——
         # 那份是用户自己开同步时写上去的。
@@ -219,10 +222,10 @@ def _main() -> int:
     if is_steam_build() and not check_microphone():
         logger.warning("未检测到麦克风，程序仍将启动，但录音不可用")
 
-    # 「永久为管理员启动」：开关开启且当前未提权时，拉起提权实例后退出
-    # 当前普通权限实例（拒绝 UAC 则以普通权限继续，不阻塞启动）
+    # 「永久为管理员启动」：开关开启且当前未提权时，拉起提权实例后退出。
+    # 开机/登录自动拉起（--hidden）路径不弹 UAC，等不到提权实例就以普通权限继续
     from .core.elevation import relaunch_if_configured
-    if relaunch_if_configured(cfg):
+    if relaunch_if_configured(cfg, auto_start=start_hidden):
         return EXIT_OK
 
     try:

@@ -460,31 +460,59 @@ def steam_library_roots() -> list[Path]:
 
 
 def _app_id() -> int:
-    """本应用的 Steam AppID（回落 0 = 未注入，文件系统发现整体短路）。"""
+    """本应用的 Steam AppID；0 = 未知。
+
+    优先构建期注入的常量（发行 depot 的 `_steam_ids.py`）；源码/提权环境
+    没有它，退回 Steam 客户端注入的环境变量（`run_source_steam.py` 也设）。
+    """
     from .steam_integration import STEAM_APP_ID
 
     try:
-        return int(STEAM_APP_ID)
+        if STEAM_APP_ID:
+            return int(STEAM_APP_ID)
     except (TypeError, ValueError):     # pragma: no cover
-        return 0
+        pass
+    for name in ("SteamAppId", "SteamGameId"):
+        try:
+            value = int(os.environ.get(name, "") or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
 
 
 def _steam_content_item_dirs() -> list[Path]:
-    """本应用在 Steam 库里的工坊内容目录；AppID 为 0 时返回空（不能拿未知 ID 去扫）。"""
+    """本应用在 Steam 库里的工坊内容目录。
+
+    AppID 已知时只扫自己的目录；未知时（源码/提权且无构建期 ID）扫描全部
+    AppID 子目录，但只收带 `ori_workshop.json` 的物品——用清单文件当签名，
+    避免把别的游戏的内容当自己的。
+    """
     app_id = _app_id()
-    if not app_id:
-        return []
     out: list[Path] = []
     for library in steam_library_roots():
-        content = library / "steamapps" / "workshop" / "content" / str(app_id)
-        if not content.is_dir():
-            continue
-        try:
-            children = sorted(content.iterdir())
-        except OSError:
-            continue
-        for child in children:
-            if child.is_dir():
+        content_root = library / "steamapps" / "workshop" / "content"
+        if app_id:
+            app_dirs = [content_root / str(app_id)]
+        else:
+            try:
+                app_dirs = sorted(p for p in content_root.iterdir()
+                                  if p.is_dir())
+            except OSError:
+                continue
+        for content in app_dirs:
+            if not content.is_dir():
+                continue
+            try:
+                children = sorted(content.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if not child.is_dir():
+                    continue
+                if not app_id and not (child / MANIFEST_NAME).is_file():
+                    continue
                 out.append(child)
     return out
 

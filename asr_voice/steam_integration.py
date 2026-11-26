@@ -11,6 +11,7 @@ AppID：开发期靠工作目录 steam_appid.txt（steamworks 自动读取）；
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 logger = logging.getLogger(__name__)
@@ -18,13 +19,15 @@ logger = logging.getLogger(__name__)
 def _load_dlc_app_id() -> int:
     """取免费显卡加速 DLC 的 AppID；没有构建期产物就回落 0。
 
-    真 ID 不入库（构建期生成、只落 depot，源码树无此文件）；回落 0 是唯一安全缺省：
-    DLC 判断整体短路（不显示「安装 DLC」入口），而不是误报「未安装」。
+    真 ID 不入库（构建期生成、只落 depot，源码树无此文件）；源码/开发运行
+    允许用环境变量 `STEAM_DLC_APP_ID` 注入（tools/run_source_steam.py 会设
+    默认值）。回落 0 是唯一安全缺省：DLC 判断整体短路（不显示「安装 DLC」
+    入口），而不是误报「未安装」。
     """
     try:
         from ._steam_ids import STEAM_DLC_GPU_APP_ID as value
     except ImportError:
-        return 0
+        value = os.environ.get("STEAM_DLC_APP_ID", "")
     try:
         return int(value)
     except (TypeError, ValueError):     # pragma: no cover - 生成物被手改成垃圾
@@ -37,13 +40,14 @@ STEAM_DLC_GPU_APP_ID = _load_dlc_app_id()
 def _load_main_app_id() -> int:
     """取本应用的主 AppID（拼工坊页链接 + 文件系统兜底发现用）；无构建期产物回落 0。
 
-    真 ID 不入库（同 DLC ID 纪律）；回落 0 时文件系统发现整体短路——宁可什么都不
-    发现，也不拿错 ID 去扫别人的目录。
+    真 ID 不入库（同 DLC ID 纪律）；源码/开发运行可用环境变量 `STEAM_APP_ID`
+    注入。回落 0 时文件系统发现整体短路——宁可什么都不发现，也不拿错 ID 去扫
+    别人的目录。
     """
     try:
         from ._steam_ids import STEAM_APP_ID as value
     except ImportError:
-        return 0
+        value = os.environ.get("STEAM_APP_ID", "")
     try:
         return int(value)
     except (TypeError, ValueError):     # pragma: no cover - 生成物被手改成垃圾
@@ -608,6 +612,45 @@ _SECRET_KEY_NAMES: frozenset[str] = frozenset(
 CLOUD_CONFIG_NAME = "config.steamcloud.yaml"
 CLOUD_FULL_CONFIG_NAME = "config.full.yaml"
 CLOUD_HISTORY_NAME = "history.json"
+
+
+def _cloud_state_file():
+    """本机记录云存档状态的 JSON 路径（不参与上传，只供状态行显示）。"""
+    from .paths import state_dir
+
+    return state_dir() / "steam_cloud.json"
+
+
+def load_last_cloud_sync() -> str:
+    """上次成功上传云存档的 UTC ISO 时间；读不到返回空串。
+
+    云文件在离线/提权时读不了，用它把「最近同步」保留在界面上。
+    """
+    try:
+        import json
+
+        data = json.loads(_cloud_state_file().read_text(encoding="utf-8"))
+        value = data.get("last_saved_at") if isinstance(data, dict) else ""
+        return str(value or "")
+    except Exception:
+        return ""
+
+
+def save_last_cloud_sync(saved_at: str) -> None:
+    """记录上次成功上传时间；失败只影响状态行，静默。"""
+    if not saved_at:
+        return
+    try:
+        import json
+
+        from .config.loader import _atomic_write
+
+        path = _cloud_state_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(path, json.dumps(
+            {"last_saved_at": str(saved_at)}, ensure_ascii=False))
+    except Exception:
+        logger.debug("记录最近云同步时间失败", exc_info=True)
 
 
 def build_cloud_files(cfg_dict: dict, history_entries: list,

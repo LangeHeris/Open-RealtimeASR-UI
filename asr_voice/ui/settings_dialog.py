@@ -55,6 +55,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import __version__
+from ..core.elevation import is_elevated
 from ..hotkey.hold import hold_flag_enabled
 from ..i18n import t
 from ..steam_integration import (
@@ -566,16 +567,23 @@ def _workshop_selected_id(lst) -> int:
 def _workshop_community_url() -> str:
     """本应用的社区创意工坊页。
 
-    用 AppID 而不是硬编码：AppID 只能由平台客户端注入（项目约定「真 ID
-    不入库」），拿不到时退回 Steam 首页而不是拼一个错的链接。
+    AppID 优先取运行时注入值；提权/未初始化时 SDK 拿不到，退回构建期常量。
+    两者都没有就退回 Steam 首页，避免拼一个错的链接。
     """
+    app_id = 0
     try:
         from ..steam_integration import get_integration
 
-        integ = get_integration()
-        app_id = integ.app_id()
+        app_id = int(get_integration().app_id() or 0)
     except Exception:
         app_id = 0
+    if not app_id:
+        try:
+            from ..steam_integration import STEAM_APP_ID
+
+            app_id = int(STEAM_APP_ID or 0)
+        except Exception:
+            app_id = 0
     if app_id:
         return f"https://steamcommunity.com/app/{int(app_id)}/workshop/"
     return "https://steamcommunity.com/workshop/"
@@ -1501,9 +1509,8 @@ class SettingsDialog(QDialog):
         # 语音命令的 AI 字段全部不装配，只留内置离线引擎与纯本地功能。
         _ext = external_services_allowed()
 
-        # 通用设置：永久提权按钮（置顶，无分区标题）/ 热键 / 输出 / 界面 / 引擎排序
-        # 参考图无页头：内容直接从分区开始，页面归属只看左侧导航选中态；
-        # 提权按钮行作为 QWidget 直插页顶（不走分组，无「程序行为」标题）
+        # 通用设置：管理员启动卡片（置顶）/ 热键 / 输出 / 界面 / 引擎排序
+        # 参考图无页头：内容直接从分区开始，页面归属只看左侧导航选中态
         general_groups = [
             self._build_admin_launch_row(),
             # 长按说话：两个面向用户的字段与「录音热键」同组紧邻显示。
@@ -1776,6 +1783,19 @@ class SettingsDialog(QDialog):
         title_bar.installEventFilter(self)
         # 搜索框 Esc 清空：不依赖原生清空按钮（深色主题下图标对比不可控）
         self._search_edit.installEventFilter(self)
+
+    def showEvent(self, event) -> None:
+        """首次显示时居中到父窗口所在屏幕（无父窗口则主屏）。"""
+        super().showEvent(event)
+        if getattr(self, "_centered_once", False):
+            return
+        self._centered_once = True
+        screen = self.parentWidget().screen() if self.parentWidget() else None
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        self.move(screen.availableGeometry().center() - self.rect().center())
 
     def eventFilter(self, obj, ev) -> bool:
         """边缘拉伸过滤器：悬停显示方向箭头，左键按住走系统级缩放。
@@ -3130,7 +3150,7 @@ class SettingsDialog(QDialog):
         return container
 
     def _build_admin_launch_row(self) -> QWidget:
-        """通用设置页置顶：永久提权动作行（全宽动作按钮 + 灰色说明/状态）。
+        """通用设置页置顶：管理员启动卡片（标题 + 说明 + 全宽动作按钮 + 状态）。
 
         点击立即写配置（不等「保存」）：开启时创建"以最高权限运行"计划任务，
         首次需 UAC 确认一次，此后开机/手动启动都由任务管理员拉起、不再弹 UAC。
@@ -3146,10 +3166,15 @@ class SettingsDialog(QDialog):
         self._always_admin = bool(getattr(self.cfg.ui, "always_admin", False))
         self._currently_elevated = is_elevated()
 
-        row = QWidget()
-        v = QVBoxLayout(row)
-        v.setContentsMargins(0, 12, 0, 12)
+        card = QWidget()
+        card.setObjectName("accordionCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(14, 12, 14, 14)
         v.setSpacing(8)
+
+        title = QLabel(t("set.admin.group"))
+        title.setObjectName("sectionTitle")
+        v.addWidget(title)
 
         # 全宽动作按钮：未开启蓝（btnWide）/ 已开启绿（btnWideGreen）
         # _refresh 里切 objectName 后 re-polish 使新样式生效；
@@ -3162,23 +3187,21 @@ class SettingsDialog(QDialog):
         btn.setIconSize(QSize(16, 16))
         btn.setToolTip(t("set.admin.tip"))
         btn.setToolTipDuration(10000)
-        v.addWidget(btn)
 
         # 文案刻意回避「标」字：用户环境特定 DPI 下该字形光栅化出黑点
-        # 调整落位无效（见提权行上轮改动），直接换掉该字符最稳
-        desc = QLabel(
-            t("set.admin.desc")
-            + (t("set.admin.desc_elevated") if self._currently_elevated else "")
-        )
+        # 调整落位无效（见提权行上轮改动），直接换掉该字符最稳。
+        # 两句话各占一行：原因 / 开启后的效果，避免长句挤成一整段
+        desc = QLabel(t("set.admin.desc"))
         desc.setObjectName("fieldDesc")
         desc.setWordWrap(True)
         v.addWidget(desc)
+        v.addWidget(btn)
 
+        # 操作反馈行：平时隐藏（开/关状态由按钮颜色与文案表达），
+        # 只在点击后展示成功/失败结果；空文本仍占行高，故默认隐藏
         status = QLabel()
-        status.setObjectName("fieldDesc")
+        status.setObjectName("fieldState")
         status.setWordWrap(True)
-        # 默认隐藏：开/关状态由按钮颜色+文案自表达，这里只承接点击后的操作反馈；
-        # QLabel 空文本仍占行高，隐藏才能省掉空白行（参考 _build_llm_test_row）
         status.setVisible(False)
         v.addWidget(status)
 
@@ -3252,7 +3275,7 @@ class SettingsDialog(QDialog):
 
         btn.clicked.connect(_on_toggle)
         _refresh()
-        return row
+        return card
 
     def _steam_page_groups(self, pick) -> list:
         """Steam 页分组（仅发行构建渲染）。
@@ -3273,6 +3296,8 @@ class SettingsDialog(QDialog):
             return []
         integ = get_integration()
         connected = bool(getattr(integ, "available", False))
+        # 提权启动时 SteamAPI_Init 必失败；不探测 Steam 进程，直接按不可用说明
+        elevated_unavailable = bool(not connected and is_elevated())
 
         # 云存档卡：同步密钥开关（条件渲染）+ 状态行（始终显示，离线时说明原因）
         _keys_already_on = bool(getattr(
@@ -3280,27 +3305,41 @@ class SettingsDialog(QDialog):
         cloud_rows = []
         if external_services_allowed() or _keys_already_on:
             cloud_rows += list(pick("steam", ("cloud_sync_keys",)))
-        cloud_rows.append(self._build_steam_cloud_status_row(integ, connected))
+        cloud_rows.append(self._build_steam_cloud_status_row(
+            integ, connected, elevated_unavailable))
 
         # 显卡加速卡：开关（平台支持时）+ 未安装扩展包时的安装入口
         gpu_rows = []
         if _gpu_switch_available():
             gpu_rows += pick("steam", ("use_gpu",))
-        if STEAM_DLC_GPU_APP_ID and nvidia_gpu_present() and \
-                not integ.dlc_installed(STEAM_DLC_GPU_APP_ID):
-            gpu_rows.append(self._build_gpu_install_row())
+        # 显卡加速扩展包：检测到 N 卡就保留这一行；未连接时只显示状态，
+        # 不给可点的安装入口（安装必须经 Steam 客户端）
+        if STEAM_DLC_GPU_APP_ID and nvidia_gpu_present():
+            gpu_rows.append(self._build_gpu_extension_row(
+                installed=integ.dlc_installed(STEAM_DLC_GPU_APP_ID),
+                connected=connected))
 
-        groups: list = [self._build_steam_status_banner(connected),
+        groups: list = [self._build_steam_status_banner(
+            connected, elevated_unavailable),
                         ("set.steam.group_cloud", cloud_rows)]
         if gpu_rows:
             groups.append(("set.steam.group_gpu", gpu_rows))
         # 创意工坊作为独立一张卡（内部有列表 + 多按钮，塞进字段流会被行间
         # 分割线排版拉坏）。SDK 不可用时照样建卡，说明为什么没有工坊。
-        groups.append(self._build_workshop_card())
+        groups.append(self._build_workshop_card(elevated_unavailable))
         return groups
 
-    def _build_steam_status_banner(self, connected: bool) -> QWidget:
-        """连接状态条：绿=已连接客户端，琥珀=未连接。"""
+    def _build_steam_status_banner(self, connected: bool,
+                                   elevated_unavailable: bool = False) -> QWidget:
+        """连接状态条：绿=已连接客户端，琥珀=未连接。
+
+        提权说明放在色条外（下方），避免色条被两行文字撑高。
+        """
+        wrap = QWidget()
+        outer = QVBoxLayout(wrap)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+
         banner = QWidget()
         banner.setObjectName("steamStatusBanner")
         banner.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -3312,15 +3351,27 @@ class SettingsDialog(QDialog):
         dot.setObjectName("steamStatusDot")
         dot.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         dot.setFixedSize(7, 7)
-        text = QLabel(t("set.steam.connected" if connected
-                        else "set.steam.disconnected"))
+        if connected:
+            key = "set.steam.connected"
+        elif elevated_unavailable:
+            key = "set.steam.disconnected_elevated"
+        else:
+            key = "set.steam.disconnected"
+        text = QLabel(t(key))
         text.setObjectName("steamStatusText")
-        h.addWidget(dot)
-        h.addWidget(text)
-        h.addStretch(1)
-        return banner
+        h.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        h.addWidget(text, 1)
+        outer.addWidget(banner)
 
-    def _build_steam_cloud_status_row(self, integ, connected: bool) -> QWidget:
+        if elevated_unavailable:
+            hint = QLabel(t("set.steam.elevated_unavailable_hint"))
+            hint.setObjectName("fieldDesc")
+            hint.setWordWrap(True)
+            outer.addWidget(hint)
+        return wrap
+
+    def _build_steam_cloud_status_row(self, integ, connected: bool,
+                                      elevated_unavailable: bool = False) -> QWidget:
         """云存档状态行：最近同步时间 + 立即同步按钮。"""
         wrap = QWidget()
         h = QHBoxLayout(wrap)
@@ -3331,7 +3382,8 @@ class SettingsDialog(QDialog):
         left.setSpacing(2)
         title = QLabel(t("set.steam.cloud_status"))
         title.setObjectName("fieldLabel")
-        status = QLabel(self._steam_last_sync_text(integ, connected))
+        status = QLabel(self._steam_last_sync_text(
+            integ, connected, elevated_unavailable))
         status.setObjectName("fieldDesc")
         status.setWordWrap(True)
         left.addWidget(title)
@@ -3347,6 +3399,8 @@ class SettingsDialog(QDialog):
         btn.setEnabled(available)
         if not available:
             btn.setToolTip(t("set.steam.sync_unavailable"))
+        # 提权下同步必然失败：直接收起按钮，只保留「最近同步」状态行
+        btn.setVisible(not elevated_unavailable)
         btn.clicked.connect(self._on_steam_sync_clicked)
         h.addWidget(btn)
 
@@ -3354,21 +3408,29 @@ class SettingsDialog(QDialog):
         self._steam_sync_btn = btn
         return wrap
 
-    def _steam_last_sync_text(self, integ, connected: bool) -> str:
-        """读云端 _meta.saved_at 作为「最近同步」；读不到就显示尚未同步。"""
-        if not connected or integ is None:
+    def _steam_last_sync_text(self, integ, connected: bool,
+                              elevated_unavailable: bool = False) -> str:
+        """读云端 _meta.saved_at 作为「最近同步」；读不到就用本机记录。"""
+        if not connected and not elevated_unavailable:
             return t("set.steam.sync_unavailable")
-        try:
-            raw = integ.cloud_read(CLOUD_CONFIG_NAME)
-            if raw:
-                import yaml
+        saved_at = ""
+        if integ is not None:
+            try:
+                raw = integ.cloud_read(CLOUD_CONFIG_NAME)
+                if raw:
+                    import yaml
 
-                data = yaml.safe_load(raw.decode("utf-8")) or {}
-                saved_at = str((data.get("_meta") or {}).get("saved_at", ""))
-                if saved_at:
-                    return self._format_steam_sync_time(saved_at)
-        except Exception:
-            logger.debug("读取 Steam 云存档时间失败", exc_info=True)
+                    data = yaml.safe_load(raw.decode("utf-8")) or {}
+                    saved_at = str((data.get("_meta") or {}).get("saved_at", ""))
+            except Exception:
+                logger.debug("读取 Steam 云存档时间失败", exc_info=True)
+        if not saved_at:
+            # 离线/提权时云文件读不到，退回上次成功上传时记在本机的时间
+            from ..steam_integration import load_last_cloud_sync
+
+            saved_at = load_last_cloud_sync()
+        if saved_at:
+            return self._format_steam_sync_time(saved_at)
         return t("set.steam.last_sync", time=t("set.steam.never_synced"))
 
     @staticmethod
@@ -3433,12 +3495,14 @@ class SettingsDialog(QDialog):
         btn.setEnabled(True)
 
     # ---- 创意工坊 ----
-    def _build_workshop_card(self) -> QWidget:
+    def _build_workshop_card(self, elevated_unavailable: bool = False) -> QWidget:
         """「创意工坊」卡片（仅发行构建）。
 
         只做「查看订阅 + 单物品管理 + 上传本地目录」，不设强制项；
         阻塞调用（退订 / 上传）一律丢后台线程，否则会冻住整个设置界面。
+        `elevated_unavailable` 只影响只读状态的文案。
         """
+        self._workshop_readonly_elevated = bool(elevated_unavailable)
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
 
@@ -3478,14 +3542,7 @@ class SettingsDialog(QDialog):
         btn_refresh.setObjectName("btnGhost")
         btn_refresh.setCursor(Qt.PointingHandCursor)
         btn_refresh.clicked.connect(self._refresh_workshop)
-        btn_publish = QPushButton(t("set.workshop.publish"))
-        btn_publish.setObjectName("btnGhost")
-        btn_publish.setCursor(Qt.PointingHandCursor)
-        btn_publish.setToolTip(t("set.workshop.publish_tip"))
-        btn_publish.clicked.connect(self._on_workshop_publish)
-        # 发行构建只消费工坊内容，不提供上传入口
-        btn_publish.setVisible(not is_steam_build())
-        for b in (btn_browse, btn_publish, btn_refresh):
+        for b in (btn_browse, btn_refresh):
             tools.addWidget(b)
         tools.addStretch(1)
         v.addLayout(tools)
@@ -3518,12 +3575,10 @@ class SettingsDialog(QDialog):
 
         if not integ.workshop_available():
             # SDK 不可用（提权启动 / 没经 Steam 拉起）：内容照样能被文件系统
-            # 来源发现并加载（见 workshop.py 顶部说明），只是订阅/下载/发布
-            # 这些写操作做不了。所以列表要照常列出已装的包——直接隐藏会让人
+            # 来源发现并加载（见 workshop.py 顶部说明），只是订阅/下载这些
+            # 写操作做不了。所以列表要照常列出已装的包——直接隐藏会让人
             # 以为"工坊彻底废了"，而实际上模型/主题/字体/短语都在生效。
             self._refresh_workshop()
-            btn_publish.setEnabled(False)
-            btn_refresh.setEnabled(False)
         else:
             self._refresh_workshop()
             # 下载状态由 Steam 客户端在后台推进，启动一个轻量定时器
@@ -3604,19 +3659,22 @@ class SettingsDialog(QDialog):
         """SDK 不可用时的只读视图：列出文件系统发现到的内容包。"""
         from ..workshop import installed_manifests
 
+        elevated = bool(getattr(self, "_workshop_readonly_elevated", False))
         manifests = installed_manifests()
         if not manifests:
-            # 一个包都没有：连列表一起藏掉。留着会是个刺眼的白框
-            # ，而"不可用"提示本身已经说清了状况。
+            # 一个包都没有：连列表一起藏掉，状态行说明原因
             lst.setVisible(False)
-            self._show_workshop_status(t("set.workshop.unavailable"))
+            self._show_workshop_status(t(
+                "set.workshop.unavailable_elevated" if elevated
+                else "set.workshop.unavailable"))
             self._fit_workshop_list_height()
             return
         # 有内容就显示（即使 SDK 挂了，这些包也确实在生效）。
         # "能用"与"能管"是两件事——不说清会让人以为是坏了。
         lst.setVisible(True)
-        self._show_workshop_status(
-            t("set.workshop.readonly", count=len(manifests)))
+        self._show_workshop_status(t(
+            "set.workshop.readonly_elevated" if elevated
+            else "set.workshop.readonly", count=len(manifests)))
         palette = self._workshop_palette()
         for manifest in manifests:
             entry = QListWidgetItem("")
@@ -3759,58 +3817,12 @@ class SettingsDialog(QDialog):
         ok = bool(get_integration().workshop_unsubscribe(int(item_id)))
         self.workshop_done.emit(ok, "unsubscribe", str(item_id))
 
-    def _on_workshop_publish(self) -> None:
-        """选目录 → 后台线程上传。"""
-        if is_steam_build():
-            return
-        from pathlib import Path
-
-        from PySide6.QtWidgets import QFileDialog
-
-        from ..steam_integration import get_integration
-        from ..workshop import MANIFEST_NAME, parse_manifest
-
-        folder = QFileDialog.getExistingDirectory(
-            self, t("set.workshop.select_folder"))
-        if not folder:
-            return
-        # 先校验清单：缺清单/无有效内容的目录即使上传成功
-        # 应用也永远不会认它 —— "发布成功但没有任何效果"是最难解释的一种结果
-        manifest = parse_manifest(Path(folder))
-        if manifest is None:
-            QMessageBox.warning(
-                self, t("set.workshop.group"),
-                t("set.workshop.folder_missing_manifest"))
-            return
-
-        self._show_workshop_status(t("set.workshop.publishing", percent=0))
-        title = manifest.name
-        # 物品页描述来自清单：发布方在 ori_workshop.json 里写什么，工坊
-        # 页面就展示什么——功能包尤其需要，页面上必须能看到"需自备密钥"
-        # 这类说明（口径与 README、应用内文案保持一致）
-        description = manifest.description
-
-        def _worker() -> None:
-            item_id = get_integration().workshop_publish(
-                folder, title=title, description=description,
-                tags=["OpenRealtimeASR"], change_note=title)
-            self.workshop_done.emit(bool(item_id), "publish", title)
-
-        import threading
-        threading.Thread(target=_worker, daemon=True,
-                         name="workshop-publish").start()
-
     def _on_workshop_done(self, ok: bool, action: str, detail: str) -> None:
-        """工坊后台动作完成（发布 / 退订）：刷新列表并按动作提示结果。"""
+        """工坊后台动作完成（目前只有退订）：刷新列表并按动作提示结果。"""
         self._refresh_workshop()
-        if action == "unsubscribe":
-            self._show_workshop_status(
-                t("set.workshop.unsubscribed") if ok
-                else t("set.workshop.unsubscribe_failed"))
-            return
         self._show_workshop_status(
-            t("set.workshop.published", title=detail) if ok
-            else t("set.workshop.publish_failed"))
+            t("set.workshop.unsubscribed") if ok
+            else t("set.workshop.unsubscribe_failed"))
 
     def _show_workshop_status(self, text: str) -> None:
         label = getattr(self, "_workshop_status", None)
@@ -3819,8 +3831,9 @@ class SettingsDialog(QDialog):
         label.setText(text or "")
         label.setVisible(bool(text))
 
-    def _build_gpu_install_row(self) -> QWidget:
-        """「显卡加速扩展包」行：左侧说明，右侧交给平台客户端弹安装对话框。"""
+    def _build_gpu_extension_row(self, installed: bool,
+                                 connected: bool) -> QWidget:
+        """「显卡加速扩展包」行：已装显示状态；未连接只说明，不给安装入口。"""
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
 
@@ -3831,17 +3844,34 @@ class SettingsDialog(QDialog):
         h.setContentsMargins(0, 12, 0, 12)
         h.setSpacing(12)
 
+        if installed:
+            desc_key = "set.steam.gpu_installed_desc"
+        elif connected:
+            desc_key = "set.steam.gpu_extension_desc"
+        else:
+            desc_key = "set.steam.gpu_need_connection_desc"
+
         left = QVBoxLayout()
         left.setSpacing(2)
         title = QLabel(t("set.steam.gpu_extension"))
         title.setObjectName("fieldLabel")
-        desc = QLabel(t("set.steam.gpu_extension_desc"))
+        desc = QLabel(t(desc_key))
         desc.setObjectName("fieldDesc")
         desc.setWordWrap(True)
         left.addWidget(title)
         left.addWidget(desc)
         h.addLayout(left, 1)
 
+        if installed:
+            status = QLabel(t("set.steam.gpu_installed"))
+            status.setObjectName("fieldDesc")
+            h.addWidget(status)
+            return wrap
+        if not connected:
+            status = QLabel(t("set.steam.gpu_need_connection"))
+            status.setObjectName("fieldDesc")
+            h.addWidget(status)
+            return wrap
         btn = QPushButton(t("set.steam.gpu_install"))
         btn.setObjectName("btnAccent")
         btn.setCursor(Qt.PointingHandCursor)

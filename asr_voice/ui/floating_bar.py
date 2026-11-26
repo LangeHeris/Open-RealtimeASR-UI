@@ -947,6 +947,18 @@ class FloatingBar(QWidget):
             self._auto_hide_ms = 0
             self._auto_hide_timer.stop()
 
+    def set_settings_dialog_open(self, opened: bool) -> None:
+        """设置窗打开期间暂停自动隐藏，关闭后恢复倒计时。
+
+        改设置时鼠标必然离开悬浮条；不暂停的话倒计时会在编辑途中把条收进
+        托盘，保存后的「已保存」提示就只剩一个没有宿主的气泡（图标不回来）。
+        """
+        self._settings_dlg_open = bool(opened)
+        if opened:
+            self._auto_hide_timer.stop()
+        else:
+            self._restart_auto_hide()
+
     def set_bar_opacity(self, opacity: int) -> None:
         """更新自定义不透明度：0=主题默认；1~100=百分比，100 完全不透明。"""
         self._bar_opacity = int(opacity or 0)
@@ -1771,12 +1783,15 @@ class FloatingBar(QWidget):
         return super().eventFilter(obj, event)
 
     def _restart_auto_hide(self) -> None:
-        """录音中、语音对话中或未启用时不隐藏；其余情况重置倒计时。
+        """录音中、语音对话中、设置窗打开或未启用时不隐藏；其余情况重置倒计时。
 
         对话整场都要求条可见（退出走按钮/热键，不靠「消失」表达）：空闲计时把条
         藏进托盘后，用户会以为对话已经断了，还得再找托盘呼出。
         """
         if self._auto_hide_ms <= 0:
+            return
+        if getattr(self, "_settings_dlg_open", False):
+            self._auto_hide_timer.stop()
             return
         if self._state in (UI_LISTENING, UI_RECOGNIZING) or self._state in _DIALOG_STATES:
             self._auto_hide_timer.stop()

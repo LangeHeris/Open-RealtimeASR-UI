@@ -443,6 +443,13 @@ def _settings_qss(p: dict) -> str:
     QLabel#fieldDesc {{
         color: {p.get('desc', p['secondary'])}; font-size: 9.5pt; background: transparent;
     }}
+    /* 状态/操作反馈行：比说明更小，左侧细线区分「这是一条状态」而不是正文 */
+    QLabel#fieldState {{
+        color: {p['secondary']}; font-size: 9pt;
+        padding: 2px 0 2px 9px;
+        border-left: 2px solid {p['accent']};
+        background: transparent;
+    }}
     /* 主题分段卡片（参考图「外观」通栏大卡）：选中亮描边 */
     QToolButton#themeCard {{
         background: {p.get('card_gradient', p['card_bg'])};

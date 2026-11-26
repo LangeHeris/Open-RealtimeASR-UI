@@ -2108,7 +2108,8 @@ class VoiceApp(QObject):
 
         from . import history as _history
 
-        from ..steam_integration import CLOUD_CONFIG_NAME, build_cloud_files
+        from ..steam_integration import (
+            CLOUD_CONFIG_NAME, build_cloud_files, save_last_cloud_sync)
 
         try:
             cfg_dict = {}
@@ -2140,6 +2141,8 @@ class VoiceApp(QObject):
                 saved_at = str(meta.get("saved_at", ""))
             except Exception:
                 pass
+            # 离线/提权时读不到云文件，靠本机记录把「最近同步」保留下来
+            save_last_cloud_sync(saved_at)
             return True, saved_at
         except Exception as exc:
             logger.debug("云存档上传失败", exc_info=True)
@@ -2179,8 +2182,9 @@ class VoiceApp(QObject):
         dlg = SettingsDialog(self.cfg, parent=self.bar,
                              steam_sync=self._flush_steam_cloud)
         self._settings_dlg = dlg
-        # 设置打开期间禁用悬浮条右键菜单（contextMenuEvent 守卫读取）
-        self.bar._settings_dlg_open = True
+        # 设置打开期间禁用悬浮条右键菜单（contextMenuEvent 守卫读取），并暂停
+        # 自动隐藏：用户改配置时鼠标必然离开悬浮条，不暂停会在编辑途中被收进托盘
+        self.bar.set_settings_dialog_open(True)
         # 记录原始透明度，取消时恢复
         orig_opacity = int(getattr(self.cfg.ui, "bar_opacity", 0) or 0)
         dlg.bar_opacity_preview.connect(self.bar.set_bar_opacity)
@@ -2189,9 +2193,16 @@ class VoiceApp(QObject):
 
         def _on_finished(_result: int) -> None:
             self._settings_dlg = None
-            self.bar._settings_dlg_open = False
+            # 关闭后恢复自动隐藏倒计时（打开期间被暂停）
+            self.bar.set_settings_dialog_open(False)
             n = getattr(dlg, "saved_count", 0)
             if n > 0:
+                # 保存成功要让图标可见：设置窗可能从托盘打开（条本就隐藏），
+                # 只弹气泡不见图标会让人以为保存把条弄丢了
+                if not self.bar.isVisible():
+                    self.bar.show()
+                    self.bar.raise_()
+                    self.bar._restart_auto_hide()
                 self.bar.signals.transient_hint.emit(
                     t("hint.settings_saved", count=n), 1.5)
                 # 存过盘就把云存档重传一次：设置里可能刚改了 engine
