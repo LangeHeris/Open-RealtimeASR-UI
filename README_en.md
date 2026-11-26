@@ -63,14 +63,13 @@ pip install -r requirements.txt
 
 # 3. Launch
 python run.py
-# or: python -m asr_voice.main (ModuleNotFoundError on isolated Python with _pth — fall back to run.py)
-# double-click start.bat to have it pick a usable Python automatically
+# or: python -m asr_voice.main or start.bat
 ```
 
 ### First-Run Setup
 
 1. The first launch auto-generates `config.yaml` (packaged build: next to the exe; source build: under `config/`)
-2. The default engine is Alibaba Cloud Model Studio: enter at least one cloud provider's key under Settings → Engine Keys **(every provider offers a free trial quota)**, or right-click and switch to the local FunASR engine (install funasr first, see below)
+2. The default engine is Alibaba Cloud Model Studio: enter at least one cloud provider's key under Settings → Engine Keys **(every provider offers a free trial quota)**, or right-click and switch to the local FunASR engine (install FunASR first, see below)
 3. Focus any text field, press `Ctrl+G` and speak; press again to stop and the text is typed automatically
 
 For the full first-run walkthrough see Chapter 3 of the [User Manual](docs/User_Doc_en.md); for every configuration field with comments see [config/config.example.yaml](config/config.example.yaml).
@@ -85,19 +84,17 @@ Four cloud engines plus one local engine, grouped by tier in the right-click men
 | :-- | :-- | :-- | :-- |
 | Alibaba Cloud Model Studio (default) | General engine `paraformer-realtime-v2`; LLM edition `qwen-audio-3.0-asr-flash-streaming` | `api_key` | Filler-word filtering, hotword lists, language hints |
 | Tencent Cloud | Three configurable tiers: LLM 2.0 (default `16k_zh_en_2.0`) / LLM 1.0 (`16k_zh_en`) / general engine (`16k_zh`); direct call defaults to `Hy-ASR-3.0-preview` | `secret_id` + `secret_key` + `app_id` | The model each tier actually calls can be changed in Settings; supports punctuation / digit / profanity / filler-word filtering |
-| iFLYTEK | LLM edition `autodialect` (Mandarin + English + 202 dialects); Standard edition Chinese / English | LLM edition: `app_id`+`api_key`+`api_secret`; Standard: `std_app_id`+`std_api_key` | The two editions use separate keys that are not interchangeable |
+| iFLYTEK | LLM edition `autodialect` (Mandarin + English + 202 dialects); Standard edition (Chinese / English) | LLM edition: `app_id`+`api_key`+`api_secret`; Standard: `std_app_id`+`std_api_key` | The two editions use separate keys that are not interchangeable |
 | Volcengine | Doubao 2.0 (`seedasr`) / 1.0 (`bigasr`); the two generations are billed and configured independently | New: `api_key`; legacy: `app_id`+`access_token` | Two-pass recognition + semantic smoothing (DDC) |
-| Local FunASR | `paraformer-zh-streaming` | **No key needed** | Fully offline and free; runs on CPU or GPU |
+| Local Engine FunASR | `paraformer-zh-streaming` | No key needed | Fully offline and free; runs on CPU or GPU |
 
 > Cloud engines must be activated at your own expense in each provider's console (all offer free trial quotas); local FunASR is completely free and offline.
 >
-> **The GitHub Release packaged build (exe) does not include the local FunASR engine**: funasr + torch are too large to bundle. The Steam edition bundles it, and the source build can install it (see below).
+> **The Release packaged build does not include the local FunASR engine**: the Steam edition bundles the FunASR model weights and dependencies, and the source build can install it.
 >
 > Per-engine parameter configuration: see Chapter 6 of the [User Manual](docs/User_Doc_en.md).
 
 ### Local Engine: FunASR
-
-> **The Steam edition includes the FunASR engine, model weights and dependencies**: offline recognition works right after installation, with no Python environment, pip install or model download required.
 
 The `pip` steps below apply to the source build:
 
@@ -112,7 +109,7 @@ pip install funasr
 
 - Model weights are neither bundled nor distributed in this repo: they download automatically from ModelScope on first use (~900 MB, cached in `~/.cache/modelscope/`). You can also point `funasr.local_dir` at a model directory you downloaded yourself; the download channel `funasr.model_hub` can be `ms` (ModelScope) or `hf` (HuggingFace)
 - The model warms up in the background at launch and the floating bar notifies you when it is ready; recognition window options: default 600 ms / low-latency 480 ms / high-accuracy 720 ms
-- The local engine is available in the source build and the Steam edition; the GitHub Release packaged build (exe) does not include funasr + torch. For offline use in the source build, download the model in advance
+- The local engine is available in the source build and the Steam edition; the Release packaged build does not include funasr + torch. For offline use in the source build, download the model in advance
 
 Details: [User Manual](docs/User_Doc_en.md) §3.3.
 

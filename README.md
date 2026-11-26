@@ -63,14 +63,13 @@ pip install -r requirements.txt
 
 # 3. 启动
 python run.py
-# 或 python -m asr_voice.main（带 _pth 的隔离 Python 下会 ModuleNotFoundError，失败时换上面那条）
-# 也可以双击 start.bat，它会自动挑一个可用的 Python
+# 或 python -m asr_voice.main 或 start.bat
 ```
 
 ### 首次配置
 
 1. 首次启动自动生成 `config.yaml`（打包版在 exe 同目录，源码版在 `config/` 下）
-2. 默认引擎为阿里云百炼：在 设置 → 引擎密钥 填入至少一家云厂商的密钥（**各厂商均有免费体验额度**），或右键切换为本地 FunASR（需先安装 funasr，见下文）
+2. 默认引擎为阿里云百炼：在 设置 → 引擎密钥 填入至少一家云厂商的密钥（**各厂商均有免费体验额度**），或右键切换为本地 FunASR（需先安装 FunASR，见下文）
 3. 聚焦任意输入框，按 `Ctrl+G` 说话，再按一次停止，文字自动上屏
 
 完整的首次配置流程见 [用户说明书](docs/User_Doc_zh.md) 第 3 章；全部配置字段与注释见 [config/config.example.yaml](config/config.example.yaml)。
@@ -85,19 +84,17 @@ python run.py
 | :-- | :-- | :-- | :-- |
 | 阿里云百炼（默认） | 通用引擎 `paraformer-realtime-v2`；大模型版 `qwen-audio-3.0-asr-flash-streaming` | `api_key` | 支持语气词过滤、热词表、语种提示 |
 | 腾讯云 | 三档可配：大模型2.0（默认 `16k_zh_en_2.0`）/ 大模型1.0（`16k_zh_en`）/ 通用引擎（`16k_zh`）；直调默认 `Hy-ASR-3.0-preview` | `secret_id` + `secret_key` + `app_id` | 每档实际调用的模型可在设置中改选；支持标点 / 数字 / 脏词 / 语气词过滤 |
-| 讯飞 | 大模型版 `autodialect`（中英 + 202 方言）；标准版中文 / 英文 | 大模型版 `app_id`+`api_key`+`api_secret`；标准版 `std_app_id`+`std_api_key` | 两版密钥独立、互不通用 |
+| 讯飞 | 大模型版 `autodialect`（中英 + 202 方言）；标准版（中英） | 大模型版 `app_id`+`api_key`+`api_secret`；标准版 `std_app_id`+`std_api_key` | 两版密钥独立、互不通用 |
 | 火山引擎 | 豆包 2.0（`seedasr`）/ 1.0（`bigasr`），两代计费独立配置 | 新版 `api_key`；旧版 `app_id`+`access_token` | 支持二遍识别 + 语义顺滑（DDC） |
-| 本地 FunASR | `paraformer-zh-streaming` | **无需密钥** | 完全离线、免费，CPU / GPU 均可 |
+| 本地引擎 FunASR | `paraformer-zh-streaming` | 无需密钥 | 完全离线、免费，CPU / GPU 均可 |
 
 > 云端引擎需在各厂商控制台自费开通（均有免费体验额度）；本地 FunASR 完全免费离线。
 >
-> **GitHub Release 打包版（exe）不含本地 FunASR 引擎**：funasr + torch 体积过大未打包；Steam 版已内置该引擎，源码版可自行安装（见下文）。
+> Release 打包版不含本地 FunASR 引擎；Steam 版内置 FunASR 模型权重及依赖，源码版可自行安装。
 >
 > 各引擎的参数配置见 [用户说明书](docs/User_Doc_zh.md) 第 6 章。
 
 ### 本地引擎  FunASR 
-
-> **Steam 版已内置 FunASR 引擎、模型权重及依赖**：安装后即可离线使用，无需 Python 环境、pip 安装或模型下载。
 
 以下 `pip` 步骤适用于源码版：
 
@@ -112,7 +109,7 @@ pip install funasr
 
 - 模型权重本仓库不内置、不分发：首次使用时自动从 ModelScope 下载（约 900MB，缓存到 `~/.cache/modelscope/`），也可用 `funasr.local_dir` 指向自行下载好的本地模型目录；下载渠道 `funasr.model_hub` 可选 `ms`（ModelScope）/ `hf`（HuggingFace）
 - 启动即后台预热模型，就绪后悬浮条提示；识别窗口可选默认 600ms / 低延迟 480ms / 高准确 720ms
-- 本地引擎在源码版与 Steam 版可用；GitHub Release 打包版（exe）不含 funasr + torch。源码版离线使用请提前下载好模型
+- 本地引擎在源码版与 Steam 版可用；Release 打包版不含 funasr + torch。源码版离线使用请提前下载好模型
 
 详见 [用户说明书](docs/User_Doc_zh.md) 3.3 节。
 
